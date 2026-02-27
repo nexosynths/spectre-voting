@@ -11,7 +11,7 @@ export default function Header() {
             <Link href="/" style={{ textDecoration: "none", color: "var(--text)" }}>
                 <h1>Spectre</h1>
             </Link>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 {identity && (
                     <span style={{ fontSize: "0.7rem", color: "var(--success)", background: "#22c55e18", padding: "4px 10px", borderRadius: 20 }}>
                         ID Active

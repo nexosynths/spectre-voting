@@ -900,8 +900,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                             style={{
                                                 opacity: isProcessing ? 0.4 : 1,
                                                 cursor: isProcessing ? "not-allowed" : "pointer",
-                                                flex: state.numOptions <= 3 ? "1" : "0 0 calc(50% - 6px)",
-                                                minWidth: 0,
+                                                flex: "1 1 calc(50% - 6px)",
+                                                minWidth: 120,
                                             }}
                                         >
                                             {label}
@@ -1025,7 +1025,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                                         <button onClick={() => { navigator.clipboard.writeText(decryptedShareResult) }}
                                                             style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}>Copy</button>
                                                     </div>
-                                                    <code className="mono" style={{ fontSize: "0.55rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block" }}>
+                                                    <code className="mono" style={{ fontSize: "0.65rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block" }}>
                                                         {decryptedShareResult}
                                                     </code>
                                                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
@@ -1044,7 +1044,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         <h4 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>Collect Decrypted Shares</h4>
                                         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
                                             {thresholdMeta.committee.map((m, i) => (
-                                                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                                                     <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", width: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>
                                                         {m.id}
                                                     </span>
@@ -1056,7 +1056,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                                             next[i] = e.target.value
                                                             setThresholdShareInputs(next)
                                                         }}
-                                                        className="mono" style={{ flex: 1, fontSize: "0.6rem", padding: "6px 8px" }}
+                                                        className="mono" style={{ flex: 1, fontSize: "0.7rem", padding: "6px 8px", minWidth: 0 }}
                                                     />
                                                     {thresholdShareInputs[i]?.trim().length === 128 && (
                                                         <span style={{ color: "var(--success)", fontSize: "0.8rem", flexShrink: 0 }}>&#10003;</span>
@@ -1257,8 +1257,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 ? "Send this link to voters. They can sign up directly during the signup phase."
                                 : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
                         </p>
-                        <div style={{ display: "flex", gap: 8 }}>
-                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem" }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
                                 {shareUrl}
                             </code>
                             <button onClick={() => copyToClipboard(shareUrl, "share2")} className="btn-primary" style={{ width: "auto", padding: "10px 16px", fontSize: "0.8rem" }}>
@@ -1275,8 +1275,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
                                     Admin can also add voters directly. Paste their Voter ID.
                                 </p>
-                                <div style={{ display: "flex", gap: 8 }}>
-                                    <input placeholder="Voter ID (commitment)" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1 }} />
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    <input placeholder="Voter ID (commitment)" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
                                     <button className="btn-primary" onClick={registerVoter} disabled={adminLoading || !commitment.trim()} style={{ width: "auto", padding: "12px 18px" }}>
                                         {adminLoading ? "..." : "Add"}
                                     </button>

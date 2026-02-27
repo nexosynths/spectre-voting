@@ -337,8 +337,8 @@ export default function HomePage() {
                                 </div>
                                 <details style={{ fontSize: "0.8rem" }}>
                                     <summary style={{ color: "var(--text-muted)", cursor: "pointer" }}>Advanced: backup key</summary>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
+                                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem", minWidth: 0 }}>
                                             {identity.export()}
                                         </code>
                                         <button onClick={() => copyToClipboard(identity.export(), "pk")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
@@ -361,8 +361,8 @@ export default function HomePage() {
                                 </button>
                                 <details style={{ fontSize: "0.8rem" }}>
                                     <summary style={{ color: "var(--text-muted)", cursor: "pointer" }}>Import existing identity</summary>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                                        <input placeholder="Paste base64 private key..." value={importKey} onChange={e => setImportKey(e.target.value)} style={{ flex: 1, fontSize: "0.8rem" }} />
+                                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                                        <input placeholder="Paste base64 private key..." value={importKey} onChange={e => setImportKey(e.target.value)} style={{ flex: 1, fontSize: "0.8rem", minWidth: 0 }} />
                                         <button className="btn-secondary" onClick={() => { importIdentity(importKey); setImportKey("") }} disabled={!importKey} style={{ width: "auto", padding: "10px 14px", fontSize: "0.8rem" }}>Import</button>
                                     </div>
                                 </details>
@@ -441,7 +441,7 @@ export default function HomePage() {
                         </div>
 
                         {/* Deadlines */}
-                        <div style={{ display: "flex", gap: 8 }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <div style={{ flex: 1 }}>
                                 <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
                                     Signup duration (hours)
@@ -568,12 +568,12 @@ export default function HomePage() {
                                                         style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 4px" }}>×</button>
                                                 )}
                                             </div>
-                                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22 }}>
+                                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22, flexWrap: "wrap" }}>
                                                 <input
                                                     type="text" placeholder="Public key (66 hex chars)"
                                                     value={m.pubkey} onChange={e => updateCommitteeMember(i, "pubkey", e.target.value)}
                                                     disabled={creating} className="mono"
-                                                    style={{ flex: 1, padding: "6px 10px", fontSize: "0.65rem" }}
+                                                    style={{ flex: 1, padding: "6px 10px", fontSize: "0.65rem", minWidth: 0 }}
                                                 />
                                                 <button onClick={() => generateKeyForMember(i)} disabled={creating}
                                                     className="btn-secondary" style={{ width: "auto", padding: "6px 10px", fontSize: "0.65rem", whiteSpace: "nowrap" }}>
@@ -589,7 +589,7 @@ export default function HomePage() {
                                                             {copied === `pk-${i}` ? "Copied!" : "Copy"}
                                                         </button>
                                                     </div>
-                                                    <code className="mono" style={{ fontSize: "0.55rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block", marginTop: 2 }}>
+                                                    <code className="mono" style={{ fontSize: "0.65rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block", marginTop: 2 }}>
                                                         {m.generatedPrivkey}
                                                     </code>
                                                 </div>
