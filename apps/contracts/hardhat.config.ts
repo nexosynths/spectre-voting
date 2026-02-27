@@ -15,7 +15,12 @@ const config: HardhatUserConfig = {
         hardhat: {
             chainId: 1337
         },
-        ...getHardhatNetworks(process.env.ETHEREUM_PRIVATE_KEY)
+        ...getHardhatNetworks(process.env.ETHEREUM_PRIVATE_KEY),
+        sepolia: {
+            url: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
+            chainId: 11155111,
+            accounts: process.env.ETHEREUM_PRIVATE_KEY ? [`0x${process.env.ETHEREUM_PRIVATE_KEY}`] : []
+        }
     },
     gasReporter: {
         currency: "USD",
