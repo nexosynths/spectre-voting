@@ -79,6 +79,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [tallyError, setTallyError] = useState("")
     const [manualKeyInput, setManualKeyInput] = useState("")
 
+    // Registration status
+    const [regStatus, setRegStatus] = useState<"unknown" | "checking" | "registered" | "not-registered">("unknown")
+
     // ── ELECTION METADATA ──
     // Read from URL params first (shared links), then localStorage, then defaults
     const meta: ElectionMeta = useMemo(() => {
@@ -104,6 +107,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
             noLabel: urlNo || stored.noLabel || "No",
         }
     }, [searchParams, electionAddress])
+
+    // Derived state (needed early for callbacks)
+    const displayTitle = meta.title || (state ? `Proposal #${state.proposalId}` : "Election")
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text)
@@ -131,6 +137,76 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [electionAddress, addLog])
 
     useEffect(() => { refresh() }, [refresh])
+
+    // ── CHECK REGISTRATION STATUS ──
+    // Query Semaphore group events to see if this voter's commitment is registered
+    const checkRegistration = useCallback(async () => {
+        if (!identity || !state) return
+        setRegStatus("checking")
+        try {
+            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
+            const gid = BigInt(state.groupId)
+            const currentBlock = await provider.getBlockNumber()
+            const fromBlock = Math.max(0, currentBlock - 49000)
+
+            const [singles, bulks] = await Promise.all([
+                sem.queryFilter(sem.filters.MemberAdded(gid), fromBlock),
+                sem.queryFilter(sem.filters.MembersAdded(gid), fromBlock),
+            ])
+
+            const myCommitment = identity.commitment.toString()
+            let found = false
+            for (const e of singles) {
+                if ((e as any).args.identityCommitment.toString() === myCommitment) { found = true; break }
+            }
+            if (!found) {
+                for (const e of bulks) {
+                    const commitments = (e as any).args.identityCommitments
+                    for (const c of commitments) {
+                        if (c.toString() === myCommitment) { found = true; break }
+                    }
+                    if (found) break
+                }
+            }
+
+            setRegStatus(found ? "registered" : "not-registered")
+        } catch (err: any) {
+            addLog(`Registration check failed: ${err.message}`)
+            setRegStatus("unknown")
+        }
+    }, [identity, state, addLog])
+
+    // Auto-check registration when identity + state are available
+    useEffect(() => {
+        if (identity && state) checkRegistration()
+    }, [identity, state, checkRegistration])
+
+    // Web Share API helper for sharing Voter ID
+    const shareVoterId = useCallback(async () => {
+        if (!identity) return
+        const voterIdText = identity.commitment.toString()
+
+        const fallbackCopy = () => {
+            navigator.clipboard.writeText(voterIdText)
+            setCopied("vid")
+            setTimeout(() => setCopied(""), 2000)
+        }
+
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: "My Spectre Voter ID",
+                    text: `Here's my Voter ID for "${displayTitle}":\n\n${voterIdText}\n\nPaste this into the election's Manage tab to register me.`,
+                })
+            } catch {
+                // User cancelled share — fall back to copy
+                fallbackCopy()
+            }
+        } else {
+            fallbackCopy()
+        }
+    }, [identity, displayTitle])
 
     // ── VOTE LOGIC ──
     const castVote = useCallback(async () => {
@@ -331,7 +407,6 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const isAdmin = address && state?.admin && address.toLowerCase() === state.admin.toLowerCase()
     const hasPubKey = state ? (state.electionPubKeyX !== "0" || state.electionPubKeyY !== "0") : false
     const isProcessing = voteStep !== "idle" && voteStep !== "done" && voteStep !== "error"
-    const displayTitle = meta.title || (state ? `Proposal #${state.proposalId}` : "Election")
 
     if (loading) return (
         <div style={{ textAlign: "center", padding: 48 }}>
@@ -413,26 +488,108 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         </div>
                     )}
 
-                    {/* Step 3: Voter ID notice (if identity exists but might not be registered) */}
+                    {/* Step 3: Registration status — the key voter onboarding step */}
                     {identity && address && state.votingOpen && voteStep === "idle" && (
-                        <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                Your Voter ID:{" "}
-                                <code className="mono" style={{ fontSize: "0.65rem" }}>
-                                    {identity.commitment.toString().slice(0, 16)}...
-                                </code>
-                                {" "}
-                                <button
-                                    onClick={() => copyToClipboard(identity.commitment.toString(), "vid")}
-                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: 0 }}
-                                >
-                                    {copied === "vid" ? "Copied!" : "Copy full ID"}
-                                </button>
-                            </p>
-                            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>
-                                Send this to the election admin so they can register you to vote.
-                            </p>
-                        </div>
+                        <>
+                            {/* REGISTERED — green confirmation */}
+                            {regStatus === "registered" && (
+                                <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40", background: "#22c55e08" }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                        <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
+                                        <div>
+                                            <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re registered to vote</p>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Select your choice below and cast your vote.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* NOT REGISTERED — full guided experience */}
+                            {regStatus === "not-registered" && (
+                                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Step 3: Get Registered</h4>
+                                    <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        Think of your <strong>Voter ID</strong> like a ticket number. The election admin needs it to add you to the voter roll — but it doesn&apos;t reveal who you are. Send it to the admin, and once they register it, you&apos;re ready to vote.
+                                    </p>
+
+                                    {/* Voter ID display */}
+                                    <div style={{ marginBottom: 12 }}>
+                                        <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
+                                            Your Voter ID
+                                        </label>
+                                        <div style={{ display: "flex", gap: 8 }}>
+                                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem", userSelect: "all" }}>
+                                                {identity.commitment.toString()}
+                                            </code>
+                                        </div>
+                                    </div>
+
+                                    {/* Action buttons */}
+                                    <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                                        <button className="btn-primary" onClick={shareVoterId} style={{ flex: 1, fontSize: "0.8rem" }}>
+                                            {copied === "vid" ? "Copied!" : ("share" in navigator ? "Share Voter ID" : "Copy Voter ID")}
+                                        </button>
+                                        <button className="btn-secondary" onClick={checkRegistration} style={{ width: "auto", padding: "10px 16px", fontSize: "0.8rem" }}>
+                                            Check Status
+                                        </button>
+                                    </div>
+
+                                    {/* Admin info */}
+                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                                            <strong>How to get registered:</strong>
+                                        </p>
+                                        <ol style={{ fontSize: "0.75rem", color: "var(--text-muted)", paddingLeft: 16, margin: "6px 0 0 0", lineHeight: 1.7 }}>
+                                            <li>Copy or share your Voter ID above</li>
+                                            <li>Send it to the election admin (via text, email, etc.)</li>
+                                            <li>Wait for them to add you, then tap <strong>Check Status</strong></li>
+                                        </ol>
+                                        <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 8 }}>
+                                            Admin wallet:{" "}
+                                            <a href={`https://sepolia.etherscan.io/address/${state.admin}`} target="_blank" rel="noreferrer" className="mono" style={{ color: "var(--accent)", fontSize: "0.65rem" }}>
+                                                {state.admin.slice(0, 8)}...{state.admin.slice(-6)}
+                                            </a>
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* CHECKING — loading spinner */}
+                            {regStatus === "checking" && (
+                                <div className="card" style={{ marginBottom: 16 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                        <div className="spinner" />
+                                        <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking if you&apos;re registered...</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* UNKNOWN — couldn't check, show abbreviated ID info */}
+                            {regStatus === "unknown" && (
+                                <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 8 }}>
+                                        Your Voter ID:{" "}
+                                        <code className="mono" style={{ fontSize: "0.65rem" }}>
+                                            {identity.commitment.toString().slice(0, 16)}...
+                                        </code>
+                                        {" "}
+                                        <button
+                                            onClick={shareVoterId}
+                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: 0 }}
+                                        >
+                                            {copied === "vid" ? "Copied!" : "Copy"}
+                                        </button>
+                                    </p>
+                                    <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                                        Send this to the election admin so they can register you to vote.
+                                        {" "}
+                                        <button onClick={checkRegistration} style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.75rem", cursor: "pointer", padding: 0 }}>
+                                            Check registration
+                                        </button>
+                                    </p>
+                                </div>
+                            )}
+                        </>
                     )}
 
                     {/* Vote card */}
