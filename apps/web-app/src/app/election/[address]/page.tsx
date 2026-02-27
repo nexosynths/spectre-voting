@@ -179,8 +179,10 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [state])
 
     // ── Voting identity for this election ──
-    // Per-election identity stored separately from the global signup identity
-    const votingIdentityKey = `spectre-voting-identity-${electionAddress}`
+    // Per-election AND per-wallet — each wallet gets its own delinked voting identity
+    const votingIdentityKey = address
+        ? `spectre-voting-identity-${electionAddress}-${address.toLowerCase()}`
+        : ""
 
     const getVotingIdentity = useCallback((): Identity | null => {
         try {
