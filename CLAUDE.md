@@ -112,9 +112,82 @@ spectre-voting/
 - [x] Deployed to Vercel (auto-deploy from main)
 - [x] 17 passing contract tests
 
-### Next Up
+### In Progress — Anonymous Registration (Option B: ZK Re-Key)
+The current registration flow requires voters to share their Voter ID with the admin out-of-band, creating a timing correlation attack vector. The admin can observe when each commitment was submitted and link real identities to anonymous votes probabilistically.
+
+**Solution: Two-phase registration with ZK re-keying (inspired by MACI's anonymous poll joining).**
+
+#### Phase 1 — Public Signup
+- Voter connects wallet and calls `signUp(identityCommitment)` on the election contract
+- This is intentionally public — the admin and everyone can see which wallet registered which commitment
+- Signup is time-bounded (registration deadline)
+
+#### Phase 2 — Anonymous Poll Join
+- After registration closes and voting opens, the voter generates a **new** identity for the election
+- The voter's browser generates a ZK proof:
+  - "I know the private key for one of the registered commitments" (proves eligibility)
+  - "Here is a nullifier = hash(myPrivateKey, electionId)" (prevents double-joining)
+  - "Here is my new commitment for this election" (delinked from signup)
+- The proof + new commitment are submitted on-chain
+- The contract verifies the proof and adds the new commitment to the voting group
+- **The admin cannot link the new voting commitment to the original signup**
+
+#### Why This Works
+- Phase 1 is public by design — the admin needs to know who signed up to verify eligibility
+- Phase 2 uses a ZK proof to cryptographically break the link between signup identity and voting identity
+- Even if the admin watches every transaction, the ZK proof reveals nothing about which Phase 1 commitment the voter owns
+- The nullifier prevents a voter from joining twice (same private key + same election = same nullifier)
+
+#### What Needs to Be Built
+- [ ] New Circom circuit: `AnonJoin.circom` — proves membership in signup group + outputs nullifier + new commitment
+- [ ] Contract changes: `signUp()` function (public), `anonJoin()` function (verifies ZK proof, adds new commitment to voting group)
+- [ ] Frontend: Two-step flow — "Sign Up" button (Phase 1) → waiting state → "Join Anonymously" button (Phase 2)
+- [ ] Separate registration and voting periods (registration closes before voting opens)
+
+### Future — Enterprise Abstraction (Gas-Free Voter Experience)
+
+For non-crypto enterprise use cases (company votes, shareholder votes, board elections), the voter should never see a wallet, pay gas, or know blockchain is involved.
+
+#### Proposed Architecture
+```
+Enterprise Admin                     Employee/Voter
+     |                                    |
+     |-- Creates election (wallet) -----> |
+     |-- Sends invite email ------------> |
+     |                                    |-- Clicks link
+     |                                    |-- Browser generates identity (auto)
+     |                                    |-- "Sign Up" → relayer submits tx (pays gas)
+     |                                    |
+     |-- Closes registration              |
+     |                                    |
+     |                                    |-- "Vote" → browser generates ZK re-key proof (local)
+     |                                    |-- Relayer submits anon join + vote tx (pays gas)
+     |                                    |-- Voter sees: "Your vote has been cast" ✓
+     |
+     |-- Tallies results
+```
+
+#### Key Components
+- **Relayer API:** Thin backend that wraps voter transactions and submits them from a funded wallet. Accepts signed payloads from the frontend.
+- **Email-based invite:** Admin enters employee emails. System sends links with embedded invite tokens.
+- **No wallet required:** Voter's browser generates ZK identity silently. Relayer pays all gas.
+- **Same ZK re-key circuit:** The re-key proof is pure client-side math — works identically whether the voter has a wallet or the relayer submits for them.
+- **Authentication:** Invite token (single-use, tied to email) gates Phase 1 signup. Could use OAuth/SSO for enterprise identity verification.
+
+#### Privacy Preservation
+- Relayer sees Phase 1 signup (public by design) but cannot link it to Phase 2 anonymous join (ZK proof)
+- Email invite tokens are consumed at signup — no link to the anonymous voting commitment
+- Enterprise admin has the same privacy boundary as the crypto-native flow: knows who was invited, cannot see who voted for what
+
+#### Open Questions (Revisit Later)
+- Relayer trust model: should it be centralized (company-run) or decentralized?
+- How to handle relayer censorship (relayer refuses to submit certain transactions)?
+- Rate limiting / anti-spam without revealing voter identity
+- SSO integration for employee identity verification at signup
+- Cost model: who pays for relayer gas? (likely the election creator / company)
+
+### Other Next Up
 - [ ] Mobile responsive polish
-- [ ] Gas relayer (voters don't need ETH)
 - [ ] Multi-option voting (beyond Yes/No)
 - [ ] On-chain result commitment (publish Poseidon root of tally)
 - [ ] Better error messages for common failures
