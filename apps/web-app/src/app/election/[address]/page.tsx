@@ -128,6 +128,18 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [decryptedShareResult, setDecryptedShareResult] = useState("")
     const [decryptShareError, setDecryptShareError] = useState("")
 
+    // Tally commitment state
+    const [commitStep, setCommitStep] = useState<"idle" | "submitting" | "done" | "error">("idle")
+    const [commitError, setCommitError] = useState("")
+    const [commitTxHash, setCommitTxHash] = useState("")
+    const [onChainTally, setOnChainTally] = useState<{
+        committed: boolean
+        poseidonCommitment: string
+        totalValid: number
+        totalInvalid: number
+        optionCounts: number[]
+    } | null>(null)
+
     // ── ELECTION METADATA ──
     const meta: ElectionMeta = useMemo(() => {
         const urlTitle = searchParams.get("t")
@@ -253,6 +265,30 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 numOptions: Number(numOpt),
                 selfSignupAllowed: selfSignup,
             })
+
+            // Fetch on-chain tally commitment (try/catch for backward compat with old contracts)
+            try {
+                const committed = await c.tallyCommitted()
+                if (committed) {
+                    const [posCommit, tv, ti, oc] = await Promise.all([
+                        c.tallyPoseidonCommitment(),
+                        c.tallyTotalValid(),
+                        c.tallyTotalInvalid(),
+                        c.getTallyOptionCounts(),
+                    ])
+                    setOnChainTally({
+                        committed: true,
+                        poseidonCommitment: posCommit.toString(),
+                        totalValid: Number(tv),
+                        totalInvalid: Number(ti),
+                        optionCounts: oc.map((x: bigint) => Number(x)),
+                    })
+                } else {
+                    setOnChainTally({ committed: false, poseidonCommitment: "", totalValid: 0, totalInvalid: 0, optionCounts: [] })
+                }
+            } catch {
+                setOnChainTally(null) // old contract without commitTallyResult
+            }
         } catch (err: any) {
             addLog(`Failed to load election: ${err.message}`)
         } finally { setLoading(false) }
@@ -656,6 +692,38 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setTallyError(err.message || "Threshold tally failed"); setTallyStep("error"); setTallyMsg("")
         }
     }, [electionAddress, addLog, state, optionLabels, thresholdMeta, thresholdShareInputs])
+
+    // ── COMMIT TALLY ON-CHAIN ──
+    const handleCommitTally = useCallback(async () => {
+        if (!signer || !tallyResult || !state) return
+        setCommitError(""); setCommitTxHash("")
+        setCommitStep("submitting")
+
+        try {
+            // Compute Poseidon commitment off-chain (hash chain)
+            let hash = poseidon2([BigInt(tallyResult.totalValid), BigInt(tallyResult.totalInvalid)])
+            for (const count of tallyResult.optionCounts) {
+                hash = poseidon2([hash, BigInt(count)])
+            }
+
+            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
+            const tx = await c.commitTallyResult(
+                tallyResult.optionCounts,
+                tallyResult.totalValid,
+                tallyResult.totalInvalid,
+                hash
+            )
+            await tx.wait()
+
+            setCommitTxHash(tx.hash)
+            setCommitStep("done")
+            addLog("Tally committed on-chain!")
+            await refresh()
+        } catch (err: any) {
+            setCommitError(friendlyError(err))
+            setCommitStep("error")
+        }
+    }, [signer, tallyResult, state, electionAddress, addLog, refresh])
 
     // Initialize threshold share inputs when meta loads
     useEffect(() => {
@@ -1241,7 +1309,74 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             <button className="btn-secondary" onClick={() => { setTallyResult(null); setTallyStep("idle") }} style={{ marginBottom: 16 }}>
                                 Re-tally
                             </button>
+
+                            {/* Commit tally on-chain (admin only, after tally computed, voting closed, not yet committed) */}
+                            {isAdmin && phase === "closed" && !onChainTally?.committed && (
+                                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Commit Results On-Chain</h4>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        Publish the tally permanently on-chain with a Poseidon commitment hash.
+                                        Anyone can verify by recomputing the hash from the stored data. This action is irreversible.
+                                    </p>
+                                    {commitStep === "submitting" && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+                                            <div className="spinner" />
+                                            <p style={{ fontSize: "0.85rem" }}>Confirm in wallet...</p>
+                                        </div>
+                                    )}
+                                    {commitStep === "done" && commitTxHash && (
+                                        <div style={{ marginBottom: 12, padding: 12, background: "#22c55e10", borderRadius: "var(--radius)", border: "1px solid #22c55e40" }}>
+                                            <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>Tally committed!</p>
+                                            <a href={`https://sepolia.etherscan.io/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
+                                                View on Etherscan
+                                            </a>
+                                        </div>
+                                    )}
+                                    {commitStep === "error" && commitError && (
+                                        <div style={{ marginBottom: 12, padding: 12, background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440" }}>
+                                            <p style={{ color: "var(--error)", fontWeight: 600 }}>{commitError}</p>
+                                        </div>
+                                    )}
+                                    <button className="btn-primary" onClick={handleCommitTally}
+                                        disabled={commitStep === "submitting"}>
+                                        {commitStep === "submitting" ? "Committing..." : "Commit Tally On-Chain"}
+                                    </button>
+                                </div>
+                            )}
                         </>
+                    )}
+
+                    {/* On-chain commitment display */}
+                    {onChainTally?.committed && (
+                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40" }}>
+                            <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                                On-Chain Commitment
+                            </h4>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: "0.8rem" }}>
+                                <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Poseidon Commitment</div>
+                                    <code className="mono" style={{ fontSize: "0.65rem", wordBreak: "break-all" }}>
+                                        {onChainTally.poseidonCommitment}
+                                    </code>
+                                </div>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                    <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 2 }}>Valid</div>
+                                        <div style={{ fontWeight: 700 }}>{onChainTally.totalValid}</div>
+                                    </div>
+                                    <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 2 }}>Invalid</div>
+                                        <div style={{ fontWeight: 700 }}>{onChainTally.totalInvalid}</div>
+                                    </div>
+                                </div>
+                                {onChainTally.optionCounts.map((count, i) => (
+                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <span>{optionLabels[i] || `Option ${i}`}</span>
+                                        <span style={{ fontWeight: 700 }}>{count}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     )}
                 </>
             )}

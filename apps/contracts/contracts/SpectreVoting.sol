@@ -74,6 +74,13 @@ contract SpectreVoting {
     // Vote storage
     uint256 public voteCount;
 
+    // Tally result commitment (Phase 3 — set once by admin after tally)
+    bool public tallyCommitted;
+    uint256 public tallyPoseidonCommitment;
+    uint256 public tallyTotalValid;
+    uint256 public tallyTotalInvalid;
+    uint256[] public tallyOptionCounts;
+
     event ElectionCreated(
         uint256 indexed signupGroupId,
         uint256 indexed votingGroupId,
@@ -103,6 +110,7 @@ contract SpectreVoting {
 
     event SignupClosed(uint256 indexed proposalId);
     event VotingClosed(uint256 indexed proposalId, uint256 totalVotes);
+    event TallyCommitted(uint256 indexed proposalId, uint256 poseidonCommitment, uint256 totalValid, uint256 totalInvalid, uint256[] optionCounts);
 
     error NotAdmin();
     error SignupNotOpen();
@@ -119,6 +127,9 @@ contract SpectreVoting {
     error SignupStillOpen();
     error InvalidNumOptions();
     error SelfSignupNotAllowed();
+    error TallyAlreadyCommitted();
+    error VotingStillOpen();
+    error InvalidOptionCount();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -323,5 +334,44 @@ contract SpectreVoting {
         }
         votingOpen = false;
         emit VotingClosed(proposalId, voteCount);
+    }
+
+    // =======================================================================
+    // Phase 3: Tally Commitment — admin publishes decrypted results on-chain
+    // =======================================================================
+
+    /// @notice Commit the tally result on-chain. Can only be called once.
+    /// @dev The poseidonCommitment is computed off-chain as a hash chain:
+    ///      h = poseidon2(totalValid, totalInvalid)
+    ///      for each optionCount: h = poseidon2(h, optionCount)
+    ///      Anyone can verify by reading the stored data and recomputing.
+    /// @param optionCounts  Per-option vote counts (length must match numOptions)
+    /// @param totalValid    Total number of valid votes
+    /// @param totalInvalid  Total number of invalid votes
+    /// @param poseidonCommitment  Poseidon hash chain of the tally data
+    function commitTallyResult(
+        uint256[] calldata optionCounts,
+        uint256 totalValid,
+        uint256 totalInvalid,
+        uint256 poseidonCommitment
+    ) external onlyAdmin {
+        if (signupOpen) revert SignupStillOpen();
+        if (votingOpen) revert VotingStillOpen();
+        if (tallyCommitted) revert TallyAlreadyCommitted();
+        if (optionCounts.length != numOptions) revert InvalidOptionCount();
+
+        tallyCommitted = true;
+        tallyPoseidonCommitment = poseidonCommitment;
+        tallyTotalValid = totalValid;
+        tallyTotalInvalid = totalInvalid;
+        tallyOptionCounts = optionCounts;
+
+        emit TallyCommitted(proposalId, poseidonCommitment, totalValid, totalInvalid, optionCounts);
+    }
+
+    /// @notice Read the committed option counts array
+    /// @return The full tallyOptionCounts array
+    function getTallyOptionCounts() external view returns (uint256[] memory) {
+        return tallyOptionCounts;
     }
 }

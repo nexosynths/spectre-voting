@@ -8,7 +8,7 @@ export { prepareVote, submitVote, decodeVotePayload } from "./voter.js"
 // Threshold key management (dealer + committee)
 export { split, combine } from "./shamir.js"
 export { setupElection, serializeShare, deserializeShare } from "./dealer.js"
-export { decryptShare, reconstructElectionKey, computeTally } from "./tally.js"
+export { decryptShare, reconstructElectionKey, computeTally, computeTallyCommitment, verifyTallyCommitment } from "./tally.js"
 
 // Types
 export type { SpectreProof, ProofArtifacts } from "./prove.js"

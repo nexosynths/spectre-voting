@@ -26,6 +26,9 @@ const ERROR_MESSAGES: Record<string, string> = {
     SignupStillOpen: "Signup must be closed before opening voting",
     InvalidNumOptions: "Invalid number of voting options",
     SelfSignupNotAllowed: "Self-signup is disabled — only the admin can register voters",
+    TallyAlreadyCommitted: "The tally has already been committed for this election",
+    VotingStillOpen: "Voting must be closed before committing the tally",
+    InvalidOptionCount: "Option counts array length doesn't match the election's numOptions",
 }
 
 // Lazy-init interface for manual selector decoding

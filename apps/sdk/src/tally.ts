@@ -154,3 +154,37 @@ export function computeTally(shares: Share[], submittedVotes: SubmittedVote[], n
         decryptedVotes: uniqueVotes
     }
 }
+
+/**
+ * Compute the Poseidon commitment for a tally result.
+ *
+ * Hash chain: h = poseidon2(totalValid, totalInvalid)
+ *             for each count in optionCounts: h = poseidon2(h, count)
+ *
+ * This matches the algorithm the contract expects. Anyone can verify
+ * by reading the raw results from the contract and recomputing this hash.
+ */
+export function computeTallyCommitment(
+    optionCounts: number[],
+    totalValid: number,
+    totalInvalid: number
+): bigint {
+    let hash = poseidon2([BigInt(totalValid), BigInt(totalInvalid)])
+    for (const count of optionCounts) {
+        hash = poseidon2([hash, BigInt(count)])
+    }
+    return hash
+}
+
+/**
+ * Verify an on-chain tally commitment by recomputing the Poseidon hash.
+ * Returns true if the recomputed hash matches the stored commitment.
+ */
+export function verifyTallyCommitment(
+    optionCounts: number[],
+    totalValid: number,
+    totalInvalid: number,
+    expectedCommitment: bigint
+): boolean {
+    return computeTallyCommitment(optionCounts, totalValid, totalInvalid) === expectedCommitment
+}

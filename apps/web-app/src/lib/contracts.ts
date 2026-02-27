@@ -50,12 +50,20 @@ export const SPECTRE_VOTING_ABI = [
     "function anonJoin(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 signupRoot, uint256 joinNullifier, uint256 newCommitment)",
     "function castVote(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 merkleTreeRoot, uint256 nullifierHash, uint256 voteCommitment, bytes encryptedBlob)",
     "function closeVoting()",
+    // Phase 3: Tally commitment
+    "function commitTallyResult(uint256[] optionCounts, uint256 totalValid, uint256 totalInvalid, uint256 poseidonCommitment)",
+    "function tallyCommitted() view returns (bool)",
+    "function tallyPoseidonCommitment() view returns (uint256)",
+    "function tallyTotalValid() view returns (uint256)",
+    "function tallyTotalInvalid() view returns (uint256)",
+    "function getTallyOptionCounts() view returns (uint256[])",
     // Events
     "event VoterSignedUp(uint256 indexed signupGroupId, uint256 identityCommitment)",
     "event AnonJoined(uint256 indexed votingGroupId, uint256 joinNullifier, uint256 newCommitment)",
     "event VoteCast(uint256 indexed proposalId, uint256 indexed nullifierHash, uint256 voteCommitment, bytes encryptedBlob)",
     "event SignupClosed(uint256 indexed proposalId)",
     "event VotingClosed(uint256 indexed proposalId, uint256 totalVotes)",
+    "event TallyCommitted(uint256 indexed proposalId, uint256 poseidonCommitment, uint256 totalValid, uint256 totalInvalid, uint256[] optionCounts)",
     // Custom errors
     "error NotAdmin()",
     "error SignupNotOpen()",
@@ -72,6 +80,9 @@ export const SPECTRE_VOTING_ABI = [
     "error SignupStillOpen()",
     "error InvalidNumOptions()",
     "error SelfSignupNotAllowed()",
+    "error TallyAlreadyCommitted()",
+    "error VotingStillOpen()",
+    "error InvalidOptionCount()",
 ]
 
 // Semaphore V4 contract ABI (events for querying group members)

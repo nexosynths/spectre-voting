@@ -814,4 +814,90 @@ describe("SpectreVotingFactory", () => {
             ).to.be.revertedWithCustomError(election, "SignupDeadlinePassed")
         })
     })
+
+    describe("# tally commitment", () => {
+        it("Should allow admin to commit tally after voting is closed", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await election.connect(alice).closeSignup()
+            await election.connect(alice).closeVoting()
+
+            const optionCounts = [3n, 2n]
+            const totalValid = 5n
+            const totalInvalid = 1n
+
+            // Compute Poseidon commitment (matching SDK hash chain)
+            let hash = poseidon2([totalValid, totalInvalid])
+            hash = poseidon2([hash, optionCounts[0]])
+            hash = poseidon2([hash, optionCounts[1]])
+
+            const tx = await election.connect(alice).commitTallyResult(
+                optionCounts, totalValid, totalInvalid, hash
+            )
+
+            await expect(tx).to.emit(election, "TallyCommitted")
+                .withArgs(PROPOSAL_ID, hash, totalValid, totalInvalid, optionCounts)
+
+            expect(await election.tallyCommitted()).to.equal(true)
+            expect(await election.tallyPoseidonCommitment()).to.equal(hash)
+            expect(await election.tallyTotalValid()).to.equal(totalValid)
+            expect(await election.tallyTotalInvalid()).to.equal(totalInvalid)
+
+            const storedCounts = await election.getTallyOptionCounts()
+            expect(storedCounts.length).to.equal(2)
+            expect(storedCounts[0]).to.equal(3n)
+            expect(storedCounts[1]).to.equal(2n)
+        })
+
+        it("Should reject non-admin commitment", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await election.connect(alice).closeSignup()
+            await election.connect(alice).closeVoting()
+
+            await expect(
+                election.connect(bob).commitTallyResult([1n, 1n], 2n, 0n, 0n)
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+        })
+
+        it("Should reject commitment while voting is still open", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await election.connect(alice).closeSignup()
+            // Voting is now open
+
+            await expect(
+                election.connect(alice).commitTallyResult([1n, 1n], 2n, 0n, 0n)
+            ).to.be.revertedWithCustomError(election, "VotingStillOpen")
+        })
+
+        it("Should reject double commitment", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await election.connect(alice).closeSignup()
+            await election.connect(alice).closeVoting()
+
+            await election.connect(alice).commitTallyResult([1n, 1n], 2n, 0n, 0n)
+
+            await expect(
+                election.connect(alice).commitTallyResult([2n, 2n], 4n, 0n, 0n)
+            ).to.be.revertedWithCustomError(election, "TallyAlreadyCommitted")
+        })
+
+        it("Should reject wrong option count length", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice) // numOptions = 2
+
+            await election.connect(alice).closeSignup()
+            await election.connect(alice).closeVoting()
+
+            await expect(
+                election.connect(alice).commitTallyResult([1n, 1n, 1n], 3n, 0n, 0n)
+            ).to.be.revertedWithCustomError(election, "InvalidOptionCount")
+        })
+    })
 })
