@@ -5,10 +5,11 @@ import "./SpectreVoting.sol";
 
 /// @title SpectreVotingFactory — Deploy new elections on demand
 /// @notice Anyone can create an election. The caller becomes the election admin.
-///         Semaphore + Groth16Verifier are shared infrastructure set at factory deploy time.
+///         Semaphore + both verifiers are shared infrastructure set at factory deploy time.
 contract SpectreVotingFactory {
     address public immutable semaphore;
-    address public immutable verifier;
+    address public immutable voteVerifier;
+    address public immutable joinVerifier;
 
     // Registry of all deployed elections
     address[] public elections;
@@ -19,42 +20,62 @@ contract SpectreVotingFactory {
         address indexed admin,
         uint256 proposalId,
         uint256 electionPubKeyX,
-        uint256 electionPubKeyY
+        uint256 electionPubKeyY,
+        uint256 signupDeadline,
+        uint256 votingDeadline,
+        uint256 numOptions
     );
 
-    constructor(address _semaphore, address _verifier) {
+    constructor(address _semaphore, address _voteVerifier, address _joinVerifier) {
         semaphore = _semaphore;
-        verifier = _verifier;
+        voteVerifier = _voteVerifier;
+        joinVerifier = _joinVerifier;
     }
 
     /// @notice Deploy a new SpectreVoting election
     /// @param _proposalId Unique proposal identifier
     /// @param _electionPubKeyX Election ECIES public key X coordinate
     /// @param _electionPubKeyY Election ECIES public key Y coordinate
+    /// @param _signupDeadline Unix timestamp when signup closes (0 = no deadline, admin-only close)
     /// @param _votingDeadline Unix timestamp when voting closes (0 = no deadline, admin-only close)
+    /// @param _numOptions Number of vote options (minimum 2)
     /// @return election The address of the newly deployed SpectreVoting contract
     function createElection(
         uint256 _proposalId,
         uint256 _electionPubKeyX,
         uint256 _electionPubKeyY,
-        uint256 _votingDeadline
+        uint256 _signupDeadline,
+        uint256 _votingDeadline,
+        uint256 _numOptions
     ) external returns (address election) {
         // Pass msg.sender as _admin so the caller (not the factory) is admin
         SpectreVoting sv = new SpectreVoting(
             semaphore,
-            verifier,
+            voteVerifier,
+            joinVerifier,
             _proposalId,
             _electionPubKeyX,
             _electionPubKeyY,
             msg.sender,
-            _votingDeadline
+            _signupDeadline,
+            _votingDeadline,
+            _numOptions
         );
 
         election = address(sv);
         elections.push(election);
         isElection[election] = true;
 
-        emit ElectionDeployed(election, msg.sender, _proposalId, _electionPubKeyX, _electionPubKeyY);
+        emit ElectionDeployed(
+            election,
+            msg.sender,
+            _proposalId,
+            _electionPubKeyX,
+            _electionPubKeyY,
+            _signupDeadline,
+            _votingDeadline,
+            _numOptions
+        );
     }
 
     /// @notice Get the total number of elections created

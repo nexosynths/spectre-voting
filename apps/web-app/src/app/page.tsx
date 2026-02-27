@@ -10,10 +10,12 @@ import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/c
 interface ElectionInfo {
     address: string
     proposalId: string
+    signupOpen: boolean
     votingOpen: boolean
     voteCount: number
     admin: string
-    title: string // from localStorage metadata
+    title: string
+    phase: "signup" | "voting" | "closed"
 }
 
 export default function HomePage() {
@@ -30,15 +32,32 @@ export default function HomePage() {
     // Create election form
     const [showCreate, setShowCreate] = useState(false)
     const [electionTitle, setElectionTitle] = useState("")
-    const [yesLabel, setYesLabel] = useState("")
-    const [noLabel, setNoLabel] = useState("")
-    const [deadlineHours, setDeadlineHours] = useState("24")
+    const [optionLabels, setOptionLabels] = useState<string[]>(["Yes", "No"])
+    const [signupHours, setSignupHours] = useState("24")
+    const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text)
         setCopied(label)
         setTimeout(() => setCopied(""), 2000)
+    }
+
+    // Manage option labels
+    const addOption = () => {
+        if (optionLabels.length < 10) {
+            setOptionLabels([...optionLabels, ""])
+        }
+    }
+    const removeOption = (idx: number) => {
+        if (optionLabels.length > 2) {
+            setOptionLabels(optionLabels.filter((_, i) => i !== idx))
+        }
+    }
+    const updateOption = (idx: number, val: string) => {
+        const next = [...optionLabels]
+        next[idx] = val
+        setOptionLabels(next)
     }
 
     // Fetch all elections from factory
@@ -61,32 +80,36 @@ export default function HomePage() {
             for (const addr of addresses) {
                 try {
                     const election = new Contract(addr, SPECTRE_VOTING_ABI, provider)
-                    const [pid, open, vc, admin] = await Promise.all([
+                    const [pid, sOpen, vOpen, vc, admin] = await Promise.all([
                         election.proposalId(),
+                        election.signupOpen(),
                         election.votingOpen(),
                         election.voteCount(),
                         election.admin(),
                     ])
 
-                    // Read title from localStorage metadata
                     let title = `Proposal #${pid.toString()}`
                     try {
                         const meta = JSON.parse(localStorage.getItem(`spectre-election-meta-${addr}`) || "{}")
                         if (meta.title) title = meta.title
                     } catch { /* ignore */ }
 
+                    const phase = sOpen ? "signup" : vOpen ? "voting" : "closed"
+
                     infos.push({
                         address: addr,
                         proposalId: pid.toString(),
-                        votingOpen: open,
+                        signupOpen: sOpen,
+                        votingOpen: vOpen,
                         voteCount: Number(vc),
-                        admin: admin,
+                        admin,
                         title,
+                        phase,
                     })
                 } catch { /* skip broken elections */ }
             }
 
-            setElections(infos.reverse()) // newest first
+            setElections(infos.reverse())
         } catch (err: any) {
             addLog(`Failed to load elections: ${err.message}`)
         } finally {
@@ -101,24 +124,33 @@ export default function HomePage() {
         if (!signer || !electionTitle.trim()) return
         setCreating(true)
         try {
-            // Auto-generate a unique proposalId from timestamp
             const proposalId = Math.floor(Date.now() / 1000)
 
-            // Generate election keypair
+            // Generate election ECIES keypair
             const privKey = secp256k1.utils.randomPrivateKey()
             const pubKey = secp256k1.ProjectivePoint.fromPrivateKey(privKey)
             const pkX = pubKey.x.toString()
             const pkY = pubKey.y.toString()
 
-            // Calculate voting deadline (0 = no deadline)
-            let deadline = 0n
-            if (deadlineHours && Number(deadlineHours) > 0) {
-                deadline = BigInt(Math.floor(Date.now() / 1000) + Number(deadlineHours) * 3600)
+            // Calculate deadlines
+            let signupDeadline = 0n
+            if (signupHours && Number(signupHours) > 0) {
+                signupDeadline = BigInt(Math.floor(Date.now() / 1000) + Number(signupHours) * 3600)
             }
+            let votingDeadline = 0n
+            if (votingHours && Number(votingHours) > 0) {
+                // Voting deadline starts from now (not from signup close)
+                votingDeadline = BigInt(Math.floor(Date.now() / 1000) + Number(signupHours) * 3600 + Number(votingHours) * 3600)
+            }
+
+            const numOptions = optionLabels.length
+
+            // Fill in default labels for empty ones
+            const labels = optionLabels.map((l, i) => l.trim() || `Option ${i}`)
 
             addLog("Creating election via factory...")
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, signer)
-            const tx = await factory.createElection(proposalId, pkX, pkY, deadline)
+            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions)
             addLog(`Tx sent: ${tx.hash.slice(0, 16)}...`)
 
             const receipt = await tx.wait()
@@ -132,31 +164,26 @@ export default function HomePage() {
                     if (parsed?.name === "ElectionDeployed") {
                         electionAddr = parsed.args.election
                     }
-                } catch { /* skip non-matching logs */ }
+                } catch { /* skip */ }
             }
 
             // Store election private key
             const privKeyHex = Buffer.from(privKey).toString("hex")
             localStorage.setItem(`spectre-election-key-${electionAddr}`, privKeyHex)
 
-            // Store election metadata (title + custom labels)
-            const meta = {
-                title: electionTitle.trim(),
-                yesLabel: yesLabel.trim() || "Yes",
-                noLabel: noLabel.trim() || "No",
-            }
+            // Store election metadata
+            const meta = { title: electionTitle.trim(), labels }
             localStorage.setItem(`spectre-election-meta-${electionAddr}`, JSON.stringify(meta))
 
-            addLog(`Election created: "${meta.title}"`)
+            addLog(`Election created: "${meta.title}" (${numOptions} options)`)
 
-            // Copy share link to clipboard
-            const shareUrl = `${window.location.origin}/election/${electionAddr}?t=${encodeURIComponent(meta.title)}&y=${encodeURIComponent(meta.yesLabel)}&n=${encodeURIComponent(meta.noLabel)}`
+            // Copy share link
+            const shareUrl = `${window.location.origin}/election/${electionAddr}?t=${encodeURIComponent(meta.title)}&labels=${encodeURIComponent(labels.join(","))}`
             navigator.clipboard.writeText(shareUrl)
-            addLog(`Share link copied to clipboard!`)
+            addLog("Share link copied to clipboard!")
 
             setElectionTitle("")
-            setYesLabel("")
-            setNoLabel("")
+            setOptionLabels(["Yes", "No"])
             setShowCreate(false)
             await loadElections()
         } catch (err: any) {
@@ -164,21 +191,20 @@ export default function HomePage() {
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, yesLabel, noLabel, deadlineHours, addLog, loadElections])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, addLog, loadElections])
 
-    // Show/hide identity section
     const [showIdentity, setShowIdentity] = useState(false)
 
     return (
         <>
-            {/* Identity — collapsed if already generated */}
+            {/* Identity */}
             <div className="card" style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
                     onClick={() => setShowIdentity(!showIdentity)}
                     role="button"
                 >
                     <h3 style={{ fontSize: "0.95rem", fontWeight: 700 }}>
-                        {identity ? "🔑 Identity Active" : "🔑 Set Up Identity"}
+                        {identity ? "Identity Active" : "Set Up Identity"}
                     </h3>
                     {identity ? (
                         <span style={{ fontSize: "0.7rem", color: "var(--success)", background: "#22c55e18", padding: "4px 10px", borderRadius: 20, cursor: "pointer" }}>
@@ -197,7 +223,7 @@ export default function HomePage() {
                             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                                 <div>
                                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                                        Your Voter ID (share this with the election admin to get registered)
+                                        Your Voter ID
                                     </label>
                                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                                         <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
@@ -227,7 +253,7 @@ export default function HomePage() {
                         ) : (
                             <div>
                                 <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 12 }}>
-                                    Create an anonymous identity to vote in elections. Your identity stays in this browser — nobody can link it to you.
+                                    Create an anonymous identity to vote in elections. Your identity stays in this browser.
                                 </p>
                                 <button className="btn-primary" onClick={createIdentity} style={{ marginBottom: 12 }}>
                                     Create Identity
@@ -245,7 +271,7 @@ export default function HomePage() {
                 )}
             </div>
 
-            {/* Elections */}
+            {/* Elections header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <h3 style={{ fontSize: "1rem", fontWeight: 700 }}>Elections</h3>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -272,37 +298,78 @@ export default function HomePage() {
                             onChange={e => setElectionTitle(e.target.value)}
                             disabled={creating}
                         />
-                        <div style={{ display: "flex", gap: 8 }}>
-                            <input
-                                type="text"
-                                placeholder="Yes label (default: Yes)"
-                                value={yesLabel}
-                                onChange={e => setYesLabel(e.target.value)}
-                                disabled={creating}
-                                style={{ flex: 1 }}
-                            />
-                            <input
-                                type="text"
-                                placeholder="No label (default: No)"
-                                value={noLabel}
-                                onChange={e => setNoLabel(e.target.value)}
-                                disabled={creating}
-                                style={{ flex: 1 }}
-                            />
+
+                        {/* Vote options */}
+                        <div>
+                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
+                                Vote Options ({optionLabels.length})
+                            </label>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                {optionLabels.map((label, i) => (
+                                    <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", width: 20, textAlign: "center" }}>{i}</span>
+                                        <input
+                                            type="text"
+                                            placeholder={`Option ${i} label`}
+                                            value={label}
+                                            onChange={e => updateOption(i, e.target.value)}
+                                            disabled={creating}
+                                            style={{ flex: 1 }}
+                                        />
+                                        {optionLabels.length > 2 && (
+                                            <button
+                                                onClick={() => removeOption(i)}
+                                                disabled={creating}
+                                                style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 6px" }}
+                                            >
+                                                ×
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                            {optionLabels.length < 10 && (
+                                <button
+                                    onClick={addOption}
+                                    disabled={creating}
+                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: "6px 0", marginTop: 4 }}
+                                >
+                                    + Add option
+                                </button>
+                            )}
                         </div>
-                        <input
-                            type="number"
-                            placeholder="Duration in hours (default: 24)"
-                            value={deadlineHours}
-                            onChange={e => setDeadlineHours(e.target.value)}
-                            disabled={creating}
-                        />
+
+                        {/* Deadlines */}
+                        <div style={{ display: "flex", gap: 8 }}>
+                            <div style={{ flex: 1 }}>
+                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                    Signup duration (hours)
+                                </label>
+                                <input
+                                    type="number"
+                                    placeholder="24"
+                                    value={signupHours}
+                                    onChange={e => setSignupHours(e.target.value)}
+                                    disabled={creating}
+                                />
+                            </div>
+                            <div style={{ flex: 1 }}>
+                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                    Voting duration (hours)
+                                </label>
+                                <input
+                                    type="number"
+                                    placeholder="72"
+                                    value={votingHours}
+                                    onChange={e => setVotingHours(e.target.value)}
+                                    disabled={creating}
+                                />
+                            </div>
+                        </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            {deadlineHours && Number(deadlineHours) > 0
-                                ? `Closes in ${deadlineHours}h · Share link auto-copied after deploy`
-                                : "No deadline · Share link auto-copied after deploy"}
+                            Signup: {signupHours}h → Voting: {votingHours}h · Share link auto-copied
                         </p>
                         <button
                             className="btn-primary"
@@ -352,8 +419,8 @@ export default function HomePage() {
                                     <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>
                                         {e.title}
                                     </span>
-                                    <span className={`status-badge ${e.votingOpen ? "status-open" : "status-closed"}`}>
-                                        {e.votingOpen ? "OPEN" : "CLOSED"}
+                                    <span className={`status-badge ${e.phase === "closed" ? "status-closed" : "status-open"}`}>
+                                        {e.phase === "signup" ? "SIGNUP" : e.phase === "voting" ? "VOTING" : "CLOSED"}
                                     </span>
                                 </div>
                                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-muted)" }}>

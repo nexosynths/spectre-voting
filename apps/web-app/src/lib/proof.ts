@@ -19,12 +19,13 @@ export interface SpectreProof {
     nullifierHash: string
     voteCommitment: string
     proposalId: string
+    numOptions: string
 }
 
 /**
  * Generate a SpectreVote ZK proof in the browser.
  *
- * Proves: identity membership + valid vote commitment + correct nullifier
+ * Proves: identity membership + valid vote commitment + correct nullifier + vote in range
  * The proof takes ~10-30s in the browser depending on device.
  */
 export async function generateProofInBrowser(
@@ -32,10 +33,11 @@ export async function generateProofInBrowser(
     group: Group,
     proposalId: bigint,
     vote: bigint,
-    voteRandomness: bigint
+    voteRandomness: bigint,
+    numOptions: bigint
 ): Promise<SpectreProof> {
-    if (vote !== 0n && vote !== 1n) {
-        throw new Error("Vote must be 0 or 1")
+    if (vote < 0n || vote >= numOptions) {
+        throw new Error(`Vote must be between 0 and ${numOptions - 1n}`)
     }
 
     // Dynamic import — snarkjs is heavy and only needed client-side
@@ -44,7 +46,7 @@ export async function generateProofInBrowser(
     // Build Merkle proof from group
     const leafIndex = group.indexOf(identity.commitment)
     if (leafIndex === -1) {
-        throw new Error("Your identity is not registered in this election's voter group")
+        throw new Error("Your identity is not registered in this election's voting group")
     }
     const merkleProof = group.generateMerkleProof(leafIndex)
 
@@ -63,13 +65,14 @@ export async function generateProofInBrowser(
         proposalId: proposalId.toString(),
         vote: vote.toString(),
         voteRandomness: voteRandomness.toString(),
+        numOptions: numOptions.toString(),
     }
 
     // Generate Groth16 proof (snarkjs fetches wasm + zkey via HTTP in browser)
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, WASM_URL, ZKEY_URL)
 
     // Pack proof points for Solidity verifier
-    // Note: pB coordinates are swapped (snarkjs convention → Solidity convention)
+    // publicSignals: [merkleRoot, nullifierHash, voteCommitment, proposalId, numOptions]
     return {
         pA: [proof.pi_a[0], proof.pi_a[1]],
         pB: [
@@ -81,5 +84,6 @@ export async function generateProofInBrowser(
         nullifierHash: publicSignals[1],
         voteCommitment: publicSignals[2],
         proposalId: publicSignals[3],
+        numOptions: publicSignals[4],
     }
 }

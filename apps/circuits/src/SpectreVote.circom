@@ -6,14 +6,14 @@ include "circomlib/circuits/comparators.circom";
 include "circomlib/circuits/bitify.circom";
 include "@zk-kit/circuits/circom/binary-merkle-root.circom";
 
-// SpectreVote — extends Semaphore V4 with vote commitment + binary range check
+// SpectreVote — extends Semaphore V4 with vote commitment + multi-option range check
 //
 // Proves:
 //   1. Identity: secret → BabyJubJub pubkey → Poseidon commitment (Merkle leaf)
 //   2. Membership: identity commitment is in the group Merkle tree
 //   3. Nullifier: Poseidon(proposalId, secret) — deterministic, public in v1
 //   4. Vote commitment: Poseidon(vote, voteRandomness) — binds encrypted vote to proof
-//   5. Vote validity: vote ∈ {0, 1}
+//   5. Vote validity: 0 <= vote < numOptions (supports multi-option elections)
 //
 // v1: nullifier is public (no coercion resistance). On-chain dedup by nullifier.
 // v2: nullifier will be committed (hidden) for coercion resistance.
@@ -24,8 +24,9 @@ template SpectreVote(MAX_DEPTH) {
     signal input merkleProofIndex;                            // leaf position
     signal input merkleProofSiblings[MAX_DEPTH];              // Merkle proof path
     signal input proposalId;                                  // scope — which election/proposal
-    signal input vote;                                        // 0 or 1
+    signal input vote;                                        // 0 to numOptions-1
     signal input voteRandomness;                              // blinding factor for vote commitment
+    signal input numOptions;                                  // total options (e.g. 2 for yes/no, 4 for multi)
 
     // === Public outputs ===
     signal output merkleRoot;                                 // group Merkle root
@@ -75,12 +76,14 @@ template SpectreVote(MAX_DEPTH) {
     voteCommitment <== Poseidon(2)([vote, voteRandomness]);
 
     // --- 5. Vote validity ---
-    // vote must be 0 or 1: vote * (vote - 1) === 0
-    signal voteCheck;
-    voteCheck <== vote * (vote - 1);
-    voteCheck === 0;
+    // vote must be in range [0, numOptions): 0 <= vote < numOptions
+    // LessThan(8) supports up to 2^8 = 256 options
+    component voteRange = LessThan(8);
+    voteRange.in[0] <== vote;
+    voteRange.in[1] <== numOptions;
+    voteRange.out === 1;
 }
 
 // MAX_DEPTH=20 supports groups up to 2^20 = ~1M members
-// proposalId is the only public input (besides the outputs)
-component main {public [proposalId]} = SpectreVote(20);
+// proposalId and numOptions are public inputs (besides the outputs)
+component main {public [proposalId, numOptions]} = SpectreVote(20);

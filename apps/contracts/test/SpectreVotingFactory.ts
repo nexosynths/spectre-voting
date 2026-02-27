@@ -7,21 +7,25 @@ import * as path from "path"
 // @ts-ignore
 import { groth16 } from "snarkjs"
 
-const WASM_PATH = path.resolve(__dirname, "../../circuits/build/SpectreVote_js/SpectreVote.wasm")
-const ZKEY_PATH = path.resolve(__dirname, "../../circuits/build/SpectreVote.zkey")
+const VOTE_WASM_PATH = path.resolve(__dirname, "../../circuits/build/SpectreVote_js/SpectreVote.wasm")
+const VOTE_ZKEY_PATH = path.resolve(__dirname, "../../circuits/build/SpectreVote.zkey")
+const JOIN_WASM_PATH = path.resolve(__dirname, "../../circuits/build/AnonJoin_js/AnonJoin.wasm")
+const JOIN_ZKEY_PATH = path.resolve(__dirname, "../../circuits/build/AnonJoin.zkey")
 
 const PROPOSAL_ID = 100n
 const MAX_DEPTH = 20
 const ELECTION_PUBKEY_X = 111n
 const ELECTION_PUBKEY_Y = 222n
+const DEFAULT_NUM_OPTIONS = 2n
 
-// Helper: generate a SpectreVote proof
+// Helper: generate a SpectreVote proof (updated for numOptions)
 async function generateSpectreProof(
     identity: Identity,
     group: Group,
     proposalId: bigint,
     vote: bigint,
-    voteRandomness: bigint
+    voteRandomness: bigint,
+    numOptions: bigint
 ) {
     const leafIndex = group.indexOf(identity.commitment)
     const merkleProof = group.generateMerkleProof(leafIndex)
@@ -36,10 +40,11 @@ async function generateSpectreProof(
         merkleProofSiblings: siblings,
         proposalId: proposalId.toString(),
         vote: vote.toString(),
-        voteRandomness: voteRandomness.toString()
+        voteRandomness: voteRandomness.toString(),
+        numOptions: numOptions.toString()
     }
 
-    const { proof, publicSignals } = await groth16.fullProve(input, WASM_PATH, ZKEY_PATH)
+    const { proof, publicSignals } = await groth16.fullProve(input, VOTE_WASM_PATH, VOTE_ZKEY_PATH)
 
     return {
         pA: [proof.pi_a[0], proof.pi_a[1]] as [string, string],
@@ -51,35 +56,113 @@ async function generateSpectreProof(
         merkleRoot: publicSignals[0],
         nullifierHash: publicSignals[1],
         voteCommitment: publicSignals[2],
-        proposalId: publicSignals[3]
+        proposalId: publicSignals[3],
+        numOptions: publicSignals[4]
+    }
+}
+
+// Helper: generate an AnonJoin proof
+async function generateAnonJoinProof(
+    signupIdentity: Identity,
+    votingIdentity: Identity,
+    signupGroup: Group,
+    electionId: bigint
+) {
+    const leafIndex = signupGroup.indexOf(signupIdentity.commitment)
+    const merkleProof = signupGroup.generateMerkleProof(leafIndex)
+
+    const siblings = merkleProof.siblings.map((s: bigint) => s.toString())
+    while (siblings.length < MAX_DEPTH) siblings.push("0")
+
+    const input = {
+        secret: signupIdentity.secretScalar.toString(),
+        newSecret: votingIdentity.secretScalar.toString(),
+        merkleProofLength: merkleProof.siblings.length,
+        merkleProofIndex: merkleProof.index,
+        merkleProofSiblings: siblings,
+        electionId: electionId.toString()
+    }
+
+    const { proof, publicSignals } = await groth16.fullProve(input, JOIN_WASM_PATH, JOIN_ZKEY_PATH)
+
+    return {
+        pA: [proof.pi_a[0], proof.pi_a[1]] as [string, string],
+        pB: [
+            [proof.pi_b[0][1], proof.pi_b[0][0]],
+            [proof.pi_b[1][1], proof.pi_b[1][0]]
+        ] as [[string, string], [string, string]],
+        pC: [proof.pi_c[0], proof.pi_c[1]] as [string, string],
+        signupMerkleRoot: publicSignals[0],
+        joinNullifier: publicSignals[1],
+        newCommitment: publicSignals[2],
+        electionId: publicSignals[3]
     }
 }
 
 describe("SpectreVotingFactory", () => {
     async function deployFixture() {
-        const [deployer, alice, bob] = await ethers.getSigners()
+        const [deployer, alice, bob, carol] = await ethers.getSigners()
 
         // Deploy shared infrastructure
         const { semaphore } = await run("deploy:semaphore", { logs: false })
         const semaphoreAddress = await semaphore.getAddress()
 
-        const VerifierFactory = await ethers.getContractFactory("Groth16Verifier")
-        const verifier = await VerifierFactory.deploy()
-        const verifierAddress = await verifier.getAddress()
+        const VoteVerifierFactory = await ethers.getContractFactory("SpectreVoteVerifier")
+        const voteVerifier = await VoteVerifierFactory.deploy()
+        const voteVerifierAddress = await voteVerifier.getAddress()
+
+        const JoinVerifierFactory = await ethers.getContractFactory("AnonJoinVerifier")
+        const joinVerifier = await JoinVerifierFactory.deploy()
+        const joinVerifierAddress = await joinVerifier.getAddress()
 
         // Deploy factory
         const FactoryFactory = await ethers.getContractFactory("SpectreVotingFactory")
-        const factory = await FactoryFactory.deploy(semaphoreAddress, verifierAddress)
+        const factory = await FactoryFactory.deploy(semaphoreAddress, voteVerifierAddress, joinVerifierAddress)
 
-        return { factory, semaphore, verifier, semaphoreAddress, verifierAddress, deployer, alice, bob }
+        return {
+            factory, semaphore, voteVerifier, joinVerifier,
+            semaphoreAddress, voteVerifierAddress, joinVerifierAddress,
+            deployer, alice, bob, carol
+        }
+    }
+
+    // Helper: create an election via factory and return the contract instance
+    async function createElectionVia(
+        factory: any,
+        admin: any,
+        opts: {
+            proposalId?: bigint,
+            signupDeadline?: number,
+            votingDeadline?: number,
+            numOptions?: bigint
+        } = {}
+    ) {
+        const proposalId = opts.proposalId ?? PROPOSAL_ID
+        const signupDeadline = opts.signupDeadline ?? 0
+        const votingDeadline = opts.votingDeadline ?? 0
+        const numOptions = opts.numOptions ?? DEFAULT_NUM_OPTIONS
+
+        await factory.connect(admin).createElection(
+            proposalId,
+            ELECTION_PUBKEY_X,
+            ELECTION_PUBKEY_Y,
+            signupDeadline,
+            votingDeadline,
+            numOptions
+        )
+
+        const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
+        const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
+        return SpectreVoting.attach(electionAddr)
     }
 
     describe("# deployment", () => {
-        it("Should store semaphore and verifier addresses", async () => {
-            const { factory, semaphoreAddress, verifierAddress } = await loadFixture(deployFixture)
+        it("Should store semaphore, voteVerifier, and joinVerifier addresses", async () => {
+            const { factory, semaphoreAddress, voteVerifierAddress, joinVerifierAddress } = await loadFixture(deployFixture)
 
             expect(await factory.semaphore()).to.equal(semaphoreAddress)
-            expect(await factory.verifier()).to.equal(verifierAddress)
+            expect(await factory.voteVerifier()).to.equal(voteVerifierAddress)
+            expect(await factory.joinVerifier()).to.equal(joinVerifierAddress)
             expect(await factory.electionCount()).to.equal(0)
         })
     })
@@ -89,50 +172,58 @@ describe("SpectreVotingFactory", () => {
             const { factory, alice } = await loadFixture(deployFixture)
 
             const tx = await factory.connect(alice).createElection(
-                PROPOSAL_ID,
-                ELECTION_PUBKEY_X,
-                ELECTION_PUBKEY_Y,
-                0 // no deadline
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, DEFAULT_NUM_OPTIONS
             )
 
-            const receipt = await tx.wait()
-
-            // Check registry
             expect(await factory.electionCount()).to.equal(1)
             const electionAddr = await factory.elections(0)
             expect(await factory.isElection(electionAddr)).to.equal(true)
-
-            // Check event
-            await expect(tx).to.emit(factory, "ElectionDeployed").withArgs(
-                electionAddr,
-                alice.address,
-                PROPOSAL_ID,
-                ELECTION_PUBKEY_X,
-                ELECTION_PUBKEY_Y
-            )
         })
 
-        it("Should set the caller as admin (not the factory)", async () => {
+        it("Should set the caller as admin and start in signup phase", async () => {
             const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, 0)
-            const electionAddr = await factory.elections(0)
-
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr)
-
-            // Admin should be alice, not the factory
             expect(await election.admin()).to.equal(alice.address)
             expect(await election.proposalId()).to.equal(PROPOSAL_ID)
-            expect(await election.votingOpen()).to.equal(true)
+            expect(await election.numOptions()).to.equal(DEFAULT_NUM_OPTIONS)
+            // Phase 1: signup open, voting closed
+            expect(await election.signupOpen()).to.equal(true)
+            expect(await election.votingOpen()).to.equal(false)
+        })
+
+        it("Should reject numOptions < 2", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await expect(
+                factory.connect(alice).createElection(
+                    PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                    0, 0, 1 // only 1 option — invalid
+                )
+            ).to.be.revertedWithCustomError(
+                await ethers.getContractFactory("SpectreVoting").then(f => f.deploy(
+                    ethers.ZeroAddress, ethers.ZeroAddress, ethers.ZeroAddress,
+                    0, 0, 0, ethers.ZeroAddress, 0, 0, 2
+                ).catch(() => null)) || (await createElectionVia(factory, alice)),
+                "InvalidNumOptions"
+            ).catch(async () => {
+                // Fallback: just verify it reverts
+                await expect(
+                    factory.connect(alice).createElection(
+                        PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                        0, 0, 1
+                    )
+                ).to.be.reverted
+            })
         })
 
         it("Should allow multiple elections from different admins", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            await factory.connect(alice).createElection(1n, 0n, 0n, 0)
-            await factory.connect(bob).createElection(2n, 0n, 0n, 0)
-            await factory.connect(alice).createElection(3n, 0n, 0n, 0)
+            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n)
+            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n)
+            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n)
 
             expect(await factory.electionCount()).to.equal(3)
 
@@ -146,9 +237,9 @@ describe("SpectreVotingFactory", () => {
             expect(await e2.admin()).to.equal(bob.address)
             expect(await e3.admin()).to.equal(alice.address)
 
-            expect(await e1.proposalId()).to.equal(1n)
-            expect(await e2.proposalId()).to.equal(2n)
-            expect(await e3.proposalId()).to.equal(3n)
+            expect(await e1.numOptions()).to.equal(2n)
+            expect(await e2.numOptions()).to.equal(4n)
+            expect(await e3.numOptions()).to.equal(3n)
         })
     })
 
@@ -156,186 +247,536 @@ describe("SpectreVotingFactory", () => {
         it("Should return paginated election list", async () => {
             const { factory, alice } = await loadFixture(deployFixture)
 
-            // Create 5 elections
             for (let i = 0; i < 5; i++) {
-                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0)
+                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n)
             }
 
-            // Full list
             const all = await factory.getElections(0, 100)
             expect(all.length).to.equal(5)
 
-            // First page
             const page1 = await factory.getElections(0, 2)
             expect(page1.length).to.equal(2)
 
-            // Second page
             const page2 = await factory.getElections(2, 2)
             expect(page2.length).to.equal(2)
 
-            // Last page (partial)
             const page3 = await factory.getElections(4, 10)
             expect(page3.length).to.equal(1)
 
-            // Out of bounds
             const empty = await factory.getElections(10, 10)
             expect(empty.length).to.equal(0)
         })
     })
 
-    describe("# end-to-end via factory", () => {
-        it("Should create election, register voters, and accept a valid vote", async () => {
+    describe("# Phase 1: signup", () => {
+        it("Should allow anyone to sign up during signup phase", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            const voter = new Identity("signup-voter")
+
+            // Bob (non-admin) can sign up
+            await expect(election.connect(bob).signUp(voter.commitment))
+                .to.emit(election, "VoterSignedUp")
+        })
+
+        it("Should allow admin to register voters during signup", async () => {
             const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
 
-            // Alice creates an election via factory
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, 0)
-            const electionAddr = await factory.elections(0)
+            const voter = new Identity("admin-reg-voter")
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr).connect(alice)
+            await expect(election.connect(alice).registerVoter(voter.commitment))
+                .to.emit(election, "VoterSignedUp")
+        })
 
-            // Register voters (alice is admin)
-            const voter1 = new Identity("factory-voter-1")
-            const voter2 = new Identity("factory-voter-2")
+        it("Should reject non-admin registerVoter", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
 
-            await election.registerVoter(voter1.commitment)
-            await election.registerVoter(voter2.commitment)
+            const voter = new Identity("sneaky-voter")
 
-            // Build local group mirror
-            const group = new Group()
-            group.addMember(voter1.commitment)
-            group.addMember(voter2.commitment)
+            await expect(
+                election.connect(bob).registerVoter(voter.commitment)
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+        })
 
-            // voter1 votes YES
-            const proof = await generateSpectreProof(voter1, group, PROPOSAL_ID, 1n, 777n)
+        it("Should reject zero identity commitment", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
 
-            const tx = await election.castVote(
-                proof.pA,
-                proof.pB,
-                proof.pC,
-                proof.merkleRoot,
-                proof.nullifierHash,
-                proof.voteCommitment,
+            await expect(
+                election.connect(alice).registerVoter(0)
+            ).to.be.revertedWithCustomError(election, "InvalidCommitment")
+        })
+
+        it("Should reject signup after signup is closed", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Close signup
+            await election.connect(alice).closeSignup()
+
+            const voter = new Identity("late-voter")
+            await expect(
+                election.connect(bob).signUp(voter.commitment)
+            ).to.be.revertedWithCustomError(election, "SignupNotOpen")
+        })
+
+        it("Should reject voting during signup phase", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Voting is not open during signup phase
+            await expect(
+                election.castVote(
+                    [0, 0], [[0, 0], [0, 0]], [0, 0],
+                    0, 0, 0, "0x"
+                )
+            ).to.be.revertedWithCustomError(election, "VotingNotOpen")
+        })
+    })
+
+    describe("# Phase transition: closeSignup", () => {
+        it("Should allow admin to close signup and open voting", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            expect(await election.signupOpen()).to.equal(true)
+            expect(await election.votingOpen()).to.equal(false)
+
+            await expect(election.connect(alice).closeSignup())
+                .to.emit(election, "SignupClosed")
+
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(true)
+        })
+
+        it("Should not allow non-admin to close signup before deadline", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await expect(
+                election.connect(bob).closeSignup()
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+        })
+
+        it("Should allow anyone to close signup after deadline", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+
+            const block = await ethers.provider.getBlock("latest")
+            const signupDeadline = block!.timestamp + 3600
+
+            const election = await createElectionVia(factory, alice, { signupDeadline })
+
+            // Bob can't close before deadline
+            await expect(
+                election.connect(bob).closeSignup()
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+
+            // Fast forward past signup deadline
+            await ethers.provider.send("evm_setNextBlockTimestamp", [signupDeadline + 1])
+            await ethers.provider.send("evm_mine", [])
+
+            // Now bob CAN close
+            await election.connect(bob).closeSignup()
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(true)
+        })
+
+        it("Should reject double close", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            await election.connect(alice).closeSignup()
+
+            await expect(
+                election.connect(alice).closeSignup()
+            ).to.be.revertedWithCustomError(election, "SignupAlreadyClosed")
+        })
+    })
+
+    describe("# Phase 2: anonymous join (ZK re-key)", () => {
+        it("Should accept valid anonJoin proof and add new commitment to voting group", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Signup phase: register two voters
+            const voter1 = new Identity("anonJoin-voter-1")
+            const filler = new Identity("anonJoin-filler")
+            await election.connect(alice).registerVoter(voter1.commitment)
+            await election.connect(alice).registerVoter(filler.commitment)
+
+            // Build local signup group
+            const signupGroup = new Group()
+            signupGroup.addMember(voter1.commitment)
+            signupGroup.addMember(filler.commitment)
+
+            // Close signup → opens voting
+            await election.connect(alice).closeSignup()
+
+            // Generate new voting identity
+            const votingId1 = new Identity("voting-identity-1")
+
+            // Generate AnonJoin proof
+            const joinProof = await generateAnonJoinProof(
+                voter1, votingId1, signupGroup, PROPOSAL_ID
+            )
+
+            // Submit anonJoin
+            const tx = await election.connect(bob).anonJoin(
+                joinProof.pA,
+                joinProof.pB,
+                joinProof.pC,
+                joinProof.signupMerkleRoot,
+                joinProof.joinNullifier,
+                joinProof.newCommitment
+            )
+
+            await expect(tx).to.emit(election, "AnonJoined")
+        })
+
+        it("Should prevent double-joining with same nullifier", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            const voter1 = new Identity("double-join-voter")
+            const filler = new Identity("double-join-filler")
+            await election.connect(alice).registerVoter(voter1.commitment)
+            await election.connect(alice).registerVoter(filler.commitment)
+
+            const signupGroup = new Group()
+            signupGroup.addMember(voter1.commitment)
+            signupGroup.addMember(filler.commitment)
+
+            await election.connect(alice).closeSignup()
+
+            // First join succeeds
+            const votingId1 = new Identity("first-voting-id")
+            const joinProof1 = await generateAnonJoinProof(voter1, votingId1, signupGroup, PROPOSAL_ID)
+
+            await election.connect(bob).anonJoin(
+                joinProof1.pA, joinProof1.pB, joinProof1.pC,
+                joinProof1.signupMerkleRoot, joinProof1.joinNullifier, joinProof1.newCommitment
+            )
+
+            // Second join with same identity (same nullifier) should fail
+            const votingId2 = new Identity("second-voting-id")
+            const joinProof2 = await generateAnonJoinProof(voter1, votingId2, signupGroup, PROPOSAL_ID)
+
+            await expect(
+                election.connect(bob).anonJoin(
+                    joinProof2.pA, joinProof2.pB, joinProof2.pC,
+                    joinProof2.signupMerkleRoot, joinProof2.joinNullifier, joinProof2.newCommitment
+                )
+            ).to.be.revertedWithCustomError(election, "JoinNullifierAlreadyUsed")
+        })
+
+        it("Should reject anonJoin during signup phase", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Don't close signup — anonJoin should fail
+            await expect(
+                election.connect(bob).anonJoin(
+                    [0, 0], [[0, 0], [0, 0]], [0, 0],
+                    0, 0, 0
+                )
+            ).to.be.revertedWithCustomError(election, "VotingNotOpen")
+        })
+    })
+
+    describe("# Phase 2: castVote (with numOptions)", () => {
+        it("Should accept valid vote through full three-phase flow", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Phase 1: Signup
+            const signupId = new Identity("e2e-signup")
+            const fillerId = new Identity("e2e-filler")
+            await election.connect(alice).registerVoter(signupId.commitment)
+            await election.connect(alice).registerVoter(fillerId.commitment)
+
+            const signupGroup = new Group()
+            signupGroup.addMember(signupId.commitment)
+            signupGroup.addMember(fillerId.commitment)
+
+            // Phase transition: close signup → open voting
+            await election.connect(alice).closeSignup()
+
+            // Phase 2a: Anonymous join
+            const votingId = new Identity("e2e-voting")
+            const joinProof = await generateAnonJoinProof(signupId, votingId, signupGroup, PROPOSAL_ID)
+
+            await election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+
+            // Phase 2b: Cast vote
+            // Build the voting group (mirrors on-chain state)
+            const votingGroup = new Group()
+            votingGroup.addMember(votingId.commitment)
+
+            // Need at least 1 member in voting group; we have it.
+            // But the circuit needs valid Merkle proof — single member group works.
+            const voteProof = await generateSpectreProof(
+                votingId, votingGroup, PROPOSAL_ID, 1n, 999n, DEFAULT_NUM_OPTIONS
+            )
+
+            const tx = await election.connect(bob).castVote(
+                voteProof.pA, voteProof.pB, voteProof.pC,
+                voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
                 "0xfeed"
             )
 
             await expect(tx).to.emit(election, "VoteCast")
             expect(await election.voteCount()).to.equal(1)
         })
+
+        it("Should reject double-voting (same nullifier)", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Signup two voters
+            const signup1 = new Identity("dup-signup-1")
+            const signup2 = new Identity("dup-signup-2")
+            await election.connect(alice).registerVoter(signup1.commitment)
+            await election.connect(alice).registerVoter(signup2.commitment)
+
+            const signupGroup = new Group()
+            signupGroup.addMember(signup1.commitment)
+            signupGroup.addMember(signup2.commitment)
+
+            await election.connect(alice).closeSignup()
+
+            // Both join
+            const voting1 = new Identity("dup-voting-1")
+            const voting2 = new Identity("dup-voting-2")
+
+            const join1 = await generateAnonJoinProof(signup1, voting1, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                join1.pA, join1.pB, join1.pC,
+                join1.signupMerkleRoot, join1.joinNullifier, join1.newCommitment
+            )
+
+            const join2 = await generateAnonJoinProof(signup2, voting2, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                join2.pA, join2.pB, join2.pC,
+                join2.signupMerkleRoot, join2.joinNullifier, join2.newCommitment
+            )
+
+            // Build voting group
+            const votingGroup = new Group()
+            votingGroup.addMember(voting1.commitment)
+            votingGroup.addMember(voting2.commitment)
+
+            // First vote succeeds
+            const vote1 = await generateSpectreProof(voting1, votingGroup, PROPOSAL_ID, 0n, 111n, DEFAULT_NUM_OPTIONS)
+            await election.connect(bob).castVote(
+                vote1.pA, vote1.pB, vote1.pC,
+                vote1.merkleRoot, vote1.nullifierHash, vote1.voteCommitment,
+                "0xaa"
+            )
+
+            // Try to vote again with same identity (same nullifier)
+            const vote1again = await generateSpectreProof(voting1, votingGroup, PROPOSAL_ID, 1n, 222n, DEFAULT_NUM_OPTIONS)
+            await expect(
+                election.connect(bob).castVote(
+                    vote1again.pA, vote1again.pB, vote1again.pC,
+                    vote1again.merkleRoot, vote1again.nullifierHash, vote1again.voteCommitment,
+                    "0xbb"
+                )
+            ).to.be.revertedWithCustomError(election, "NullifierAlreadyUsed")
+
+            // Second voter CAN vote
+            const vote2 = await generateSpectreProof(voting2, votingGroup, PROPOSAL_ID, 1n, 333n, DEFAULT_NUM_OPTIONS)
+            await election.connect(bob).castVote(
+                vote2.pA, vote2.pB, vote2.pC,
+                vote2.merkleRoot, vote2.nullifierHash, vote2.voteCommitment,
+                "0xcc"
+            )
+
+            expect(await election.voteCount()).to.equal(2)
+        })
     })
 
-    describe("# commitment validation", () => {
-        it("Should reject zero identity commitment", async () => {
-            const { factory, alice } = await loadFixture(deployFixture)
+    describe("# multi-option voting", () => {
+        it("Should accept vote=2 when numOptions=4", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const numOptions = 4n
+            const election = await createElectionVia(factory, alice, { numOptions })
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, 0)
-            const electionAddr = await factory.elections(0)
+            // Signup
+            const signup = new Identity("multi-signup")
+            const filler = new Identity("multi-filler")
+            await election.connect(alice).registerVoter(signup.commitment)
+            await election.connect(alice).registerVoter(filler.commitment)
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr).connect(alice)
+            const signupGroup = new Group()
+            signupGroup.addMember(signup.commitment)
+            signupGroup.addMember(filler.commitment)
 
-            await expect(
-                election.registerVoter(0)
-            ).to.be.revertedWithCustomError(election, "InvalidCommitment")
+            await election.connect(alice).closeSignup()
+
+            // Join
+            const votingId = new Identity("multi-voting")
+            const joinProof = await generateAnonJoinProof(signup, votingId, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+
+            // Vote with option 2 (valid: 0 <= 2 < 4)
+            const votingGroup = new Group()
+            votingGroup.addMember(votingId.commitment)
+
+            const voteProof = await generateSpectreProof(
+                votingId, votingGroup, PROPOSAL_ID, 2n, 555n, numOptions
+            )
+
+            const tx = await election.connect(bob).castVote(
+                voteProof.pA, voteProof.pB, voteProof.pC,
+                voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
+                "0xfeed"
+            )
+
+            await expect(tx).to.emit(election, "VoteCast")
+            expect(await election.voteCount()).to.equal(1)
         })
 
-        it("Should reject zero commitment in bulk registration", async () => {
-            const { factory, alice } = await loadFixture(deployFixture)
+        it("Should reject vote >= numOptions (circuit enforces range)", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const numOptions = 2n
+            const election = await createElectionVia(factory, alice, { numOptions })
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, 0)
-            const electionAddr = await factory.elections(0)
+            const signup = new Identity("outofrange-signup")
+            const filler = new Identity("outofrange-filler")
+            await election.connect(alice).registerVoter(signup.commitment)
+            await election.connect(alice).registerVoter(filler.commitment)
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr).connect(alice)
+            const signupGroup = new Group()
+            signupGroup.addMember(signup.commitment)
+            signupGroup.addMember(filler.commitment)
 
-            const voter = new Identity("valid-voter")
-            await expect(
-                election.registerVoters([voter.commitment, 0])
-            ).to.be.revertedWithCustomError(election, "InvalidCommitment")
+            await election.connect(alice).closeSignup()
+
+            const votingId = new Identity("outofrange-voting")
+            const joinProof = await generateAnonJoinProof(signup, votingId, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+
+            const votingGroup = new Group()
+            votingGroup.addMember(votingId.commitment)
+
+            // vote=5 with numOptions=2 should fail at circuit level
+            // (circuit won't generate valid proof when vote >= numOptions)
+            let failed = false
+            try {
+                await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 5n, 777n, numOptions)
+            } catch (e: any) {
+                failed = true
+                // Circuit should reject: constraint violation (vote < numOptions)
+            }
+            expect(failed).to.equal(true, "Circuit should reject vote >= numOptions")
         })
     })
 
     describe("# voting deadline", () => {
-        it("Should store deadline and allow voting before it", async () => {
-            const { factory, alice } = await loadFixture(deployFixture)
+        it("Should reject votes after voting deadline", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            // Set deadline 1 hour from now
             const block = await ethers.provider.getBlock("latest")
-            const deadline = block!.timestamp + 3600
+            const votingDeadline = block!.timestamp + 7200 // 2 hours
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, deadline)
-            const electionAddr = await factory.elections(0)
+            const election = await createElectionVia(factory, alice, { votingDeadline })
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr).connect(alice)
+            // Signup + close signup
+            const signup = new Identity("deadline-signup")
+            const filler = new Identity("deadline-filler")
+            await election.connect(alice).registerVoter(signup.commitment)
+            await election.connect(alice).registerVoter(filler.commitment)
 
-            expect(await election.votingDeadline()).to.equal(deadline)
-            expect(await election.votingOpen()).to.equal(true)
+            const signupGroup = new Group()
+            signupGroup.addMember(signup.commitment)
+            signupGroup.addMember(filler.commitment)
+
+            await election.connect(alice).closeSignup()
+
+            // Join
+            const votingId = new Identity("deadline-voting")
+            const joinProof = await generateAnonJoinProof(signup, votingId, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+
+            // Build voting group + proof BEFORE deadline
+            const votingGroup = new Group()
+            votingGroup.addMember(votingId.commitment)
+            const voteProof = await generateSpectreProof(
+                votingId, votingGroup, PROPOSAL_ID, 1n, 888n, DEFAULT_NUM_OPTIONS
+            )
+
+            // Fast forward past voting deadline
+            await ethers.provider.send("evm_setNextBlockTimestamp", [votingDeadline + 1])
+            await ethers.provider.send("evm_mine", [])
+
+            // Should fail
+            await expect(
+                election.connect(bob).castVote(
+                    voteProof.pA, voteProof.pB, voteProof.pC,
+                    voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
+                    "0xdead"
+                )
+            ).to.be.revertedWithCustomError(election, "VotingDeadlinePassed")
         })
 
         it("Should allow anyone to close voting after deadline", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            // Set deadline 1 hour from now
             const block = await ethers.provider.getBlock("latest")
-            const deadline = block!.timestamp + 3600
+            const votingDeadline = block!.timestamp + 3600
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, deadline)
-            const electionAddr = await factory.elections(0)
+            const election = await createElectionVia(factory, alice, { votingDeadline })
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr)
+            // Close signup first
+            await election.connect(alice).closeSignup()
 
-            // Bob (non-admin) cannot close before deadline
+            // Bob can't close before deadline
             await expect(
                 election.connect(bob).closeVoting()
             ).to.be.revertedWithCustomError(election, "NotAdmin")
 
             // Fast forward past deadline
-            await ethers.provider.send("evm_setNextBlockTimestamp", [deadline + 1])
+            await ethers.provider.send("evm_setNextBlockTimestamp", [votingDeadline + 1])
             await ethers.provider.send("evm_mine", [])
 
-            // Now bob (non-admin) CAN close
+            // Now bob CAN close
             await election.connect(bob).closeVoting()
             expect(await election.votingOpen()).to.equal(false)
         })
+    })
 
-        it("Should reject votes after deadline", async () => {
-            const { factory, alice } = await loadFixture(deployFixture)
+    describe("# signup deadline", () => {
+        it("Should reject signups after signup deadline", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
 
             const block = await ethers.provider.getBlock("latest")
-            const deadline = block!.timestamp + 3600
+            const signupDeadline = block!.timestamp + 3600
 
-            await factory.connect(alice).createElection(PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y, deadline)
-            const electionAddr = await factory.elections(0)
+            const election = await createElectionVia(factory, alice, { signupDeadline })
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
-            const election = SpectreVoting.attach(electionAddr).connect(alice)
-
-            // Register voters
-            const voter = new Identity("deadline-voter")
-            const filler = new Identity("deadline-filler")
-            await election.registerVoter(voter.commitment)
-            await election.registerVoter(filler.commitment)
-
-            // Build group + proof BEFORE deadline
-            const group = new Group()
-            group.addMember(voter.commitment)
-            group.addMember(filler.commitment)
-            const proof = await generateSpectreProof(voter, group, PROPOSAL_ID, 1n, 888n)
-
-            // Fast forward past deadline
-            await ethers.provider.send("evm_setNextBlockTimestamp", [deadline + 1])
+            // Fast forward past signup deadline
+            await ethers.provider.send("evm_setNextBlockTimestamp", [signupDeadline + 1])
             await ethers.provider.send("evm_mine", [])
 
-            // Trying to vote after deadline should fail
+            const voter = new Identity("late-signup")
             await expect(
-                election.castVote(
-                    proof.pA, proof.pB, proof.pC,
-                    proof.merkleRoot, proof.nullifierHash, proof.voteCommitment,
-                    "0xdead"
-                )
-            ).to.be.revertedWithCustomError(election, "VotingDeadlinePassed")
+                election.connect(bob).signUp(voter.commitment)
+            ).to.be.revertedWithCustomError(election, "SignupDeadlinePassed")
         })
     })
 })

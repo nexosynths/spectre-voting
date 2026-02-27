@@ -1,14 +1,15 @@
 import { ethers } from "hardhat"
 
 /**
- * Deploy SpectreVotingFactory to Sepolia.
+ * Deploy SpectreVoting v3 infrastructure to Sepolia.
  *
- * Re-uses the existing shared infrastructure:
- *   - Semaphore:        0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D
- *   - Groth16Verifier:  0xC1d7A22595b2661C4989BA268e4583441Cb31BB4
+ * Deploys:
+ *   1. SpectreVoteVerifier (new — 5 public signals with numOptions)
+ *   2. AnonJoinVerifier (new — anonymous join ZK proof verifier)
+ *   3. SpectreVotingFactory (new — two verifiers, signup deadline, numOptions)
  *
- * The factory only needs these two addresses — it deploys new SpectreVoting
- * instances on demand via createElection().
+ * Re-uses existing:
+ *   - Semaphore: 0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D
  */
 async function main() {
     const [deployer] = await ethers.getSigners()
@@ -19,25 +20,45 @@ async function main() {
 
     // Existing shared infrastructure on Sepolia
     const SEMAPHORE = "0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D"
-    const VERIFIER = "0xC1d7A22595b2661C4989BA268e4583441Cb31BB4"
 
+    // 1. Deploy SpectreVoteVerifier
+    console.log("Deploying SpectreVoteVerifier...")
+    const VoteVerifierFactory = await ethers.getContractFactory("SpectreVoteVerifier")
+    const voteVerifier = await VoteVerifierFactory.deploy()
+    await voteVerifier.waitForDeployment()
+    const voteVerifierAddr = await voteVerifier.getAddress()
+    console.log("  SpectreVoteVerifier:", voteVerifierAddr)
+
+    // 2. Deploy AnonJoinVerifier
+    console.log("Deploying AnonJoinVerifier...")
+    const JoinVerifierFactory = await ethers.getContractFactory("AnonJoinVerifier")
+    const joinVerifier = await JoinVerifierFactory.deploy()
+    await joinVerifier.waitForDeployment()
+    const joinVerifierAddr = await joinVerifier.getAddress()
+    console.log("  AnonJoinVerifier:", joinVerifierAddr)
+
+    // 3. Deploy SpectreVotingFactory
     console.log("Deploying SpectreVotingFactory...")
     console.log("  Semaphore:", SEMAPHORE)
-    console.log("  Verifier: ", VERIFIER)
+    console.log("  VoteVerifier:", voteVerifierAddr)
+    console.log("  JoinVerifier:", joinVerifierAddr)
 
     const FactoryFactory = await ethers.getContractFactory("SpectreVotingFactory")
-    const factory = await FactoryFactory.deploy(SEMAPHORE, VERIFIER)
+    const factory = await FactoryFactory.deploy(SEMAPHORE, voteVerifierAddr, joinVerifierAddr)
     await factory.waitForDeployment()
-
     const factoryAddr = await factory.getAddress()
 
     console.log("\n=== Deployment Complete ===")
-    console.log("SpectreVotingFactory:", factoryAddr)
+    console.log("Semaphore (existing): ", SEMAPHORE)
+    console.log("SpectreVoteVerifier:  ", voteVerifierAddr)
+    console.log("AnonJoinVerifier:     ", joinVerifierAddr)
+    console.log("SpectreVotingFactory: ", factoryAddr)
     console.log("\nView on Etherscan:")
     console.log(`  https://sepolia.etherscan.io/address/${factoryAddr}`)
-    console.log("\nAnyone can now create elections via:")
-    console.log("  factory.createElection(proposalId, pubKeyX, pubKeyY, votingDeadline)")
-    console.log("  (votingDeadline = unix timestamp, 0 = no deadline / admin-only close)")
+    console.log("\nUpdate apps/web-app/src/lib/contracts.ts with:")
+    console.log(`  FACTORY: "${factoryAddr}",`)
+    console.log(`  VOTE_VERIFIER: "${voteVerifierAddr}",`)
+    console.log(`  JOIN_VERIFIER: "${joinVerifierAddr}",`)
 }
 
 main().catch((error) => {
