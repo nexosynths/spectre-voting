@@ -133,9 +133,10 @@ spectre-voting/
 - [x] Threshold tally UI — "Decrypt Your Share" (committee member decrypts their share) + "Collect Shares & Tally" (coordinator collects t shares)
 - [x] SDK multi-option tally — `TallyResult.optionCounts[]` replaces `votesFor/votesAgainst`, `computeTally()` takes `numOptions` param
 - [x] SDK prove/voter updated for v3 circuit — `numOptions` passed as circuit input (27 inputs total)
-- [x] 29 passing contract tests, 28 passing SDK tests
-- [x] Human-readable error messages — `friendlyError()` decodes 15 contract custom errors into user-friendly strings
+- [x] 34 passing contract tests, 28 passing SDK tests
+- [x] Human-readable error messages — `friendlyError()` decodes 18 contract custom errors into user-friendly strings
 - [x] Mobile responsive polish — viewport meta, 600px media query (44px touch targets, iOS zoom prevention, flex-wrap on input rows, readable hex font sizes)
+- [x] On-chain tally result commitment — `commitTallyResult()` stores raw results + Poseidon hash chain commitment; immutable, phase-guarded, admin-only
 
 ### Done (v3 — ZK Re-Key + Multi-Option)
 - [x] AnonJoin ZK circuit — proves signup group membership, outputs delinked commitment + join nullifier
@@ -174,7 +175,6 @@ spectre-voting/
 ### Next Up
 - [ ] **Relayer service** — Accept signed proofs from voters, submit on-chain transactions from a funded wallet. Eliminates wallet/gas requirement for voters. Biggest UX unlock for non-crypto users.
 - [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms.
-- [ ] **On-chain result commitment** — Publish Poseidon root of tally for auditability.
 - [ ] **Mainnet deployment**
 
 ### Future — Enterprise Abstraction (Gas-Free Voter Experience)
