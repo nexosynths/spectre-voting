@@ -6,12 +6,30 @@ import { Contract, JsonRpcProvider } from "ethers"
 import { Group } from "@semaphore-protocol/core"
 import { randomBytes } from "@noble/ciphers/webcrypto"
 import { generateProofInBrowser } from "@/lib/proof"
-import { eciesEncrypt, encodeVotePayload, compressPublicKey } from "@/lib/ecies"
+import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
 import { CONTRACTS, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
 
-type Tab = "vote" | "admin"
+type Tab = "vote" | "admin" | "results"
 type VoteStep = "idle" | "fetching-group" | "generating-proof" | "encrypting" | "submitting" | "done" | "error"
+type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
+
+interface DecryptedVote {
+    nullifierHash: string
+    vote: bigint
+    voteRandomness: bigint
+    commitmentValid: boolean
+}
+
+interface TallyResult {
+    votesFor: number
+    votesAgainst: number
+    totalValid: number
+    totalInvalid: number
+    duplicatesRemoved: number
+    decryptedVotes: DecryptedVote[]
+}
 
 interface ElectionState {
     proposalId: string
@@ -44,6 +62,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [bulkCommitments, setBulkCommitments] = useState("")
     const [adminLoading, setAdminLoading] = useState(false)
     const [adminMsg, setAdminMsg] = useState("")
+
+    // Tally state
+    const [tallyStep, setTallyStep] = useState<TallyStep>("idle")
+    const [tallyMsg, setTallyMsg] = useState("")
+    const [tallyResult, setTallyResult] = useState<TallyResult | null>(null)
+    const [tallyError, setTallyError] = useState("")
+    const [manualKeyInput, setManualKeyInput] = useState("")
 
     // Load election state
     const refresh = useCallback(async () => {
@@ -167,6 +192,112 @@ export default function ElectionPage({ params }: { params: { address: string } }
         finally { setAdminLoading(false) }
     }, [signer, electionAddress, refresh])
 
+    // ── TALLY LOGIC ──
+    const hasStoredKey = typeof window !== "undefined" && !!localStorage.getItem(`spectre-election-key-${electionAddress}`)
+
+    const runTally = useCallback(async (privKeyHex?: string) => {
+        setTallyError(""); setTallyResult(null)
+
+        // Resolve the election private key
+        const keyHex = privKeyHex || localStorage.getItem(`spectre-election-key-${electionAddress}`)
+        if (!keyHex) {
+            setTallyError("No election private key found. Paste it below or run tally from the browser that created this election.")
+            setTallyStep("error")
+            return
+        }
+
+        try {
+            // Parse private key from hex
+            const electionPrivKey = new Uint8Array(32)
+            for (let i = 0; i < 32; i++) {
+                electionPrivKey[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16)
+            }
+
+            setTallyStep("fetching"); setTallyMsg("Fetching VoteCast events from chain...")
+            addLog("Fetching all VoteCast events...")
+
+            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
+            const events = await c.queryFilter(c.filters.VoteCast())
+
+            addLog(`Found ${events.length} vote(s) on-chain`)
+
+            if (events.length === 0) {
+                setTallyResult({ votesFor: 0, votesAgainst: 0, totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
+                setTallyStep("done"); setTallyMsg("")
+                return
+            }
+
+            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${events.length} vote(s)...`)
+
+            // Decrypt and verify each vote
+            const decryptedVotes: DecryptedVote[] = []
+            for (const event of events) {
+                const args = (event as any).args
+                const nullifierHash = args.nullifierHash.toString()
+                const voteCommitment = args.voteCommitment.toString()
+                const encryptedBlob = args.encryptedBlob
+
+                // Convert hex blob to Uint8Array
+                const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
+                const blob = new Uint8Array(blobHex.length / 2)
+                for (let i = 0; i < blob.length; i++) {
+                    blob[i] = parseInt(blobHex.substring(i * 2, i * 2 + 2), 16)
+                }
+
+                try {
+                    const plaintext = eciesDecrypt(electionPrivKey, blob)
+                    const { vote, voteRandomness } = decodeVotePayload(plaintext)
+
+                    // Verify: poseidon2(vote, randomness) == on-chain commitment
+                    const recomputed = poseidon2([vote, voteRandomness])
+                    const commitmentValid = recomputed.toString() === voteCommitment
+
+                    decryptedVotes.push({ nullifierHash, vote, voteRandomness, commitmentValid })
+                } catch {
+                    // Decryption failed — corrupted or wrong key
+                    decryptedVotes.push({ nullifierHash, vote: -1n, voteRandomness: 0n, commitmentValid: false })
+                }
+            }
+
+            // Zero out the key from memory
+            electionPrivKey.fill(0)
+
+            // Deduplicate by nullifier (last submission wins)
+            const byNullifier = new Map<string, DecryptedVote>()
+            let duplicatesRemoved = 0
+            for (const dv of decryptedVotes) {
+                if (byNullifier.has(dv.nullifierHash)) duplicatesRemoved++
+                byNullifier.set(dv.nullifierHash, dv)
+            }
+
+            // Count
+            const uniqueVotes = Array.from(byNullifier.values())
+            let votesFor = 0, votesAgainst = 0, totalInvalid = 0
+            for (const dv of uniqueVotes) {
+                if (!dv.commitmentValid) totalInvalid++
+                else if (dv.vote === 1n) votesFor++
+                else if (dv.vote === 0n) votesAgainst++
+                else totalInvalid++
+            }
+
+            const result: TallyResult = {
+                votesFor, votesAgainst,
+                totalValid: votesFor + votesAgainst,
+                totalInvalid, duplicatesRemoved,
+                decryptedVotes: uniqueVotes,
+            }
+
+            setTallyResult(result)
+            setTallyStep("done"); setTallyMsg("")
+            addLog(`Tally complete: ${votesFor} YES / ${votesAgainst} NO (${totalInvalid} invalid, ${duplicatesRemoved} dupes removed)`)
+        } catch (err: any) {
+            const msg = err.message || "Tally failed"
+            setTallyError(msg); setTallyStep("error"); setTallyMsg("")
+            addLog(`Tally error: ${msg}`)
+        }
+    }, [electionAddress, addLog])
+
     if (loading) return (
         <div style={{ textAlign: "center", padding: 48 }}>
             <div className="spinner" style={{ margin: "0 auto 12px" }} />
@@ -220,6 +351,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             {/* Tabs */}
             <div className="nav" style={{ marginBottom: 16 }}>
                 <button onClick={() => setTab("vote")} className={tab === "vote" ? "active" : ""}>Vote</button>
+                <button onClick={() => setTab("results")} className={tab === "results" ? "active" : ""}>Results</button>
                 <button onClick={() => setTab("admin")} className={tab === "admin" ? "active" : ""}>Admin</button>
             </div>
 
@@ -292,6 +424,216 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             </button>
                         )}
                     </div>
+                </>
+            )}
+
+            {/* ═══ RESULTS TAB ═══ */}
+            {tab === "results" && (
+                <>
+                    {/* Tally controls */}
+                    {!tallyResult && tallyStep !== "done" && (
+                        <div className="card" style={{ marginBottom: 16 }}>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Decrypt &amp; Tally Votes</h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14 }}>
+                                {state.votingOpen
+                                    ? "Voting is still open. You can tally now to see interim results, but votes may still come in."
+                                    : "Voting is closed. Decrypt all votes and compute the final result."}
+                            </p>
+
+                            {hasStoredKey ? (
+                                <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
+                                    ✓ Election key found in this browser
+                                </p>
+                            ) : (
+                                <div style={{ marginBottom: 12 }}>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
+                                        No election key found. Paste the hex private key from the browser that created this election:
+                                    </p>
+                                    <input
+                                        placeholder="Election private key (64 hex chars)"
+                                        value={manualKeyInput}
+                                        onChange={e => setManualKeyInput(e.target.value)}
+                                        style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}
+                                    />
+                                </div>
+                            )}
+
+                            {tallyStep !== "idle" && tallyStep !== "error" && (
+                                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: 14, background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                    <div className="spinner" />
+                                    <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>{tallyMsg}</p>
+                                </div>
+                            )}
+
+                            {tallyStep === "error" && (
+                                <div style={{ marginBottom: 16, padding: 14, background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440" }}>
+                                    <p style={{ color: "var(--error)", fontWeight: 600, marginBottom: 4 }}>Tally Failed</p>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", wordBreak: "break-all" }}>{tallyError}</p>
+                                </div>
+                            )}
+
+                            <button
+                                className="btn-primary"
+                                onClick={() => runTally(manualKeyInput || undefined)}
+                                disabled={tallyStep === "fetching" || tallyStep === "decrypting" || (!hasStoredKey && !manualKeyInput.trim())}
+                            >
+                                {tallyStep === "fetching" || tallyStep === "decrypting" ? "Computing..." : "Tally Votes"}
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Results display */}
+                    {tallyResult && (
+                        <>
+                            {/* Main result card */}
+                            <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
+                                <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>
+                                    {state.votingOpen ? "Interim Results" : "Final Results"}
+                                </h4>
+
+                                {tallyResult.totalValid === 0 ? (
+                                    <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", padding: "20px 0" }}>No valid votes</p>
+                                ) : (
+                                    <>
+                                        {/* YES / NO bars */}
+                                        <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+                                            <div style={{ flex: 1, textAlign: "center" }}>
+                                                <div style={{ fontSize: "2rem", fontWeight: 800, color: "var(--success)" }}>
+                                                    {tallyResult.votesFor}
+                                                </div>
+                                                <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--success)", marginBottom: 8 }}>YES</div>
+                                                <div style={{ height: 6, background: "var(--bg)", borderRadius: 3, overflow: "hidden" }}>
+                                                    <div style={{
+                                                        height: "100%",
+                                                        width: `${(tallyResult.votesFor / tallyResult.totalValid) * 100}%`,
+                                                        background: "var(--success)",
+                                                        borderRadius: 3,
+                                                        transition: "width 0.5s ease",
+                                                    }} />
+                                                </div>
+                                                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>
+                                                    {((tallyResult.votesFor / tallyResult.totalValid) * 100).toFixed(1)}%
+                                                </div>
+                                            </div>
+                                            <div style={{ flex: 1, textAlign: "center" }}>
+                                                <div style={{ fontSize: "2rem", fontWeight: 800, color: "var(--error)" }}>
+                                                    {tallyResult.votesAgainst}
+                                                </div>
+                                                <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--error)", marginBottom: 8 }}>NO</div>
+                                                <div style={{ height: 6, background: "var(--bg)", borderRadius: 3, overflow: "hidden" }}>
+                                                    <div style={{
+                                                        height: "100%",
+                                                        width: `${(tallyResult.votesAgainst / tallyResult.totalValid) * 100}%`,
+                                                        background: "var(--error)",
+                                                        borderRadius: 3,
+                                                        transition: "width 0.5s ease",
+                                                    }} />
+                                                </div>
+                                                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>
+                                                    {((tallyResult.votesAgainst / tallyResult.totalValid) * 100).toFixed(1)}%
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Winner banner */}
+                                        {!state.votingOpen && tallyResult.votesFor !== tallyResult.votesAgainst && (
+                                            <div style={{
+                                                padding: "10px 16px",
+                                                borderRadius: "var(--radius)",
+                                                background: tallyResult.votesFor > tallyResult.votesAgainst ? "#22c55e10" : "#ef444410",
+                                                border: `1px solid ${tallyResult.votesFor > tallyResult.votesAgainst ? "#22c55e40" : "#ef444440"}`,
+                                                marginBottom: 12,
+                                            }}>
+                                                <span style={{ fontWeight: 700, color: tallyResult.votesFor > tallyResult.votesAgainst ? "var(--success)" : "var(--error)" }}>
+                                                    {tallyResult.votesFor > tallyResult.votesAgainst ? "YES wins" : "NO wins"}
+                                                </span>
+                                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginLeft: 8 }}>
+                                                    {Math.abs(tallyResult.votesFor - tallyResult.votesAgainst)} vote margin
+                                                </span>
+                                            </div>
+                                        )}
+
+                                        {!state.votingOpen && tallyResult.votesFor === tallyResult.votesAgainst && tallyResult.totalValid > 0 && (
+                                            <div style={{ padding: "10px 16px", borderRadius: "var(--radius)", background: "var(--bg-hover)", border: "1px solid var(--border)", marginBottom: 12 }}>
+                                                <span style={{ fontWeight: 700, color: "var(--warning)" }}>Tie</span>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+
+                            {/* Stats card */}
+                            <div className="card" style={{ marginBottom: 16 }}>
+                                <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                                    Verification Summary
+                                </h4>
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "0.85rem" }}>
+                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Total Valid</div>
+                                        <div style={{ fontWeight: 700, color: "var(--success)" }}>{tallyResult.totalValid}</div>
+                                    </div>
+                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Invalid</div>
+                                        <div style={{ fontWeight: 700, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" }}>{tallyResult.totalInvalid}</div>
+                                    </div>
+                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Duplicates Removed</div>
+                                        <div style={{ fontWeight: 700 }}>{tallyResult.duplicatesRemoved}</div>
+                                    </div>
+                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>On-chain Votes</div>
+                                        <div style={{ fontWeight: 700 }}>{state.voteCount}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Individual votes (anonymized) */}
+                            {tallyResult.decryptedVotes.length > 0 && (
+                                <div className="card" style={{ marginBottom: 16 }}>
+                                    <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                                        Individual Votes ({tallyResult.decryptedVotes.length})
+                                    </h4>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                        {tallyResult.decryptedVotes.map((dv, i) => (
+                                            <div key={i} style={{
+                                                display: "flex", justifyContent: "space-between", alignItems: "center",
+                                                padding: "8px 12px", background: "var(--bg)", borderRadius: 8,
+                                                border: "1px solid var(--border)", fontSize: "0.8rem",
+                                            }}>
+                                                <span className="mono" style={{ color: "var(--text-muted)", fontSize: "0.7rem" }}>
+                                                    {dv.nullifierHash.slice(0, 10)}...{dv.nullifierHash.slice(-6)}
+                                                </span>
+                                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                    {dv.commitmentValid ? (
+                                                        <>
+                                                            <span style={{
+                                                                fontWeight: 700, fontSize: "0.75rem",
+                                                                color: dv.vote === 1n ? "var(--success)" : "var(--error)",
+                                                            }}>
+                                                                {dv.vote === 1n ? "YES" : "NO"}
+                                                            </span>
+                                                            <span style={{ fontSize: "0.65rem", color: "var(--success)" }}>✓</span>
+                                                        </>
+                                                    ) : (
+                                                        <span style={{ fontWeight: 700, fontSize: "0.75rem", color: "var(--error)" }}>INVALID</span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Re-tally button */}
+                            <button
+                                className="btn-secondary"
+                                onClick={() => { setTallyResult(null); setTallyStep("idle") }}
+                                style={{ marginBottom: 16 }}
+                            >
+                                Re-tally
+                            </button>
+                        </>
+                    )}
                 </>
             )}
 

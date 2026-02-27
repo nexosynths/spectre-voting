@@ -71,6 +71,46 @@ export function encodeVotePayload(vote: bigint, randomness: bigint): Uint8Array 
 }
 
 /**
+ * ECIES-secp256k1 decrypt.
+ *
+ * @param electionPrivKey — 32-byte secp256k1 private key
+ * @param envelope — output of eciesEncrypt()
+ */
+export function eciesDecrypt(
+    electionPrivKey: Uint8Array,
+    envelope: Uint8Array
+): Uint8Array {
+    // Unpack
+    const ephPub = envelope.slice(0, 33)
+    const nonce = envelope.slice(33, 45)
+    const ciphertext = envelope.slice(45)
+
+    // ECDH → same shared x-coordinate
+    const sharedPoint = secp256k1.getSharedSecret(electionPrivKey, ephPub)
+    const sharedX = sharedPoint.slice(1)
+
+    // Same KDF
+    const encKey = hkdf(sha256, sharedX, ephPub, DOMAIN_INFO, 32)
+
+    // Decrypt (throws if tag mismatch)
+    return gcm(encKey, nonce).decrypt(ciphertext)
+}
+
+/**
+ * Decode a vote payload from bytes.
+ * Expects 33 bytes: vote (1 byte) || randomness (32 bytes big-endian)
+ */
+export function decodeVotePayload(buf: Uint8Array): { vote: bigint; voteRandomness: bigint } {
+    const vote = BigInt(buf[0])
+
+    let rHex = ""
+    for (let i = 0; i < 32; i++) rHex += buf[1 + i].toString(16).padStart(2, "0")
+    const voteRandomness = BigInt("0x" + rHex)
+
+    return { vote, voteRandomness }
+}
+
+/**
  * Reconstruct a compressed secp256k1 public key from X and Y coordinates.
  * Returns 33-byte compressed key (0x02/0x03 prefix + 32-byte X).
  */
