@@ -1,0 +1,14 @@
+{
+  "name": "spectre-circuits",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "circom src/SpectreVote.circom --r1cs --wasm --sym -o build -l node_modules",
+    "setup": "snarkjs groth16 setup build/SpectreVote.r1cs pot/powersOfTau28_hez_final_16.ptau build/SpectreVote_0000.zkey && snarkjs zkey contribute build/SpectreVote_0000.zkey build/SpectreVote.zkey --name='Spectre dev' -e='spectre-dev-entropy' && snarkjs zkey export verificationkey build/SpectreVote.zkey build/verification_key.json",
+    "verify": "snarkjs r1cs info build/SpectreVote.r1cs"
+  },
+  "dependencies": {
+    "@zk-kit/circuits": "^0.4.0",
+    "circomlib": "^2.0.5"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "spectre-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "node --loader ts-node/esm src/test.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^0.6.0",
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0",
+    "@semaphore-protocol/core": "4.14.2",
+    "ethers": "^6.13.4",
+    "poseidon-lite": "^0.3.0",
+    "snarkjs": "^0.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.20",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
