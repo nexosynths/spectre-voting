@@ -6,6 +6,7 @@ import { Contract, JsonRpcProvider } from "ethers"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { friendlyError } from "@/lib/errors"
 import { setupElection, encryptedShareToHex, generateCommitteeKeypair, isValidPublicKey, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
 
 interface ElectionInfo {
@@ -283,7 +284,7 @@ export default function HomePage() {
             }
             await loadElections()
         } catch (err: any) {
-            addLog(`Failed: ${err.reason || err.message}`)
+            addLog(`Failed: ${friendlyError(err)}`)
         } finally {
             setCreating(false)
         }

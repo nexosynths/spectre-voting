@@ -56,6 +56,22 @@ export const SPECTRE_VOTING_ABI = [
     "event VoteCast(uint256 indexed proposalId, uint256 indexed nullifierHash, uint256 voteCommitment, bytes encryptedBlob)",
     "event SignupClosed(uint256 indexed proposalId)",
     "event VotingClosed(uint256 indexed proposalId, uint256 totalVotes)",
+    // Custom errors
+    "error NotAdmin()",
+    "error SignupNotOpen()",
+    "error VotingNotOpen()",
+    "error VotingAlreadyOpen()",
+    "error SignupAlreadyClosed()",
+    "error NullifierAlreadyUsed()",
+    "error JoinNullifierAlreadyUsed()",
+    "error InvalidProof()",
+    "error MerkleRootMismatch()",
+    "error InvalidCommitment()",
+    "error VotingDeadlinePassed()",
+    "error SignupDeadlinePassed()",
+    "error SignupStillOpen()",
+    "error InvalidNumOptions()",
+    "error SelfSignupNotAllowed()",
 ]
 
 // Semaphore V4 contract ABI (events for querying group members)

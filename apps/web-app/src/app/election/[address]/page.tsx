@@ -9,6 +9,7 @@ import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
 import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
 import { CONTRACTS, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { friendlyError } from "@/lib/errors"
 import { decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, type Share } from "@/lib/threshold"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
@@ -308,7 +309,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setSignupStatus("signed-up")
             await refresh()
         } catch (err: any) {
-            addLog(`Signup failed: ${err.reason || err.message}`)
+            addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
     }, [identity, signer, state, electionAddress, addLog, refresh])
 
@@ -399,7 +400,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog(`Vote confirmed in block ${receipt.blockNumber}`)
             await refresh()
         } catch (err: any) {
-            const msg = err.reason || err.message || "Unknown error"
+            const msg = friendlyError(err)
             setError(msg); setVoteStep("error"); setStepMsg("")
             addLog(`Error: ${msg}`)
         }
@@ -415,7 +416,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             await tx.wait()
             setAdminMsg("Voter registered!")
             setCommitment(""); await refresh()
-        } catch (err: any) { setAdminMsg(`Error: ${err.reason || err.message}`) }
+        } catch (err: any) { setAdminMsg(`Error: ${friendlyError(err)}`) }
         finally { setAdminLoading(false) }
     }, [signer, commitment, electionAddress, refresh])
 
@@ -429,7 +430,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             await tx.wait()
             setAdminMsg(`${list.length} voters registered!`)
             setBulkCommitments(""); await refresh()
-        } catch (err: any) { setAdminMsg(`Error: ${err.reason || err.message}`) }
+        } catch (err: any) { setAdminMsg(`Error: ${friendlyError(err)}`) }
         finally { setAdminLoading(false) }
     }, [signer, bulkCommitments, electionAddress, refresh])
 
@@ -441,7 +442,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const tx = await c.closeSignup()
             await tx.wait()
             setAdminMsg("Signup closed! Voting is now open."); await refresh()
-        } catch (err: any) { setAdminMsg(`Error: ${err.reason || err.message}`) }
+        } catch (err: any) { setAdminMsg(`Error: ${friendlyError(err)}`) }
         finally { setAdminLoading(false) }
     }, [signer, electionAddress, refresh])
 
@@ -453,7 +454,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const tx = await c.closeVoting()
             await tx.wait()
             setAdminMsg("Voting closed!"); await refresh()
-        } catch (err: any) { setAdminMsg(`Error: ${err.reason || err.message}`) }
+        } catch (err: any) { setAdminMsg(`Error: ${friendlyError(err)}`) }
         finally { setAdminLoading(false) }
     }, [signer, electionAddress, refresh])
 
