@@ -134,13 +134,15 @@ describe("SpectreVotingFactory", () => {
             proposalId?: bigint,
             signupDeadline?: number,
             votingDeadline?: number,
-            numOptions?: bigint
+            numOptions?: bigint,
+            selfSignupAllowed?: boolean
         } = {}
     ) {
         const proposalId = opts.proposalId ?? PROPOSAL_ID
         const signupDeadline = opts.signupDeadline ?? 0
         const votingDeadline = opts.votingDeadline ?? 0
         const numOptions = opts.numOptions ?? DEFAULT_NUM_OPTIONS
+        const selfSignupAllowed = opts.selfSignupAllowed ?? true
 
         await factory.connect(admin).createElection(
             proposalId,
@@ -148,7 +150,8 @@ describe("SpectreVotingFactory", () => {
             ELECTION_PUBKEY_Y,
             signupDeadline,
             votingDeadline,
-            numOptions
+            numOptions,
+            selfSignupAllowed
         )
 
         const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
@@ -173,7 +176,7 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, DEFAULT_NUM_OPTIONS
+                0, 0, DEFAULT_NUM_OPTIONS, true
             )
 
             expect(await factory.electionCount()).to.equal(1)
@@ -188,9 +191,18 @@ describe("SpectreVotingFactory", () => {
             expect(await election.admin()).to.equal(alice.address)
             expect(await election.proposalId()).to.equal(PROPOSAL_ID)
             expect(await election.numOptions()).to.equal(DEFAULT_NUM_OPTIONS)
+            expect(await election.selfSignupAllowed()).to.equal(true)
             // Phase 1: signup open, voting closed
             expect(await election.signupOpen()).to.equal(true)
             expect(await election.votingOpen()).to.equal(false)
+        })
+
+        it("Should support gated mode (selfSignupAllowed = false)", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice, { selfSignupAllowed: false })
+
+            expect(await election.selfSignupAllowed()).to.equal(false)
+            expect(await election.signupOpen()).to.equal(true)
         })
 
         it("Should reject numOptions < 2", async () => {
@@ -199,12 +211,12 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 factory.connect(alice).createElection(
                     PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                    0, 0, 1 // only 1 option — invalid
+                    0, 0, 1, true // only 1 option — invalid
                 )
             ).to.be.revertedWithCustomError(
                 await ethers.getContractFactory("SpectreVoting").then(f => f.deploy(
                     ethers.ZeroAddress, ethers.ZeroAddress, ethers.ZeroAddress,
-                    0, 0, 0, ethers.ZeroAddress, 0, 0, 2
+                    0, 0, 0, ethers.ZeroAddress, 0, 0, 2, true
                 ).catch(() => null)) || (await createElectionVia(factory, alice)),
                 "InvalidNumOptions"
             ).catch(async () => {
@@ -212,7 +224,7 @@ describe("SpectreVotingFactory", () => {
                 await expect(
                     factory.connect(alice).createElection(
                         PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                        0, 0, 1
+                        0, 0, 1, true
                     )
                 ).to.be.reverted
             })
@@ -221,9 +233,9 @@ describe("SpectreVotingFactory", () => {
         it("Should allow multiple elections from different admins", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n)
-            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n)
-            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n)
+            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true)
+            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n, true)
+            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n, true)
 
             expect(await factory.electionCount()).to.equal(3)
 
@@ -248,7 +260,7 @@ describe("SpectreVotingFactory", () => {
             const { factory, alice } = await loadFixture(deployFixture)
 
             for (let i = 0; i < 5; i++) {
-                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n)
+                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n, true)
             }
 
             const all = await factory.getElections(0, 100)
@@ -308,6 +320,29 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 election.connect(alice).registerVoter(0)
             ).to.be.revertedWithCustomError(election, "InvalidCommitment")
+        })
+
+        it("Should reject self-signup in gated mode", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice, { selfSignupAllowed: false })
+
+            const voter = new Identity("gated-voter")
+
+            // Bob cannot self-signup in gated mode
+            await expect(
+                election.connect(bob).signUp(voter.commitment)
+            ).to.be.revertedWithCustomError(election, "SelfSignupNotAllowed")
+        })
+
+        it("Should allow admin to register voters in gated mode", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice, { selfSignupAllowed: false })
+
+            const voter = new Identity("gated-admin-reg")
+
+            // Admin can register even when self-signup is disabled
+            await expect(election.connect(alice).registerVoter(voter.commitment))
+                .to.emit(election, "VoterSignedUp")
         })
 
         it("Should reject signup after signup is closed", async () => {

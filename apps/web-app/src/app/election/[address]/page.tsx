@@ -46,6 +46,7 @@ interface ElectionState {
     signupDeadline: number
     votingDeadline: number
     numOptions: number
+    selfSignupAllowed: boolean
 }
 
 interface ElectionMeta {
@@ -203,11 +204,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
         try {
             const provider = new JsonRpcProvider(SEPOLIA_RPC)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, pkX, pkY, sdl, vdl, numOpt] = await Promise.all([
+            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, pkX, pkY, sdl, vdl, numOpt, selfSignup] = await Promise.all([
                 c.proposalId(), c.signupOpen(), c.votingOpen(), c.voteCount(),
                 c.signupGroupId(), c.votingGroupId(),
                 c.admin(), c.electionPubKeyX(), c.electionPubKeyY(),
                 c.signupDeadline(), c.votingDeadline(), c.numOptions(),
+                c.selfSignupAllowed().catch(() => true), // fallback for old contracts
             ])
             setState({
                 proposalId: pid.toString(),
@@ -222,6 +224,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 signupDeadline: Number(sdl),
                 votingDeadline: Number(vdl),
                 numOptions: Number(numOpt),
+                selfSignupAllowed: selfSignup,
             })
         } catch (err: any) {
             addLog(`Failed to load election: ${err.message}`)
@@ -569,6 +572,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                     <span>{state.voteCount} vote{state.voteCount !== 1 ? "s" : ""}</span>
                     <span>{state.numOptions} options</span>
+                    <span style={{ color: state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
+                        {state.selfSignupAllowed ? "Open signup" : "Gated"}
+                    </span>
                     {phase === "signup" && state.signupDeadline > 0 && (
                         <span>
                             {Date.now() / 1000 > state.signupDeadline
@@ -631,38 +637,82 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     {/* ── SIGNUP PHASE ── */}
                     {phase === "signup" && identity && address && (
                         <div className="card" style={{ marginBottom: 16 }}>
-                            {signupStatus === "checking" && (
-                                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                                    <div className="spinner" />
-                                    <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking signup status...</p>
-                                </div>
-                            )}
-
-                            {signupStatus === "signed-up" && (
-                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                    <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                                    <div>
-                                        <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
-                                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                            Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
-                                        </p>
-                                    </div>
-                                </div>
-                            )}
-
-                            {(signupStatus === "not-signed-up" || signupStatus === "unknown") && (
+                            {!state.selfSignupAllowed ? (
+                                /* GATED MODE */
                                 <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        Register your identity for this election. This is public — the admin can see who signed up. But when voting opens, you&apos;ll use a ZK proof to anonymously re-key into the voting group. <strong>Nobody can link your signup to your vote.</strong>
-                                    </p>
-                                    <button
-                                        className="btn-primary"
-                                        onClick={handleSignUp}
-                                        disabled={signupLoading}
-                                    >
-                                        {signupLoading ? "Signing up..." : "Sign Up"}
-                                    </button>
+                                    {signupStatus === "checking" && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                            <div className="spinner" />
+                                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking registration status...</p>
+                                        </div>
+                                    )}
+
+                                    {signupStatus === "signed-up" && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                            <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
+                                            <div>
+                                                <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re registered!</p>
+                                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                                    The admin has added you. Once voting opens, you&apos;ll anonymously join and cast your vote.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {(signupStatus === "not-signed-up" || signupStatus === "unknown") && (
+                                        <>
+                                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Admin-Only Registration</h4>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                                This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
+                                            </p>
+                                            <div style={{ display: "flex", gap: 8 }}>
+                                                <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
+                                                    {identity.commitment.toString()}
+                                                </code>
+                                                <button onClick={() => copyToClipboard(identity.commitment.toString(), "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
+                                                    {copied === "vid" ? "Copied!" : "Copy ID"}
+                                                </button>
+                                            </div>
+                                        </>
+                                    )}
+                                </>
+                            ) : (
+                                /* OPEN MODE */
+                                <>
+                                    {signupStatus === "checking" && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                            <div className="spinner" />
+                                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking signup status...</p>
+                                        </div>
+                                    )}
+
+                                    {signupStatus === "signed-up" && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                            <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
+                                            <div>
+                                                <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
+                                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                                    Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {(signupStatus === "not-signed-up" || signupStatus === "unknown") && (
+                                        <>
+                                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                                Register your identity for this election. This is public — the admin can see who signed up. But when voting opens, you&apos;ll use a ZK proof to anonymously re-key into the voting group. <strong>Nobody can link your signup to your vote.</strong>
+                                            </p>
+                                            <button
+                                                className="btn-primary"
+                                                onClick={handleSignUp}
+                                                disabled={signupLoading}
+                                            >
+                                                {signupLoading ? "Signing up..." : "Sign Up"}
+                                            </button>
+                                        </>
+                                    )}
                                 </>
                             )}
                         </div>
@@ -953,7 +1003,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <div className="card" style={{ marginBottom: 16 }}>
                         <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Share Election</h4>
                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            Send this link to voters. They can sign up directly during the signup phase.
+                            {state.selfSignupAllowed
+                                ? "Send this link to voters. They can sign up directly during the signup phase."
+                                : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
                         </p>
                         <div style={{ display: "flex", gap: 8 }}>
                             <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem" }}>

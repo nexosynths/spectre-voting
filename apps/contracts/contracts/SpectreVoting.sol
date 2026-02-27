@@ -58,6 +58,9 @@ contract SpectreVoting {
     bool public votingOpen;
     address public admin;
 
+    // Access control: when false, only admin can register voters (gated mode)
+    bool public selfSignupAllowed;
+
     // Phase deadlines
     uint256 public signupDeadline;  // 0 = no deadline (admin-only close)
     uint256 public votingDeadline;  // 0 = no deadline (admin-only close)
@@ -115,6 +118,7 @@ contract SpectreVoting {
     error SignupDeadlinePassed();
     error SignupStillOpen();
     error InvalidNumOptions();
+    error SelfSignupNotAllowed();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -143,7 +147,8 @@ contract SpectreVoting {
         address _admin,
         uint256 _signupDeadline,
         uint256 _votingDeadline,
-        uint256 _numOptions
+        uint256 _numOptions,
+        bool _selfSignupAllowed
     ) {
         if (_numOptions < 2) revert InvalidNumOptions();
 
@@ -157,6 +162,7 @@ contract SpectreVoting {
         signupDeadline = _signupDeadline;
         votingDeadline = _votingDeadline;
         numOptions = _numOptions;
+        selfSignupAllowed = _selfSignupAllowed;
 
         // Create two Semaphore groups — this contract becomes the group admin for both
         signupGroupId = semaphore.createGroup();
@@ -173,9 +179,10 @@ contract SpectreVoting {
     // Phase 1: Signup — public registration
     // =======================================================================
 
-    /// @notice Self-register during signup phase. Anyone can call.
+    /// @notice Self-register during signup phase. Only available when selfSignupAllowed is true.
     /// @param identityCommitment Poseidon(BabyJubJub_pubkey) — the voter's signup identity
     function signUp(uint256 identityCommitment) external whenSignupOpen {
+        if (!selfSignupAllowed) revert SelfSignupNotAllowed();
         if (identityCommitment == 0) revert InvalidCommitment();
         semaphore.addMember(signupGroupId, identityCommitment);
         emit VoterSignedUp(signupGroupId, identityCommitment);

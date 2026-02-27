@@ -1,6 +1,6 @@
 // Deployed contract addresses (Sepolia testnet) — v3: ZK re-key + multi-option
 export const CONTRACTS = {
-    FACTORY: "0x7eAA40146720E35A4ED979A87B634B06eb61dBD8",
+    FACTORY: "0x1910a582e6D4e5ab74e40Cc1474992b1F454caEf",
     SEMAPHORE: "0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D",
     VOTE_VERIFIER: "0xe4a2be410766bCB37Df956334869135fe80AF36d",
     JOIN_VERIFIER: "0xdeE4c3F80332119f59940c363947865bbF7d0585",
@@ -18,8 +18,8 @@ export const FACTORY_ABI = [
     "function elections(uint256) view returns (address)",
     "function isElection(address) view returns (bool)",
     "function getElections(uint256 offset, uint256 limit) view returns (address[])",
-    "function createElection(uint256 _proposalId, uint256 _electionPubKeyX, uint256 _electionPubKeyY, uint256 _signupDeadline, uint256 _votingDeadline, uint256 _numOptions) returns (address)",
-    "event ElectionDeployed(address indexed election, address indexed admin, uint256 proposalId, uint256 electionPubKeyX, uint256 electionPubKeyY, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions)",
+    "function createElection(uint256 _proposalId, uint256 _electionPubKeyX, uint256 _electionPubKeyY, uint256 _signupDeadline, uint256 _votingDeadline, uint256 _numOptions, bool _selfSignupAllowed) returns (address)",
+    "event ElectionDeployed(address indexed election, address indexed admin, uint256 proposalId, uint256 electionPubKeyX, uint256 electionPubKeyY, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions, bool selfSignupAllowed)",
 ]
 
 // SpectreVoting contract ABI (v3: three-phase, ZK re-key, multi-option)
@@ -40,6 +40,7 @@ export const SPECTRE_VOTING_ABI = [
     "function usedJoinNullifiers(uint256) view returns (bool)",
     "function signupDeadline() view returns (uint256)",
     "function votingDeadline() view returns (uint256)",
+    "function selfSignupAllowed() view returns (bool)",
     // Phase 1: Signup
     "function signUp(uint256 identityCommitment)",
     "function registerVoter(uint256 identityCommitment)",

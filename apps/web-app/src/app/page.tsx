@@ -36,6 +36,7 @@ export default function HomePage() {
     const [signupHours, setSignupHours] = useState("24")
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
+    const [selfSignup, setSelfSignup] = useState(true)
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text)
@@ -150,7 +151,7 @@ export default function HomePage() {
 
             addLog("Creating election via factory...")
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, signer)
-            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions)
+            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions, selfSignup)
             addLog(`Tx sent: ${tx.hash.slice(0, 16)}...`)
 
             const receipt = await tx.wait()
@@ -191,7 +192,7 @@ export default function HomePage() {
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, addLog, loadElections])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, addLog, loadElections])
 
     const [showIdentity, setShowIdentity] = useState(false)
 
@@ -370,10 +371,43 @@ export default function HomePage() {
                                 />
                             </div>
                         </div>
+                        {/* Signup mode toggle */}
+                        <div
+                            onClick={() => !creating && setSelfSignup(!selfSignup)}
+                            role="button"
+                            style={{
+                                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                                background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)",
+                                cursor: creating ? "not-allowed" : "pointer", userSelect: "none",
+                            }}
+                        >
+                            <div style={{
+                                width: 36, height: 20, borderRadius: 10,
+                                background: selfSignup ? "var(--accent)" : "var(--border)",
+                                position: "relative", transition: "background 0.2s", flexShrink: 0,
+                            }}>
+                                <div style={{
+                                    width: 16, height: 16, borderRadius: "50%", background: "white",
+                                    position: "absolute", top: 2,
+                                    left: selfSignup ? 18 : 2,
+                                    transition: "left 0.2s",
+                                }} />
+                            </div>
+                            <div>
+                                <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                                    {selfSignup ? "Open signup" : "Gated (admin-only)"}
+                                </span>
+                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
+                                    {selfSignup
+                                        ? "Anyone with the link can self-register to vote"
+                                        : "Only you (admin) can register voters"}
+                                </p>
+                            </div>
+                        </div>
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            Signup: {signupHours}h → Voting: {votingHours}h · Share link auto-copied
+                            Signup: {signupHours}h → Voting: {votingHours}h · {selfSignup ? "Open" : "Gated"} · Share link auto-copied
                         </p>
                         <button
                             className="btn-primary"

@@ -23,7 +23,8 @@ contract SpectreVotingFactory {
         uint256 electionPubKeyY,
         uint256 signupDeadline,
         uint256 votingDeadline,
-        uint256 numOptions
+        uint256 numOptions,
+        bool selfSignupAllowed
     );
 
     constructor(address _semaphore, address _voteVerifier, address _joinVerifier) {
@@ -39,6 +40,7 @@ contract SpectreVotingFactory {
     /// @param _signupDeadline Unix timestamp when signup closes (0 = no deadline, admin-only close)
     /// @param _votingDeadline Unix timestamp when voting closes (0 = no deadline, admin-only close)
     /// @param _numOptions Number of vote options (minimum 2)
+    /// @param _selfSignupAllowed When true, anyone can self-register; when false, only admin can register voters
     /// @return election The address of the newly deployed SpectreVoting contract
     function createElection(
         uint256 _proposalId,
@@ -46,7 +48,8 @@ contract SpectreVotingFactory {
         uint256 _electionPubKeyY,
         uint256 _signupDeadline,
         uint256 _votingDeadline,
-        uint256 _numOptions
+        uint256 _numOptions,
+        bool _selfSignupAllowed
     ) external returns (address election) {
         // Pass msg.sender as _admin so the caller (not the factory) is admin
         SpectreVoting sv = new SpectreVoting(
@@ -59,7 +62,8 @@ contract SpectreVotingFactory {
             msg.sender,
             _signupDeadline,
             _votingDeadline,
-            _numOptions
+            _numOptions,
+            _selfSignupAllowed
         );
 
         election = address(sv);
@@ -74,7 +78,8 @@ contract SpectreVotingFactory {
             _electionPubKeyY,
             _signupDeadline,
             _votingDeadline,
-            _numOptions
+            _numOptions,
+            _selfSignupAllowed
         );
     }
 
