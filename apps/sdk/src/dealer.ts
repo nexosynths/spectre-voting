@@ -34,7 +34,7 @@ export interface ElectionSetup {
 /**
  * Serialize a share to bytes: x (32 bytes BE) || y (32 bytes BE)
  */
-function serializeShare(share: Share): Uint8Array {
+export function serializeShare(share: Share): Uint8Array {
     const buf = new Uint8Array(64)
     const xHex = share.x.toString(16).padStart(64, "0")
     const yHex = share.y.toString(16).padStart(64, "0")

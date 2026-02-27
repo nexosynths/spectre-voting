@@ -21,6 +21,7 @@ export interface SpectreProof {
     nullifierHash: string
     voteCommitment: string
     proposalId: string
+    numOptions: string
 }
 
 export interface ProofArtifacts {
@@ -50,8 +51,9 @@ export function computeNullifier(proposalId: bigint, secretScalar: bigint): bigi
  * @param identity — Semaphore Identity (wraps secret key)
  * @param group — Semaphore Group (local mirror of on-chain Merkle tree)
  * @param proposalId — election/proposal identifier
- * @param vote — 0 or 1
+ * @param vote — vote option index (0 to numOptions-1)
  * @param voteRandomness — blinding factor for vote commitment
+ * @param numOptions — total number of vote options (default 2 for backwards compat)
  * @param artifacts — optional custom paths to wasm/zkey
  */
 export async function generateSpectreProof(
@@ -60,10 +62,11 @@ export async function generateSpectreProof(
     proposalId: bigint,
     vote: bigint,
     voteRandomness: bigint,
+    numOptions: bigint = 2n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<SpectreProof> {
-    if (vote !== 0n && vote !== 1n) {
-        throw new Error("Vote must be 0 or 1")
+    if (vote < 0n || vote >= numOptions) {
+        throw new Error(`Vote must be in range [0, ${numOptions})`)
     }
 
     const wasmPath = artifacts?.wasmPath ?? DEFAULT_WASM
@@ -90,7 +93,8 @@ export async function generateSpectreProof(
         merkleProofSiblings: siblings,
         proposalId: proposalId.toString(),
         vote: vote.toString(),
-        voteRandomness: voteRandomness.toString()
+        voteRandomness: voteRandomness.toString(),
+        numOptions: numOptions.toString()
     }
 
     // Generate Groth16 proof
@@ -108,6 +112,7 @@ export async function generateSpectreProof(
         merkleRoot: publicSignals[0],
         nullifierHash: publicSignals[1],
         voteCommitment: publicSignals[2],
-        proposalId: publicSignals[3]
+        proposalId: publicSignals[3],
+        numOptions: publicSignals[4]
     }
 }

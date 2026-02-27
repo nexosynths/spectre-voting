@@ -123,8 +123,8 @@ async function main() {
         const group = new Group()
         voters.forEach((v) => group.addMember(v.commitment))
 
-        // Cast votes: 3 YES, 2 NO
-        const votes: { identity: Identity; choice: 0n | 1n }[] = [
+        // Cast votes: 3 YES (1), 2 NO (0)
+        const votes: { identity: Identity; choice: bigint }[] = [
             { identity: voters[0], choice: 1n },
             { identity: voters[1], choice: 0n },
             { identity: voters[2], choice: 1n },
@@ -139,7 +139,8 @@ async function main() {
                 group,
                 PROPOSAL_ID,
                 v.choice,
-                election.electionPubKey
+                election.electionPubKey,
+                2n // binary: 2 options
             )
             submittedVotes.push({
                 nullifierHash: prepared.proof.nullifierHash,
@@ -155,11 +156,11 @@ async function main() {
             decryptShare(k.priv, election.encryptedShares[i].encryptedData)
         )
 
-        // Compute tally
-        const tally = computeTally(shares, submittedVotes)
+        // Compute tally (binary = 2 options)
+        const tally = computeTally(shares, submittedVotes, 2)
 
-        assert(tally.votesFor === 3, "3 votes FOR")
-        assert(tally.votesAgainst === 2, "2 votes AGAINST")
+        assert(tally.optionCounts[0] === 2, "2 votes for option 0 (NO)")
+        assert(tally.optionCounts[1] === 3, "3 votes for option 1 (YES)")
         assert(tally.totalValid === 5, "5 total valid votes")
         assert(tally.totalInvalid === 0, "0 invalid votes")
         assert(tally.duplicatesRemoved === 0, "0 duplicates")
@@ -186,6 +187,68 @@ async function main() {
         // 5 shares — correct
         const rightSecret = combine(shares.slice(0, 5))
         assert(rightSecret === secretBigInt, "5-of-5 gives correct secret")
+    }
+
+    // --- Test 5: Multi-option tally (4 options) ---
+    console.log("\n5. Multi-option tally (4 options)")
+    {
+        const PROPOSAL_ID = 200n
+        const NUM_OPTIONS = 4
+
+        // Committee setup (3-of-5)
+        const committeeKeys = Array.from({ length: 5 }, () => {
+            const priv = secp256k1.utils.randomPrivateKey()
+            return { priv, pub: secp256k1.getPublicKey(priv) }
+        })
+        const committee: CommitteeMember[] = committeeKeys.map((k, i) => ({
+            id: `member-${i}`,
+            publicKey: k.pub
+        }))
+
+        const election = setupElection(committee, 3)
+
+        // Create 6 voters
+        const voters = Array.from({ length: 6 }, (_, i) => new Identity(`multi-voter-${i}`))
+        const group = new Group()
+        voters.forEach((v) => group.addMember(v.commitment))
+
+        // Cast votes across 4 options: [2 votes opt0, 1 vote opt1, 2 votes opt2, 1 vote opt3]
+        const voteChoices: bigint[] = [0n, 0n, 1n, 2n, 2n, 3n]
+        const submittedVotes: SubmittedVote[] = []
+
+        for (let i = 0; i < voters.length; i++) {
+            const prepared = await prepareVote(
+                voters[i],
+                group,
+                PROPOSAL_ID,
+                voteChoices[i],
+                election.electionPubKey,
+                BigInt(NUM_OPTIONS)
+            )
+            submittedVotes.push({
+                nullifierHash: prepared.proof.nullifierHash,
+                voteCommitment: prepared.proof.voteCommitment,
+                encryptedBlob: prepared.encryptedBlob
+            })
+        }
+
+        assert(submittedVotes.length === 6, "6 votes submitted")
+
+        // 3 of 5 members decrypt their shares
+        const shares = committeeKeys.slice(0, 3).map((k, i) =>
+            decryptShare(k.priv, election.encryptedShares[i].encryptedData)
+        )
+
+        // Compute tally with 4 options
+        const tally = computeTally(shares, submittedVotes, NUM_OPTIONS)
+
+        assert(tally.optionCounts.length === 4, "4 option counts")
+        assert(tally.optionCounts[0] === 2, "Option 0: 2 votes")
+        assert(tally.optionCounts[1] === 1, "Option 1: 1 vote")
+        assert(tally.optionCounts[2] === 2, "Option 2: 2 votes")
+        assert(tally.optionCounts[3] === 1, "Option 3: 1 vote")
+        assert(tally.totalValid === 6, "6 total valid votes")
+        assert(tally.totalInvalid === 0, "0 invalid votes")
     }
 
     console.log(`\n=== ${passed} passed, ${failed} failed ===`)

@@ -24,13 +24,12 @@ export interface DecryptedVote {
 }
 
 /**
- * Final tally result.
+ * Final tally result (multi-option).
  */
 export interface TallyResult {
-    votesFor: number // vote=1
-    votesAgainst: number // vote=0
+    optionCounts: number[] // count per option index (e.g., [3, 2, 1] for 3 options)
     totalValid: number
-    totalInvalid: number // failed commitment verification
+    totalInvalid: number // failed commitment verification or out-of-range vote
     duplicatesRemoved: number
     decryptedVotes: DecryptedVote[]
 }
@@ -106,12 +105,13 @@ function decryptAndVerifyVote(
  * 2. Decrypt each vote blob
  * 3. Verify each commitment matches on-chain value
  * 4. Deduplicate by nullifier (last submission wins — for future re-voting support)
- * 5. Count votes
+ * 5. Count votes per option
  *
  * @param shares — at least threshold decrypted shares
  * @param submittedVotes — all VoteCast events from the contract
+ * @param numOptions — number of valid vote options (e.g., 2 for Yes/No, 4 for multi-choice)
  */
-export function computeTally(shares: Share[], submittedVotes: SubmittedVote[]): TallyResult {
+export function computeTally(shares: Share[], submittedVotes: SubmittedVote[], numOptions: number = 2): TallyResult {
     // 1. Reconstruct key
     const electionPrivKey = reconstructElectionKey(shares)
 
@@ -131,28 +131,24 @@ export function computeTally(shares: Share[], submittedVotes: SubmittedVote[]): 
         byNullifier.set(dv.nullifierHash, dv)
     }
 
-    // 5. Count
+    // 5. Count per option
     const uniqueVotes = Array.from(byNullifier.values())
-    let votesFor = 0
-    let votesAgainst = 0
+    const optionCounts = new Array(numOptions).fill(0)
     let totalInvalid = 0
 
     for (const dv of uniqueVotes) {
-        if (!dv.commitmentValid) {
+        if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= numOptions) {
             totalInvalid++
-        } else if (dv.vote === 1n) {
-            votesFor++
-        } else if (dv.vote === 0n) {
-            votesAgainst++
         } else {
-            totalInvalid++ // shouldn't happen — circuit enforces binary
+            optionCounts[Number(dv.vote)]++
         }
     }
 
+    const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
+
     return {
-        votesFor,
-        votesAgainst,
-        totalValid: votesFor + votesAgainst,
+        optionCounts,
+        totalValid,
         totalInvalid,
         duplicatesRemoved,
         decryptedVotes: uniqueVotes

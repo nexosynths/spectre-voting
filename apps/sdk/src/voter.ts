@@ -68,16 +68,18 @@ export function decodeVotePayload(buf: Uint8Array): VotePayload {
  * @param identity — voter's Semaphore Identity
  * @param group — local mirror of the on-chain Merkle tree
  * @param proposalId — which election
- * @param vote — 0 (NO) or 1 (YES)
+ * @param vote — vote option index (0 to numOptions-1)
  * @param electionPubKey — 33-byte compressed secp256k1 public key
+ * @param numOptions — total number of vote options (default 2 for backwards compat)
  * @param artifacts — optional custom circuit artifact paths
  */
 export async function prepareVote(
     identity: Identity,
     group: Group,
     proposalId: bigint,
-    vote: 0n | 1n,
+    vote: bigint,
     electionPubKey: Uint8Array,
+    numOptions: bigint = 2n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<PreparedVote> {
     // Generate random blinding factor
@@ -94,6 +96,7 @@ export async function prepareVote(
         proposalId,
         vote,
         voteRandomness,
+        numOptions,
         artifacts
     )
 

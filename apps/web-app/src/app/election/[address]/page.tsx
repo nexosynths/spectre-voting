@@ -9,6 +9,7 @@ import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
 import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
 import { CONTRACTS, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, type Share } from "@/lib/threshold"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
@@ -119,6 +120,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [tallyError, setTallyError] = useState("")
     const [manualKeyInput, setManualKeyInput] = useState("")
 
+    // Threshold tally state
+    const [thresholdShareInputs, setThresholdShareInputs] = useState<string[]>([])
+    const [decryptShareInput, setDecryptShareInput] = useState("") // encrypted share hex
+    const [decryptKeyInput, setDecryptKeyInput] = useState("") // member private key hex
+    const [decryptedShareResult, setDecryptedShareResult] = useState("")
+    const [decryptShareError, setDecryptShareError] = useState("")
+
     // ── ELECTION METADATA ──
     const meta: ElectionMeta = useMemo(() => {
         const urlTitle = searchParams.get("t")
@@ -154,6 +162,24 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [searchParams, electionAddress])
 
     const displayTitle = meta.title || (state ? `Proposal #${state.proposalId}` : "Election")
+
+    // Threshold detection from localStorage
+    const thresholdMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.mode === "threshold") {
+                return {
+                    threshold: stored.threshold as number,
+                    totalShares: stored.totalShares as number,
+                    committee: stored.committee as Array<{ id: string; publicKeyHex: string }>,
+                    encryptedShares: stored.encryptedShares as Array<{ memberId: string; shareIndex: string; encryptedDataHex: string }>,
+                }
+            }
+        } catch { /* ignore */ }
+        return null
+    }, [electionAddress])
+
+    const isThresholdElection = thresholdMeta !== null
 
     // Option labels: use meta labels, fall back to "Option 0", "Option 1", etc.
     const optionLabels = useMemo(() => {
@@ -522,6 +548,121 @@ export default function ElectionPage({ params }: { params: { address: string } }
         }
     }, [electionAddress, addLog, state, optionLabels])
 
+    // ── THRESHOLD TALLY ──
+    const handleDecryptShare = useCallback(() => {
+        setDecryptShareError(""); setDecryptedShareResult("")
+        try {
+            if (!decryptShareInput.trim() || !decryptKeyInput.trim()) {
+                throw new Error("Both encrypted share data and private key are required")
+            }
+            const encData = hexToEncryptedShare(decryptShareInput.trim())
+            const privKeyBuf = new Uint8Array(32)
+            const keyHex = decryptKeyInput.trim()
+            for (let i = 0; i < 32; i++) {
+                privKeyBuf[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16)
+            }
+            const share = decryptShare(privKeyBuf, encData)
+            privKeyBuf.fill(0)
+            setDecryptedShareResult(shareToHex(share))
+        } catch (err: any) {
+            setDecryptShareError(err.message || "Decryption failed")
+        }
+    }, [decryptShareInput, decryptKeyInput])
+
+    const runThresholdTally = useCallback(async () => {
+        if (!state || !thresholdMeta) return
+        setTallyError(""); setTallyResult(null)
+
+        const validShares: Share[] = []
+        for (const hex of thresholdShareInputs) {
+            if (hex.trim().length === 128) {
+                try { validShares.push(hexToShare(hex.trim())) } catch { /* skip invalid */ }
+            }
+        }
+
+        if (validShares.length < thresholdMeta.threshold) {
+            setTallyError(`Need at least ${thresholdMeta.threshold} shares, got ${validShares.length}`)
+            setTallyStep("error"); return
+        }
+
+        try {
+            // Reconstruct the election private key
+            const electionPrivKey = reconstructElectionKey(validShares)
+
+            setTallyStep("fetching"); setTallyMsg("Fetching votes from chain...")
+            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
+            const currentBlock = await provider.getBlockNumber()
+            const fromBlock = Math.max(0, currentBlock - 49000)
+            const events = await c.queryFilter(c.filters.VoteCast(), fromBlock)
+
+            if (events.length === 0) {
+                setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
+                setTallyStep("done"); setTallyMsg(""); return
+            }
+
+            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${events.length} vote(s)...`)
+
+            const decryptedVotes: DecryptedVote[] = []
+            for (const event of events) {
+                const args = (event as any).args
+                const nullifierHash = args.nullifierHash.toString()
+                const voteCommitment = args.voteCommitment.toString()
+                const encryptedBlob = args.encryptedBlob
+                const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
+                const blob = new Uint8Array(blobHex.length / 2)
+                for (let i = 0; i < blob.length; i++) blob[i] = parseInt(blobHex.substring(i * 2, i * 2 + 2), 16)
+
+                try {
+                    const plaintext = eciesDecrypt(electionPrivKey, blob)
+                    const { vote, voteRandomness } = decodeVotePayload(plaintext)
+                    const recomputed = poseidon2([vote, voteRandomness])
+                    const commitmentValid = recomputed.toString() === voteCommitment
+                    decryptedVotes.push({ nullifierHash, vote, voteRandomness, commitmentValid })
+                } catch {
+                    decryptedVotes.push({ nullifierHash, vote: -1n, voteRandomness: 0n, commitmentValid: false })
+                }
+            }
+
+            electionPrivKey.fill(0)
+
+            // Dedup by nullifier
+            const byNullifier = new Map<string, DecryptedVote>()
+            let duplicatesRemoved = 0
+            for (const dv of decryptedVotes) {
+                if (byNullifier.has(dv.nullifierHash)) duplicatesRemoved++
+                byNullifier.set(dv.nullifierHash, dv)
+            }
+
+            const uniqueVotes = Array.from(byNullifier.values())
+            const optionCounts = new Array(state.numOptions).fill(0)
+            let totalInvalid = 0
+            for (const dv of uniqueVotes) {
+                if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
+                    totalInvalid++
+                } else {
+                    optionCounts[Number(dv.vote)]++
+                }
+            }
+            const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
+
+            setTallyResult({ optionCounts, totalValid, totalInvalid, duplicatesRemoved, decryptedVotes: uniqueVotes })
+            setTallyStep("done"); setTallyMsg("")
+
+            const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
+            addLog(`Threshold tally: ${summary}`)
+        } catch (err: any) {
+            setTallyError(err.message || "Threshold tally failed"); setTallyStep("error"); setTallyMsg("")
+        }
+    }, [electionAddress, addLog, state, optionLabels, thresholdMeta, thresholdShareInputs])
+
+    // Initialize threshold share inputs when meta loads
+    useEffect(() => {
+        if (thresholdMeta && thresholdShareInputs.length === 0) {
+            setThresholdShareInputs(new Array(thresholdMeta.totalShares).fill(""))
+        }
+    }, [thresholdMeta, thresholdShareInputs.length])
+
     // ── SHARE ──
     const shareUrl = useMemo(() => {
         const base = typeof window !== "undefined" ? window.location.origin : ""
@@ -575,6 +716,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <span style={{ color: state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
                         {state.selfSignupAllowed ? "Open signup" : "Gated"}
                     </span>
+                    {isThresholdElection && thresholdMeta && (
+                        <span style={{ color: "#a855f7", fontSize: "0.75rem" }}>
+                            {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} threshold
+                        </span>
+                    )}
                     {phase === "signup" && state.signupDeadline > 0 && (
                         <span>
                             {Date.now() / 1000 > state.signupDeadline
@@ -833,22 +979,120 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                     : "Voting is closed. Decrypt all votes to see the final result."}
                             </p>
 
-                            {hasStoredKey ? (
-                                <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
-                                    Election key found in this browser
-                                </p>
+                            {isThresholdElection && thresholdMeta ? (
+                                /* ── THRESHOLD TALLY UI ── */
+                                <>
+                                    <div style={{ padding: "10px 14px", background: "#a855f710", borderRadius: "var(--radius)", border: "1px solid #a855f730", marginBottom: 14 }}>
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#a855f7" }}>
+                                            Threshold Election — {thresholdMeta.threshold} of {thresholdMeta.totalShares} shares needed
+                                        </span>
+                                    </div>
+
+                                    {/* Section A: Decrypt Your Share */}
+                                    <details style={{ marginBottom: 14 }}>
+                                        <summary style={{ fontSize: "0.85rem", fontWeight: 600, cursor: "pointer", marginBottom: 8 }}>
+                                            Decrypt Your Share (committee members)
+                                        </summary>
+                                        <div style={{ padding: "12px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.5 }}>
+                                                If you are a committee member, paste your encrypted share and personal private key to decrypt your share.
+                                            </p>
+                                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                                                <input
+                                                    placeholder="Your encrypted share data (hex)"
+                                                    value={decryptShareInput}
+                                                    onChange={e => setDecryptShareInput(e.target.value)}
+                                                    className="mono" style={{ fontSize: "0.7rem" }}
+                                                />
+                                                <input
+                                                    placeholder="Your personal private key (64 hex chars)"
+                                                    value={decryptKeyInput}
+                                                    onChange={e => setDecryptKeyInput(e.target.value)}
+                                                    className="mono" style={{ fontSize: "0.7rem" }}
+                                                    type="password"
+                                                />
+                                            </div>
+                                            <button className="btn-primary" onClick={handleDecryptShare}
+                                                disabled={!decryptShareInput.trim() || !decryptKeyInput.trim()}
+                                                style={{ marginBottom: 8 }}>
+                                                Decrypt My Share
+                                            </button>
+                                            {decryptedShareResult && (
+                                                <div style={{ padding: "8px 12px", background: "#22c55e10", borderRadius: 8, border: "1px solid #22c55e40" }}>
+                                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                                                        <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--success)" }}>Decrypted share:</span>
+                                                        <button onClick={() => { navigator.clipboard.writeText(decryptedShareResult) }}
+                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}>Copy</button>
+                                                    </div>
+                                                    <code className="mono" style={{ fontSize: "0.55rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block" }}>
+                                                        {decryptedShareResult}
+                                                    </code>
+                                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
+                                                        Send this to the tally coordinator.
+                                                    </p>
+                                                </div>
+                                            )}
+                                            {decryptShareError && (
+                                                <p style={{ fontSize: "0.75rem", color: "var(--error)", marginTop: 4 }}>{decryptShareError}</p>
+                                            )}
+                                        </div>
+                                    </details>
+
+                                    {/* Section B: Collect Shares */}
+                                    <div style={{ marginBottom: 14 }}>
+                                        <h4 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>Collect Decrypted Shares</h4>
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                                            {thresholdMeta.committee.map((m, i) => (
+                                                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                                    <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", width: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                                        {m.id}
+                                                    </span>
+                                                    <input
+                                                        placeholder="Decrypted share (128 hex chars)"
+                                                        value={thresholdShareInputs[i] || ""}
+                                                        onChange={e => {
+                                                            const next = [...thresholdShareInputs]
+                                                            next[i] = e.target.value
+                                                            setThresholdShareInputs(next)
+                                                        }}
+                                                        className="mono" style={{ flex: 1, fontSize: "0.6rem", padding: "6px 8px" }}
+                                                    />
+                                                    {thresholdShareInputs[i]?.trim().length === 128 && (
+                                                        <span style={{ color: "var(--success)", fontSize: "0.8rem", flexShrink: 0 }}>&#10003;</span>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 10 }}>
+                                            {thresholdShareInputs.filter(s => s.trim().length === 128).length} of {thresholdMeta.totalShares} shares collected
+                                            ({thresholdMeta.threshold} needed)
+                                            {thresholdShareInputs.filter(s => s.trim().length === 128).length >= thresholdMeta.threshold && (
+                                                <span style={{ color: "var(--success)", fontWeight: 600 }}> — ready!</span>
+                                            )}
+                                        </p>
+                                    </div>
+                                </>
                             ) : (
-                                <div style={{ marginBottom: 12 }}>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
-                                        No election key found. Paste the key from the browser that created this election:
-                                    </p>
-                                    <input
-                                        placeholder="Election private key (64 hex chars)"
-                                        value={manualKeyInput}
-                                        onChange={e => setManualKeyInput(e.target.value)}
-                                        style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}
-                                    />
-                                </div>
+                                /* ── SINGLE KEY TALLY UI (existing) ── */
+                                <>
+                                    {hasStoredKey ? (
+                                        <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
+                                            Election key found in this browser
+                                        </p>
+                                    ) : (
+                                        <div style={{ marginBottom: 12 }}>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
+                                                No election key found. Paste the key from the browser that created this election:
+                                            </p>
+                                            <input
+                                                placeholder="Election private key (64 hex chars)"
+                                                value={manualKeyInput}
+                                                onChange={e => setManualKeyInput(e.target.value)}
+                                                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}
+                                            />
+                                        </div>
+                                    )}
+                                </>
                             )}
 
                             {tallyStep !== "idle" && tallyStep !== "error" && (
@@ -867,8 +1111,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                             <button
                                 className="btn-primary"
-                                onClick={() => runTally(manualKeyInput || undefined)}
-                                disabled={tallyStep === "fetching" || tallyStep === "decrypting" || (!hasStoredKey && !manualKeyInput.trim())}
+                                onClick={() => isThresholdElection ? runThresholdTally() : runTally(manualKeyInput || undefined)}
+                                disabled={
+                                    tallyStep === "fetching" || tallyStep === "decrypting" ||
+                                    (isThresholdElection
+                                        ? (thresholdShareInputs.filter(s => s.trim().length === 128).length < (thresholdMeta?.threshold || 2))
+                                        : (!hasStoredKey && !manualKeyInput.trim()))
+                                }
                             >
                                 {tallyStep === "fetching" || tallyStep === "decrypting" ? "Computing..." : "Tally Votes"}
                             </button>
