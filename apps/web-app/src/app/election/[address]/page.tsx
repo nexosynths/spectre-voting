@@ -103,9 +103,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
             const gid = BigInt(state.groupId)
 
+            // RPC nodes limit getLogs to ~50k blocks, so query recent blocks only
+            const currentBlock = await provider.getBlockNumber()
+            const fromBlock = Math.max(0, currentBlock - 49000)
+
             const [singles, bulks] = await Promise.all([
-                sem.queryFilter(sem.filters.MemberAdded(gid)),
-                sem.queryFilter(sem.filters.MembersAdded(gid)),
+                sem.queryFilter(sem.filters.MemberAdded(gid), fromBlock),
+                sem.queryFilter(sem.filters.MembersAdded(gid), fromBlock),
             ])
 
             const members: { index: number; commitment: string }[] = []
@@ -218,7 +222,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             const provider = new JsonRpcProvider(SEPOLIA_RPC)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const events = await c.queryFilter(c.filters.VoteCast())
+
+            // RPC nodes limit getLogs to ~50k blocks
+            const currentBlock = await provider.getBlockNumber()
+            const fromBlock = Math.max(0, currentBlock - 49000)
+            const events = await c.queryFilter(c.filters.VoteCast(), fromBlock)
 
             addLog(`Found ${events.length} vote(s) on-chain`)
 
