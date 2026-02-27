@@ -47,17 +47,36 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
         setLogs(prev => [{ msg, time: new Date() }, ...prev].slice(0, 100))
     }, [])
 
-    // Restore identity from localStorage on mount
+    // Identity storage key scoped to wallet address
+    const identityKey = useCallback((addr: string) => `spectre-identity-${addr.toLowerCase()}`, [])
+
+    // Load identity when wallet address changes
     useEffect(() => {
-        const saved = localStorage.getItem("spectre-identity")
+        if (!address) { setIdentity(null); return }
+        const key = identityKey(address)
+        const saved = localStorage.getItem(key)
         if (saved) {
             try {
-                setIdentity(Identity.import(saved))
-            } catch {
-                localStorage.removeItem("spectre-identity")
-            }
+                const id = Identity.import(saved)
+                setIdentity(id)
+                return
+            } catch { localStorage.removeItem(key) }
         }
-    }, [])
+
+        // Backward compat: migrate global "spectre-identity" to this wallet's scoped key
+        const global = localStorage.getItem("spectre-identity")
+        if (global) {
+            try {
+                const id = Identity.import(global)
+                setIdentity(id)
+                localStorage.setItem(key, global)
+                localStorage.removeItem("spectre-identity")
+                return
+            } catch { localStorage.removeItem("spectre-identity") }
+        }
+
+        setIdentity(null)
+    }, [address, identityKey])
 
     // Wallet connection
     const connectWallet = useCallback(async () => {
@@ -96,9 +115,21 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
     // Listen for wallet events
     useEffect(() => {
         if (typeof window === "undefined" || !window.ethereum) return
-        const onAccounts = (accts: string[]) => {
-            if (accts.length === 0) { setAddress(null); setSigner(null); setProvider(null) }
-            else setAddress(accts[0])
+        const onAccounts = async (accts: string[]) => {
+            if (accts.length === 0) {
+                setAddress(null); setSigner(null); setProvider(null)
+            } else {
+                // Update address, signer, and provider when wallet switches
+                try {
+                    const bp = new BrowserProvider(window.ethereum)
+                    setProvider(bp)
+                    setSigner(await bp.getSigner())
+                    setAddress(accts[0])
+                    addLog(`Switched to: ${accts[0].slice(0, 6)}...${accts[0].slice(-4)}`)
+                } catch {
+                    setAddress(accts[0])
+                }
+            }
         }
         const onChain = () => window.location.reload()
         window.ethereum.on?.("accountsChanged", onAccounts)
@@ -107,30 +138,32 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
             window.ethereum?.removeListener?.("accountsChanged", onAccounts)
             window.ethereum?.removeListener?.("chainChanged", onChain)
         }
-    }, [])
-
-    // Identity management
-    const createIdentity = useCallback(() => {
-        const id = new Identity()
-        setIdentity(id)
-        localStorage.setItem("spectre-identity", id.export())
-        addLog("New Semaphore identity created")
     }, [addLog])
 
+    // Identity management — scoped to current wallet address
+    const createIdentity = useCallback(() => {
+        if (!address) { addLog("Connect wallet first"); return }
+        const id = new Identity()
+        setIdentity(id)
+        localStorage.setItem(identityKey(address), id.export())
+        addLog("New Semaphore identity created")
+    }, [addLog, address, identityKey])
+
     const importIdentity = useCallback((key: string) => {
+        if (!address) { addLog("Connect wallet first"); return }
         try {
             const id = Identity.import(key)
             setIdentity(id)
-            localStorage.setItem("spectre-identity", key)
+            localStorage.setItem(identityKey(address), key)
             addLog("Identity imported successfully")
         } catch { addLog("Invalid key format") }
-    }, [addLog])
+    }, [addLog, address, identityKey])
 
     const clearIdentity = useCallback(() => {
         setIdentity(null)
-        localStorage.removeItem("spectre-identity")
+        if (address) localStorage.removeItem(identityKey(address))
         addLog("Identity cleared")
-    }, [addLog])
+    }, [addLog, address, identityKey])
 
     return (
         <SpectreContext.Provider value={{

@@ -219,7 +219,11 @@ export default function HomePage() {
 
                 {(showIdentity || !identity) && (
                     <div style={{ marginTop: 12 }}>
-                        {identity ? (
+                        {!address ? (
+                            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                                Connect your wallet first — each wallet gets its own identity.
+                            </p>
+                        ) : identity ? (
                             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                                 <div>
                                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
@@ -253,7 +257,7 @@ export default function HomePage() {
                         ) : (
                             <div>
                                 <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 12 }}>
-                                    Create an anonymous identity to vote in elections. Your identity stays in this browser.
+                                    Create an anonymous identity for this wallet. Each wallet gets its own identity.
                                 </p>
                                 <button className="btn-primary" onClick={createIdentity} style={{ marginBottom: 12 }}>
                                     Create Identity

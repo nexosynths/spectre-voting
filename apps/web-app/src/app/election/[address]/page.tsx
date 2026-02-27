@@ -604,25 +604,25 @@ export default function ElectionPage({ params }: { params: { address: string } }
             {/* ═══ VOTE/SIGNUP TAB ═══ */}
             {tab === "vote" && (
                 <>
-                    {/* Step 1: Identity */}
-                    {!identity && (
+                    {/* Step 1: Wallet */}
+                    {!address && (
                         <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 1: Create Identity</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                                Generate an anonymous identity. This stays in your browser — nobody can link it to you.
-                            </p>
-                            <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
-                        </div>
-                    )}
-
-                    {/* Step 2: Wallet */}
-                    {identity && !address && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 2: Connect Wallet</h4>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 1: Connect Wallet</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
                                 Connect to submit transactions on-chain. Your wallet is only for gas — your vote stays anonymous.
                             </p>
                             <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>Connect Wallet</button>
+                        </div>
+                    )}
+
+                    {/* Step 2: Identity */}
+                    {address && !identity && (
+                        <div className="card" style={{ marginBottom: 16 }}>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 2: Create Identity</h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
+                                Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
+                            </p>
+                            <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
                         </div>
                     )}
 
