@@ -37,6 +37,7 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 |---|---|---|---|---|---|
 | Identity delinking | Yes (mandatory) | Yes (anon poll join) | Optional | No | No |
 | Admin can't see votes | Yes (ECIES) | No (coordinator decrypts) | Partially | Yes (time-lock) | During voting only |
+| Threshold decryption | Yes (t-of-n optional) | No | No | No | Partial (Shutter) |
 | Multi-option (circuit) | Yes | No | No | No | No |
 | Production deployed | Testnet | Unaudited | Yes (920k users) | Research PoC | Yes |
 
@@ -78,7 +79,7 @@ spectre-voting/
 │   │   │   ├── SpectreVoteVerifier.sol   # Groth16 vote proof verifier (5 public signals)
 │   │   │   └── AnonJoinVerifier.sol      # Groth16 join proof verifier (4 public signals)
 │   │   ├── test/
-│   │   │   └── SpectreVotingFactory.ts   # 26 tests (three-phase flow, ZK proofs, multi-option)
+│   │   │   └── SpectreVotingFactory.ts   # 29 tests (three-phase flow, ZK proofs, multi-option, gated signup)
 │   │   ├── tasks/deploy.ts
 │   │   └── scripts/deploy-factory-sepolia.ts
 │   ├── circuits/            # Circom ZK circuits
@@ -87,11 +88,14 @@ spectre-voting/
 │   │       └── SpectreVote.circom        # Vote proof with numOptions (10k constraints)
 │   ├── sdk/                 # TypeScript SDK
 │   │   └── src/
-│   │       ├── voter.ts     # Vote preparation + payload encoding
-│   │       ├── tally.ts     # Decrypt + verify + count
+│   │       ├── voter.ts     # Vote preparation + payload encoding (multi-option)
+│   │       ├── prove.ts     # ZK proof generation (numOptions support)
+│   │       ├── tally.ts     # Decrypt + verify + count (optionCounts[])
 │   │       ├── ecies.ts     # ECIES encrypt/decrypt (Node.js)
-│   │       ├── threshold.ts # Shamir secret sharing for committee keys
-│   │       └── test.ts      # SDK integration tests
+│   │       ├── shamir.ts    # Shamir secret sharing (split/combine)
+│   │       ├── dealer.ts    # Dealer ceremony (setupElection, share serialization)
+│   │       ├── test.ts      # SDK integration tests
+│   │       └── test-threshold.ts # Threshold + multi-option tally tests (28 tests)
 │   └── web-app/             # Next.js frontend (deployed to Vercel)
 │       ├── src/
 │       │   ├── app/
@@ -101,6 +105,7 @@ spectre-voting/
 │       │   ├── lib/
 │       │   │   ├── contracts.ts          # ABIs + addresses + RPC (v3 contracts)
 │       │   │   ├── ecies.ts              # Browser ECIES (encrypt + decrypt)
+│       │   │   ├── threshold.ts          # Browser Shamir + dealer + share reconstruction
 │       │   │   ├── proof.ts              # Browser SpectreVote proof generation
 │       │   │   └── anonJoinProof.ts      # Browser AnonJoin proof generation
 │       │   ├── context/
@@ -118,6 +123,17 @@ spectre-voting/
 
 ## Feature Status
 
+### Done (v4 — Access Control + Threshold Encryption)
+- [x] Gated signup toggle — `selfSignupAllowed` bool on contract; when false, only admin can register voters via `registerVoter()`/`registerVoters()`
+- [x] Optional threshold encryption — admin chooses single-key (default) or t-of-n committee mode at election creation
+- [x] Dealer ceremony UI — committee member setup with name + secp256k1 pubkey, "Generate Keypair" convenience button
+- [x] Shamir secret sharing in browser — split/combine over secp256k1 scalar field, ECIES-encrypted shares per committee member
+- [x] Share distribution modal — copy encrypted shares for each committee member after election creation
+- [x] Threshold tally UI — "Decrypt Your Share" (committee member decrypts their share) + "Collect Shares & Tally" (coordinator collects t shares)
+- [x] SDK multi-option tally — `TallyResult.optionCounts[]` replaces `votesFor/votesAgainst`, `computeTally()` takes `numOptions` param
+- [x] SDK prove/voter updated for v3 circuit — `numOptions` passed as circuit input (27 inputs total)
+- [x] 29 passing contract tests, 28 passing SDK tests
+
 ### Done (v3 — ZK Re-Key + Multi-Option)
 - [x] AnonJoin ZK circuit — proves signup group membership, outputs delinked commitment + join nullifier
 - [x] SpectreVote ZK circuit — updated with numOptions public input + LessThan(8) range check
@@ -131,7 +147,6 @@ spectre-voting/
 - [x] Per-election per-wallet voting identity (delinked from signup identity)
 - [x] Dynamic option labels (add/remove during election creation)
 - [x] Per-option tally with colored progress bars + winner detection
-- [x] 26 passing contract tests (three-phase flow, ZK proofs, multi-option, deadlines)
 - [x] Deployed v3 contracts to Sepolia + end-to-end verified with 3 wallets
 
 ### Done (v1-v2 — Foundation)
@@ -154,10 +169,8 @@ spectre-voting/
 - [x] Wallet switching support (accountsChanged updates signer + loads correct identity)
 
 ### Next Up
-- [ ] **Gated signup toggle** — `selfSignupAllowed` bool on contract. When false, only admin can register voters. Needed for controlled elections (board votes, shareholder votes).
 - [ ] **Relayer service** — Accept signed proofs from voters, submit on-chain transactions from a funded wallet. Eliminates wallet/gas requirement for voters. Biggest UX unlock for non-crypto users.
 - [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms.
-- [ ] **Threshold decryption** — Shamir 3-of-5 key splitting for election key. No single party can see results early.
 - [ ] **Better error messages** — Decode contract custom errors (NullifierAlreadyUsed, MerkleRootMismatch, etc.) into human-readable messages in the UI.
 - [ ] **Mobile responsive polish**
 - [ ] **On-chain result commitment** — Publish Poseidon root of tally for auditability.
@@ -217,7 +230,7 @@ yarn dev  # starts Next.js on localhost:3000
 ### Run contract tests
 ```bash
 cd apps/contracts
-npx hardhat test  # 26 tests, ~10s
+npx hardhat test  # 29 tests, ~10s
 ```
 
 ### Compile circuits
@@ -252,17 +265,17 @@ snarkjs zkey export solidityverifier build/AnonJoin_final.zkey ../contracts/cont
 - **snarkjs webpack warning:** Expected warning about dynamic require in web-worker — doesn't affect functionality.
 - **Circom bare includes:** `@zk-kit/circuits` uses bare `include "poseidon.circom"` requiring an extra `-l` flag pointing to `circomlib/circuits/` directory.
 - **Groth16Verifier name collision:** snarkjs generates all verifiers as `contract Groth16Verifier`. Must manually rename to `AnonJoinVerifier` / `SpectreVoteVerifier` after generation.
-- **Self-signup is open:** Currently anyone who finds the contract address can call `signUp()`. For controlled elections, admin should use `registerVoter()` / `registerVoters()` and close signup quickly. Gated signup toggle is planned.
+- **Threshold meta is client-side:** Threshold committee info and encrypted shares are stored in localStorage alongside election metadata. The admin who creates a threshold election must distribute shares out-of-band (copy/paste).
 
 ## Security Notes
 - **Testnet only** — Sepolia deployer private key is in git history. Never use for mainnet.
 - **Threat model completed** — 22 findings assessed, 3 real issues fixed (commitment validation, payload privacy, voting deadline).
-- **Client-side key management** — Election private keys stored in localStorage. For production, use threshold decryption.
+- **Client-side key management** — Single-key election private keys stored in localStorage. Threshold elections store encrypted shares in localStorage (no master key retained). For production, use threshold mode.
 - **No formal audit** — This is a proof of concept, not audited production code.
 - **Identity scoping** — Identities are scoped to wallet address to prevent cross-wallet leakage. Voting identities are scoped to both election address and wallet address.
 
 ## Developer Context
 - Built as a proof of concept for anonymous encrypted voting with ZK re-key identity delinking
 - Closest existing protocols: MACI v3 (anonymous poll joining, unaudited) and aMACI (DoraHacks, optional re-key)
-- Core protocol is complete and end-to-end tested; next priorities are access control (gated signup) and UX (relayer for gas-free voting)
+- Core protocol is complete and end-to-end tested; next priority is UX (relayer for gas-free voting)
 - Prioritize clean UX and iterate — the cryptographic foundation is solid
