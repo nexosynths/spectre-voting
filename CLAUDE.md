@@ -106,6 +106,7 @@ spectre-voting/
 │       │   │   ├── contracts.ts          # ABIs + addresses + RPC (v3 contracts)
 │       │   │   ├── ecies.ts              # Browser ECIES (encrypt + decrypt)
 │       │   │   ├── threshold.ts          # Browser Shamir + dealer + share reconstruction
+│       │   │   ├── errors.ts             # Human-readable contract error decoder
 │       │   │   ├── proof.ts              # Browser SpectreVote proof generation
 │       │   │   └── anonJoinProof.ts      # Browser AnonJoin proof generation
 │       │   ├── context/
@@ -133,6 +134,7 @@ spectre-voting/
 - [x] SDK multi-option tally — `TallyResult.optionCounts[]` replaces `votesFor/votesAgainst`, `computeTally()` takes `numOptions` param
 - [x] SDK prove/voter updated for v3 circuit — `numOptions` passed as circuit input (27 inputs total)
 - [x] 29 passing contract tests, 28 passing SDK tests
+- [x] Human-readable error messages — `friendlyError()` decodes 15 contract custom errors into user-friendly strings
 
 ### Done (v3 — ZK Re-Key + Multi-Option)
 - [x] AnonJoin ZK circuit — proves signup group membership, outputs delinked commitment + join nullifier
@@ -171,7 +173,6 @@ spectre-voting/
 ### Next Up
 - [ ] **Relayer service** — Accept signed proofs from voters, submit on-chain transactions from a funded wallet. Eliminates wallet/gas requirement for voters. Biggest UX unlock for non-crypto users.
 - [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms.
-- [ ] **Better error messages** — Decode contract custom errors (NullifierAlreadyUsed, MerkleRootMismatch, etc.) into human-readable messages in the UI.
 - [ ] **Mobile responsive polish**
 - [ ] **On-chain result commitment** — Publish Poseidon root of tally for auditability.
 - [ ] **Mainnet deployment**
