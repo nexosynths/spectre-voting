@@ -17,7 +17,6 @@ const SPECTRE_VOTING_ABI = [
 export interface VotePayload {
     vote: bigint
     voteRandomness: bigint
-    nullifierHash: string
 }
 
 export interface PreparedVote {
@@ -28,10 +27,15 @@ export interface PreparedVote {
 
 /**
  * Encode a vote payload into bytes for ECIES encryption.
- * Format: vote (1 byte) || randomness (32 bytes big-endian) || nullifierHash (32 bytes)
+ * Format: vote (1 byte) || randomness (32 bytes big-endian)
+ * Total: 33 bytes
+ *
+ * Note: nullifier is NOT included — it's already a public signal in the ZK proof
+ * and emitted on-chain in the VoteCast event. Including it in the encrypted
+ * blob would be redundant and reduce privacy.
  */
-function encodeVotePayload(vote: bigint, randomness: bigint, nullifierHash: string): Uint8Array {
-    const buf = new Uint8Array(65)
+function encodeVotePayload(vote: bigint, randomness: bigint): Uint8Array {
+    const buf = new Uint8Array(33)
     buf[0] = Number(vote)
 
     // randomness as 32-byte big-endian
@@ -40,17 +44,12 @@ function encodeVotePayload(vote: bigint, randomness: bigint, nullifierHash: stri
         buf[1 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
     }
 
-    // nullifierHash as 32-byte big-endian
-    const nHex = BigInt(nullifierHash).toString(16).padStart(64, "0")
-    for (let i = 0; i < 32; i++) {
-        buf[33 + i] = parseInt(nHex.substring(i * 2, i * 2 + 2), 16)
-    }
-
     return buf
 }
 
 /**
  * Decode a vote payload from bytes.
+ * Expects 33 bytes: vote (1 byte) || randomness (32 bytes big-endian)
  */
 export function decodeVotePayload(buf: Uint8Array): VotePayload {
     const vote = BigInt(buf[0])
@@ -59,11 +58,7 @@ export function decodeVotePayload(buf: Uint8Array): VotePayload {
     for (let i = 0; i < 32; i++) rHex += buf[1 + i].toString(16).padStart(2, "0")
     const voteRandomness = BigInt("0x" + rHex)
 
-    let nHex = ""
-    for (let i = 0; i < 32; i++) nHex += buf[33 + i].toString(16).padStart(2, "0")
-    const nullifierHash = BigInt("0x" + nHex).toString()
-
-    return { vote, voteRandomness, nullifierHash }
+    return { vote, voteRandomness }
 }
 
 /**
@@ -103,13 +98,13 @@ export async function prepareVote(
     )
 
     // Encode and encrypt vote payload
-    const plaintext = encodeVotePayload(vote, voteRandomness, proof.nullifierHash)
+    const plaintext = encodeVotePayload(vote, voteRandomness)
     const encryptedBlob = eciesEncrypt(electionPubKey, plaintext)
 
     return {
         proof,
         encryptedBlob,
-        payload: { vote, voteRandomness, nullifierHash: proof.nullifierHash }
+        payload: { vote, voteRandomness }
     }
 }
 

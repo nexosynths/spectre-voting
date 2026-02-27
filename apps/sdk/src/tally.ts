@@ -1,7 +1,7 @@
 import { poseidon2 } from "poseidon-lite"
 import { combine, type Share } from "./shamir.js"
 import { eciesDecrypt } from "./ecies.js"
-import { decodeVotePayload, type VotePayload } from "./voter.js"
+import { decodeVotePayload } from "./voter.js"
 import { deserializeShare } from "./dealer.js"
 
 /**
@@ -73,7 +73,7 @@ function decryptAndVerifyVote(
     electionPrivKey: Uint8Array,
     submitted: SubmittedVote
 ): DecryptedVote {
-    let payload: VotePayload
+    let payload: { vote: bigint; voteRandomness: bigint }
     try {
         const decrypted = eciesDecrypt(electionPrivKey, submitted.encryptedBlob)
         payload = decodeVotePayload(decrypted)

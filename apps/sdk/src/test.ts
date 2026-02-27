@@ -119,7 +119,6 @@ async function main() {
             decoded.voteRandomness === prepared.payload.voteRandomness,
             "Decrypted randomness matches original"
         )
-        assert(decoded.nullifierHash === prepared.payload.nullifierHash, "Decrypted nullifier matches proof")
 
         // Committee verifies: Poseidon(decrypted_vote, decrypted_randomness) == on-chain voteCommitment
         const recomputedCommitment = poseidon2([decoded.vote, decoded.voteRandomness])

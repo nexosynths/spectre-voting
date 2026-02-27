@@ -8770,6 +8770,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "monorepo-ethers-web-app@workspace:apps/web-app"
   dependencies:
+    "@noble/ciphers": "npm:^0.6.0"
+    "@noble/curves": "npm:^1.4.0"
+    "@noble/hashes": "npm:^1.4.0"
     "@semaphore-protocol/core": "npm:4.14.2"
     "@semaphore-protocol/data": "npm:4.14.2"
     "@semaphore-protocol/utils": "npm:4.14.2"
@@ -8782,8 +8785,10 @@ __metadata:
     ethers: "npm:^6.13.4"
     next: "npm:14.1.0"
     next-pwa: "npm:^5.6.0"
+    poseidon-lite: "npm:^0.3.0"
     react: "npm:^18"
     react-dom: "npm:^18"
+    snarkjs: "npm:^0.7.0"
     typescript: "npm:^5"
   languageName: unknown
   linkType: soft

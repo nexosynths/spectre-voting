@@ -32,6 +32,9 @@ contract SpectreVoting {
     bool public votingOpen;
     address public admin;
 
+    // Time-bounded voting: 0 means no deadline (admin-only close)
+    uint256 public votingDeadline;
+
     // v1: public nullifier dedup
     mapping(uint256 => bool) public usedNullifiers;
 
@@ -65,6 +68,8 @@ contract SpectreVoting {
     error NullifierAlreadyUsed();
     error InvalidProof();
     error MerkleRootMismatch();
+    error InvalidCommitment();
+    error VotingDeadlinePassed();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -73,6 +78,7 @@ contract SpectreVoting {
 
     modifier whenVotingOpen() {
         if (!votingOpen) revert VotingNotOpen();
+        if (votingDeadline != 0 && block.timestamp > votingDeadline) revert VotingDeadlinePassed();
         _;
     }
 
@@ -81,14 +87,17 @@ contract SpectreVoting {
         address _verifier,
         uint256 _proposalId,
         uint256 _electionPubKeyX,
-        uint256 _electionPubKeyY
+        uint256 _electionPubKeyY,
+        address _admin,
+        uint256 _votingDeadline
     ) {
         semaphore = ISemaphore(_semaphore);
         verifier = ISpectreVerifier(_verifier);
-        admin = msg.sender;
+        admin = _admin == address(0) ? msg.sender : _admin;
         proposalId = _proposalId;
         electionPubKeyX = _electionPubKeyX;
         electionPubKeyY = _electionPubKeyY;
+        votingDeadline = _votingDeadline; // 0 = no deadline
 
         // Create a Semaphore group — this contract becomes the group admin
         groupId = semaphore.createGroup();
@@ -101,12 +110,16 @@ contract SpectreVoting {
     /// @notice Register a voter's identity commitment into the group
     /// @param identityCommitment Poseidon(BabyJubJub_pubkey) — the voter's identity
     function registerVoter(uint256 identityCommitment) external onlyAdmin {
+        if (identityCommitment == 0) revert InvalidCommitment();
         semaphore.addMember(groupId, identityCommitment);
         emit VoterRegistered(groupId, identityCommitment);
     }
 
     /// @notice Register multiple voters at once
     function registerVoters(uint256[] calldata identityCommitments) external onlyAdmin {
+        for (uint256 i = 0; i < identityCommitments.length; i++) {
+            if (identityCommitments[i] == 0) revert InvalidCommitment();
+        }
         semaphore.addMembers(groupId, identityCommitments);
     }
 
@@ -156,9 +169,13 @@ contract SpectreVoting {
         emit VoteCast(proposalId, nullifierHash, voteCommitment, encryptedBlob);
     }
 
-    /// @notice Close voting — no more votes accepted after this
-    function closeVoting() external onlyAdmin {
+    /// @notice Close voting — admin can close anytime; anyone can close after deadline
+    function closeVoting() external {
         if (!votingOpen) revert VotingNotOpen();
+        // Admin can always close. Others can only close after deadline.
+        if (msg.sender != admin) {
+            if (votingDeadline == 0 || block.timestamp <= votingDeadline) revert NotAdmin();
+        }
         votingOpen = false;
         emit VotingClosed(proposalId, voteCount);
     }

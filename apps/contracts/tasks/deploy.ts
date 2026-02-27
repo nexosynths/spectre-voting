@@ -30,13 +30,16 @@ task("deploy", "Deploy SpectreVoting contract with verifier")
             }
 
             // Deploy SpectreVoting
+            // _admin = address(0) → constructor defaults to msg.sender
             const SpectreVotingFactory = await ethers.getContractFactory("SpectreVoting")
             const spectreVoting = await SpectreVotingFactory.deploy(
                 semaphoreAddress,
                 verifierAddress,
                 proposalid,
                 pubkeyx,
-                pubkeyy
+                pubkeyy,
+                ethers.ZeroAddress,
+                0 // no deadline for direct deploy — admin close only
             )
 
             if (logs) {
