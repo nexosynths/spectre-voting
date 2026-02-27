@@ -1,56 +1,45 @@
-# Semaphore Hardhat + Next.js + SemaphoreEthers template
+# Spectre
 
-This project is a complete application that demonstrates a basic Semaphore use case. It comes with a sample contract, a test for that contract and a sample task that deploys that contract. It also contains a frontend to play around with the contract.
+Anonymous encrypted voting on Ethereum using zero-knowledge proofs.
 
-## Install
+Voters prove they're eligible without revealing who they are. Votes are encrypted until tally. One person, one vote — enforced by math, not trust.
 
-### Install dependencies
+**Live demo:** [spectre-voting-web-app.vercel.app](https://spectre-voting-web-app.vercel.app)
+
+## How It Works
+
+1. **Admin creates an election** — deploys a contract, sets a title and deadline
+2. **Voters generate anonymous identities** — ZK identity stays in the browser
+3. **Admin registers voters** — adds their identity commitments to the on-chain group
+4. **Voters cast votes** — browser generates a ZK proof + encrypts the vote, submits on-chain
+5. **Admin tallies** — decrypts all votes client-side, results displayed with cryptographic verification
+
+Nobody can see how you voted. Nobody can vote twice. No server. No backend. Just math and Ethereum.
+
+## Tech
+
+- **ZK Proofs:** Groth16 via Circom + snarkjs (browser-generated)
+- **Identity:** Semaphore V4 (anonymous group membership)
+- **Encryption:** ECIES-secp256k1 (ECDH + HKDF-SHA256 + AES-256-GCM)
+- **Contracts:** Solidity 0.8.23 on Sepolia
+- **Frontend:** Next.js 14 on Vercel
+
+## Quick Start
 
 ```bash
+git clone https://github.com/nexosynths/spectre-voting.git
+cd spectre-voting
 yarn
-```
-
-## 📜 Usage
-
-### Local server
-
-You can start your app locally with:
-
-```bash
 yarn dev
 ```
 
-### Deploy the contract
-
-1. Go to the `apps/contracts` directory and deploy your contract:
+## Run Tests
 
 ```bash
-yarn deploy --semaphore <semaphore-address> --network sepolia
+cd apps/contracts
+npx hardhat test   # 17 tests
 ```
 
-2. Update your `apps/web-app/.env.production` file with your new contract address and the group id.
+## License
 
-3. Copy your contract artifacts from `apps/contracts/artifacts/contracts/` folder to `apps/web-app/contract-artifacts` folder manually.
-
-> [!NOTE]
-> Check the Semaphore contract addresses [here](https://docs.semaphore.pse.dev/deployed-contracts).
-
-### Code quality and formatting
-
-Run [ESLint](https://eslint.org/) and [solhint](https://github.com/protofire/solhint) to analyze the code and catch bugs:
-
-```bash
-yarn lint
-```
-
-Run [Prettier](https://prettier.io/) to check formatting rules:
-
-```bash
-yarn prettier
-```
-
-Or to automatically format the code:
-
-```bash
-yarn prettier:write
-```
+MIT
