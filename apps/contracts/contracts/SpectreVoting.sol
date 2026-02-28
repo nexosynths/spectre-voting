@@ -81,6 +81,19 @@ contract SpectreVoting {
     uint256 public tallyTotalInvalid;
     uint256[] public tallyOptionCounts;
 
+    // ── Threshold committee (optional — committeeThreshold == 0 means single-key mode) ──
+    uint256 public committeeThreshold;
+    address[] internal _committeeMembers;
+    mapping(address => bool) public isCommitteeMember;
+    mapping(address => bytes) public committeePublicKeys;  // address → 33-byte compressed secp256k1
+    uint256 public registeredKeyCount;
+    bool public committeeFinalized;
+
+    // ── On-chain decrypted share submission (post-voting) ──
+    mapping(address => bytes) public decryptedShares;
+    mapping(address => bool) public hasSubmittedShare;
+    uint256 public submittedShareCount;
+
     event ElectionCreated(
         uint256 indexed signupGroupId,
         uint256 indexed votingGroupId,
@@ -112,6 +125,12 @@ contract SpectreVoting {
     event VotingClosed(uint256 indexed proposalId, uint256 totalVotes);
     event TallyCommitted(uint256 indexed proposalId, uint256 poseidonCommitment, uint256 totalValid, uint256 totalInvalid, uint256[] optionCounts);
 
+    // Committee events
+    event CommitteeSetup(uint256 indexed proposalId, uint256 threshold, address[] members);
+    event CommitteeKeyRegistered(uint256 indexed proposalId, address indexed member, bytes publicKey);
+    event CommitteeFinalized(uint256 indexed proposalId, uint256 pubKeyX, uint256 pubKeyY, bytes encryptedSharesData);
+    event DecryptedShareSubmitted(uint256 indexed proposalId, address indexed member, bytes share);
+
     error NotAdmin();
     error SignupNotOpen();
     error VotingNotOpen();
@@ -130,6 +149,19 @@ contract SpectreVoting {
     error TallyAlreadyCommitted();
     error VotingStillOpen();
     error InvalidOptionCount();
+
+    // Committee errors
+    error CommitteeAlreadySetup();
+    error CommitteeNotSetup();
+    error NotCommitteeMember();
+    error KeyAlreadyRegistered();
+    error CommitteeAlreadyFinalized();
+    error NotAllKeysRegistered();
+    error InvalidThreshold();
+    error ShareAlreadySubmitted();
+    error InvalidPublicKey();
+    error ElectionKeyNotSet();
+    error CommitteeNotFinalized();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -222,6 +254,8 @@ contract SpectreVoting {
         if (msg.sender != admin) {
             if (signupDeadline == 0 || block.timestamp <= signupDeadline) revert NotAdmin();
         }
+        // If committee is configured, it must be finalized before voting can start
+        if (committeeThreshold > 0 && !committeeFinalized) revert CommitteeNotFinalized();
         signupOpen = false;
         votingOpen = true;
         emit SignupClosed(proposalId);
@@ -373,5 +407,90 @@ contract SpectreVoting {
     /// @return The full tallyOptionCounts array
     function getTallyOptionCounts() external view returns (uint256[] memory) {
         return tallyOptionCounts;
+    }
+
+    // =======================================================================
+    // Threshold Committee — on-chain key registration + share submission
+    // =======================================================================
+
+    /// @notice Admin configures a threshold committee. Callable once during signup phase.
+    /// @param _threshold Number of shares required to reconstruct the key (2 <= t <= n)
+    /// @param _members Wallet addresses of committee members
+    function setupCommittee(uint256 _threshold, address[] calldata _members) external onlyAdmin whenSignupOpen {
+        if (committeeThreshold != 0) revert CommitteeAlreadySetup();
+        if (_threshold < 2 || _threshold > _members.length) revert InvalidThreshold();
+
+        committeeThreshold = _threshold;
+        for (uint256 i = 0; i < _members.length; i++) {
+            _committeeMembers.push(_members[i]);
+            isCommitteeMember[_members[i]] = true;
+        }
+
+        emit CommitteeSetup(proposalId, _threshold, _members);
+    }
+
+    /// @notice Committee member registers their secp256k1 public key.
+    /// @param _publicKey 33-byte compressed secp256k1 public key
+    function registerCommitteeKey(bytes calldata _publicKey) external whenSignupOpen {
+        if (committeeThreshold == 0) revert CommitteeNotSetup();
+        if (!isCommitteeMember[msg.sender]) revert NotCommitteeMember();
+        if (committeePublicKeys[msg.sender].length > 0) revert KeyAlreadyRegistered();
+        if (committeeFinalized) revert CommitteeAlreadyFinalized();
+        if (_publicKey.length != 33) revert InvalidPublicKey();
+
+        committeePublicKeys[msg.sender] = _publicKey;
+        registeredKeyCount++;
+
+        emit CommitteeKeyRegistered(proposalId, msg.sender, _publicKey);
+    }
+
+    /// @notice Admin finalizes the committee after dealer ceremony. Sets the election public key.
+    /// @dev Admin reads all registered pubkeys from chain, runs dealer ceremony locally,
+    ///      then submits the combined election pubkey + encrypted shares.
+    /// @param _pubKeyX Election public key X coordinate
+    /// @param _pubKeyY Election public key Y coordinate
+    /// @param _encryptedSharesData Encoded encrypted shares (emitted in event for retrieval)
+    function finalizeCommittee(
+        uint256 _pubKeyX,
+        uint256 _pubKeyY,
+        bytes calldata _encryptedSharesData
+    ) external onlyAdmin whenSignupOpen {
+        if (committeeThreshold == 0) revert CommitteeNotSetup();
+        if (committeeFinalized) revert CommitteeAlreadyFinalized();
+        if (registeredKeyCount != _committeeMembers.length) revert NotAllKeysRegistered();
+        if (_pubKeyX == 0 && _pubKeyY == 0) revert InvalidPublicKey();
+
+        electionPubKeyX = _pubKeyX;
+        electionPubKeyY = _pubKeyY;
+        committeeFinalized = true;
+
+        emit CommitteeFinalized(proposalId, _pubKeyX, _pubKeyY, _encryptedSharesData);
+    }
+
+    /// @notice Committee member submits their decrypted share after voting closes.
+    /// @param _share Serialized share (64 bytes: x || y, each 32 bytes big-endian)
+    function submitDecryptedShare(bytes calldata _share) external {
+        if (committeeThreshold == 0) revert CommitteeNotSetup();
+        if (!committeeFinalized) revert CommitteeNotFinalized();
+        if (!isCommitteeMember[msg.sender]) revert NotCommitteeMember();
+        if (signupOpen) revert SignupStillOpen();
+        if (votingOpen) revert VotingStillOpen();
+        if (hasSubmittedShare[msg.sender]) revert ShareAlreadySubmitted();
+
+        decryptedShares[msg.sender] = _share;
+        hasSubmittedShare[msg.sender] = true;
+        submittedShareCount++;
+
+        emit DecryptedShareSubmitted(proposalId, msg.sender, _share);
+    }
+
+    /// @notice Get all committee member addresses
+    function getCommitteeMembers() external view returns (address[] memory) {
+        return _committeeMembers;
+    }
+
+    /// @notice Get a member's decrypted share (empty bytes if not submitted)
+    function getDecryptedShare(address _member) external view returns (bytes memory) {
+        return decryptedShares[_member];
     }
 }

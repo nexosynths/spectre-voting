@@ -1,6 +1,6 @@
-// Deployed contract addresses (Sepolia testnet) — v3: ZK re-key + multi-option
+// Deployed contract addresses (Sepolia testnet) — v4: on-chain threshold committee coordination
 export const CONTRACTS = {
-    FACTORY: "0x1910a582e6D4e5ab74e40Cc1474992b1F454caEf",
+    FACTORY: "0xf548704Da5F00e709B28c8B1499E358A9984aefB",
     SEMAPHORE: "0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D",
     VOTE_VERIFIER: "0xe4a2be410766bCB37Df956334869135fe80AF36d",
     JOIN_VERIFIER: "0xdeE4c3F80332119f59940c363947865bbF7d0585",
@@ -18,8 +18,8 @@ export const FACTORY_ABI = [
     "function elections(uint256) view returns (address)",
     "function isElection(address) view returns (bool)",
     "function getElections(uint256 offset, uint256 limit) view returns (address[])",
-    "function createElection(uint256 _proposalId, uint256 _electionPubKeyX, uint256 _electionPubKeyY, uint256 _signupDeadline, uint256 _votingDeadline, uint256 _numOptions, bool _selfSignupAllowed) returns (address)",
-    "event ElectionDeployed(address indexed election, address indexed admin, uint256 proposalId, uint256 electionPubKeyX, uint256 electionPubKeyY, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions, bool selfSignupAllowed)",
+    "function createElection(uint256 _proposalId, uint256 _electionPubKeyX, uint256 _electionPubKeyY, uint256 _signupDeadline, uint256 _votingDeadline, uint256 _numOptions, bool _selfSignupAllowed, bytes _metadata) returns (address)",
+    "event ElectionDeployed(address indexed election, address indexed admin, uint256 proposalId, uint256 electionPubKeyX, uint256 electionPubKeyY, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions, bool selfSignupAllowed, bytes metadata)",
 ]
 
 // SpectreVoting contract ABI (v3: three-phase, ZK re-key, multi-option)
@@ -64,6 +64,26 @@ export const SPECTRE_VOTING_ABI = [
     "event SignupClosed(uint256 indexed proposalId)",
     "event VotingClosed(uint256 indexed proposalId, uint256 totalVotes)",
     "event TallyCommitted(uint256 indexed proposalId, uint256 poseidonCommitment, uint256 totalValid, uint256 totalInvalid, uint256[] optionCounts)",
+    // Threshold committee
+    "function committeeThreshold() view returns (uint256)",
+    "function isCommitteeMember(address) view returns (bool)",
+    "function committeePublicKeys(address) view returns (bytes)",
+    "function registeredKeyCount() view returns (uint256)",
+    "function committeeFinalized() view returns (bool)",
+    "function decryptedShares(address) view returns (bytes)",
+    "function hasSubmittedShare(address) view returns (bool)",
+    "function submittedShareCount() view returns (uint256)",
+    "function setupCommittee(uint256 _threshold, address[] _members)",
+    "function registerCommitteeKey(bytes _publicKey)",
+    "function finalizeCommittee(uint256 _pubKeyX, uint256 _pubKeyY, bytes _encryptedSharesData)",
+    "function submitDecryptedShare(bytes _share)",
+    "function getCommitteeMembers() view returns (address[])",
+    "function getDecryptedShare(address _member) view returns (bytes)",
+    // Committee events
+    "event CommitteeSetup(uint256 indexed proposalId, uint256 threshold, address[] members)",
+    "event CommitteeKeyRegistered(uint256 indexed proposalId, address indexed member, bytes publicKey)",
+    "event CommitteeFinalized(uint256 indexed proposalId, uint256 pubKeyX, uint256 pubKeyY, bytes encryptedSharesData)",
+    "event DecryptedShareSubmitted(uint256 indexed proposalId, address indexed member, bytes share)",
     // Custom errors
     "error NotAdmin()",
     "error SignupNotOpen()",
@@ -83,6 +103,18 @@ export const SPECTRE_VOTING_ABI = [
     "error TallyAlreadyCommitted()",
     "error VotingStillOpen()",
     "error InvalidOptionCount()",
+    // Committee errors
+    "error CommitteeAlreadySetup()",
+    "error CommitteeNotSetup()",
+    "error NotCommitteeMember()",
+    "error KeyAlreadyRegistered()",
+    "error CommitteeAlreadyFinalized()",
+    "error NotAllKeysRegistered()",
+    "error InvalidThreshold()",
+    "error ShareAlreadySubmitted()",
+    "error InvalidPublicKey()",
+    "error ElectionKeyNotSet()",
+    "error CommitteeNotFinalized()",
 ]
 
 // Semaphore V4 contract ABI (events for querying group members)

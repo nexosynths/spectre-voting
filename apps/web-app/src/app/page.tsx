@@ -2,12 +2,11 @@
 
 import { useSpectre } from "@/context/SpectreContext"
 import { useState, useEffect, useCallback } from "react"
-import { Contract, JsonRpcProvider } from "ethers"
+import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, isAddress } from "ethers"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { setupElection, encryptedShareToHex, generateCommitteeKeypair, isValidPublicKey, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
 
 interface ElectionInfo {
     address: string
@@ -22,11 +21,9 @@ interface ElectionInfo {
 
 export default function HomePage() {
     const {
-        identity, createIdentity, importIdentity, clearIdentity,
         address, signer, connectWallet, addLog,
     } = useSpectre()
 
-    const [importKey, setImportKey] = useState("")
     const [copied, setCopied] = useState("")
     const [elections, setElections] = useState<ElectionInfo[]>([])
     const [loadingElections, setLoadingElections] = useState(true)
@@ -39,22 +36,16 @@ export default function HomePage() {
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
     const [selfSignup, setSelfSignup] = useState(true)
+    const [gaslessMode, setGaslessMode] = useState(false)
 
     // Threshold encryption state
     const [encryptionMode, setEncryptionMode] = useState<"single" | "threshold">("single")
-    const [committeMembers, setCommitteMembers] = useState<Array<{ name: string; pubkey: string; generatedPrivkey?: string }>>([
-        { name: "", pubkey: "" },
-        { name: "", pubkey: "" },
-        { name: "", pubkey: "" },
+    const [committeMembers, setCommitteMembers] = useState<Array<{ name: string; address: string }>>([
+        { name: "", address: "" },
+        { name: "", address: "" },
+        { name: "", address: "" },
     ])
     const [threshold, setThreshold] = useState(2)
-    const [showShareDistribution, setShowShareDistribution] = useState(false)
-    const [createdElectionSetup, setCreatedElectionSetup] = useState<{
-        electionAddr: string
-        shares: Array<{ memberId: string; shareIndex: string; encryptedDataHex: string }>
-        threshold: number
-        totalShares: number
-    } | null>(null)
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text)
@@ -65,7 +56,7 @@ export default function HomePage() {
     // Committee management
     const addCommitteeMember = () => {
         if (committeMembers.length < 10) {
-            setCommitteMembers([...committeMembers, { name: "", pubkey: "" }])
+            setCommitteMembers([...committeMembers, { name: "", address: "" }])
         }
     }
     const removeCommitteeMember = (idx: number) => {
@@ -75,15 +66,9 @@ export default function HomePage() {
             if (threshold > next.length) setThreshold(next.length)
         }
     }
-    const updateCommitteeMember = (idx: number, field: "name" | "pubkey", val: string) => {
+    const updateCommitteeMember = (idx: number, field: "name" | "address", val: string) => {
         const next = [...committeMembers]
         next[idx] = { ...next[idx], [field]: val }
-        setCommitteMembers(next)
-    }
-    const generateKeyForMember = (idx: number) => {
-        const kp = generateCommitteeKeypair()
-        const next = [...committeMembers]
-        next[idx] = { ...next[idx], pubkey: kp.publicKeyHex, generatedPrivkey: kp.privateKeyHex }
         setCommitteMembers(next)
     }
 
@@ -119,6 +104,25 @@ export default function HomePage() {
             }
 
             const addresses = await factory.getElections(0, total)
+
+            // Batch-fetch metadata from ElectionDeployed events
+            const metaByAddr = new Map<string, string>()
+            try {
+                const currentBlock = await provider.getBlockNumber()
+                const fromBlock = Math.max(0, currentBlock - 49000)
+                const deployEvents = await factory.queryFilter(factory.filters.ElectionDeployed(), fromBlock)
+                for (const evt of deployEvents) {
+                    const args = (evt as any).args
+                    try {
+                        if (args.metadata && args.metadata !== "0x" && args.metadata.length > 2) {
+                            const decoded = toUtf8String(args.metadata)
+                            const obj = JSON.parse(decoded)
+                            if (obj.title) metaByAddr.set(args.election.toLowerCase(), obj.title)
+                        }
+                    } catch { /* skip invalid metadata */ }
+                }
+            } catch { /* fall back to localStorage */ }
+
             const infos: ElectionInfo[] = []
 
             for (const addr of addresses) {
@@ -132,11 +136,15 @@ export default function HomePage() {
                         election.admin(),
                     ])
 
-                    let title = `Proposal #${pid.toString()}`
-                    try {
-                        const meta = JSON.parse(localStorage.getItem(`spectre-election-meta-${addr}`) || "{}")
-                        if (meta.title) title = meta.title
-                    } catch { /* ignore */ }
+                    // Priority: on-chain event > localStorage > fallback
+                    let title = metaByAddr.get(addr.toLowerCase()) || ""
+                    if (!title) {
+                        try {
+                            const meta = JSON.parse(localStorage.getItem(`spectre-election-meta-${addr}`) || "{}")
+                            if (meta.title) title = meta.title
+                        } catch { /* ignore */ }
+                    }
+                    if (!title) title = `Proposal #${pid.toString()}`
 
                     const phase = sOpen ? "signup" : vOpen ? "voting" : "closed"
 
@@ -171,28 +179,17 @@ export default function HomePage() {
             const proposalId = Math.floor(Date.now() / 1000)
             let pkX: string, pkY: string
             let privKeyHex: string | null = null
-            let electionSetupResult: ElectionSetup | null = null
+
+            const validMembers = encryptionMode === "threshold"
+                ? committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim()))
+                : []
 
             if (encryptionMode === "threshold") {
-                // ── THRESHOLD MODE: dealer ceremony ──
-                const validMembers = committeMembers.filter(m => m.name.trim() && m.pubkey.trim())
-                if (validMembers.length < 2) throw new Error("Need at least 2 committee members")
+                // ── THRESHOLD MODE: pubkey set to (0,0), committee configured after creation ──
+                if (validMembers.length < 2) throw new Error("Need at least 2 committee members with valid addresses")
                 if (threshold < 2 || threshold > validMembers.length) throw new Error("Invalid threshold")
-
-                addLog(`Running dealer ceremony (${threshold}-of-${validMembers.length})...`)
-                const committee: CommitteeMember[] = validMembers.map(m => {
-                    const pubBuf = new Uint8Array(33)
-                    for (let i = 0; i < 33; i++) pubBuf[i] = parseInt(m.pubkey.substring(i * 2, i * 2 + 2), 16)
-                    return { id: m.name.trim(), publicKey: pubBuf }
-                })
-
-                electionSetupResult = setupElection(committee, threshold)
-
-                // Decompress pubkey from 33 bytes → (x, y)
-                const point = secp256k1.ProjectivePoint.fromHex(electionSetupResult.electionPubKey)
-                pkX = point.x.toString()
-                pkY = point.y.toString()
-                addLog("Dealer ceremony complete — master key discarded")
+                pkX = "0"
+                pkY = "0"
             } else {
                 // ── SINGLE KEY MODE (existing flow) ──
                 const privKey = secp256k1.utils.randomPrivateKey()
@@ -215,9 +212,20 @@ export default function HomePage() {
             const numOptions = optionLabels.length
             const labels = optionLabels.map((l, i) => l.trim() || `Option ${i}`)
 
+            // Build metadata JSON for on-chain storage
+            const metaObj: Record<string, any> = { title: electionTitle.trim(), labels }
+            if (gaslessMode) metaObj.gaslessEnabled = true
+            if (encryptionMode === "threshold") {
+                metaObj.mode = "threshold"
+                metaObj.threshold = threshold
+                metaObj.totalShares = validMembers.length
+                metaObj.committee = validMembers.map(m => ({ name: m.name.trim(), address: m.address.trim() }))
+            }
+            const metadataBytes = toUtf8Bytes(JSON.stringify(metaObj))
+
             addLog("Creating election via factory...")
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, signer)
-            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions, selfSignup)
+            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions, selfSignup, metadataBytes)
             addLog(`Tx sent: ${tx.hash.slice(0, 16)}...`)
 
             const receipt = await tx.wait()
@@ -234,144 +242,48 @@ export default function HomePage() {
                 } catch { /* skip */ }
             }
 
-            if (encryptionMode === "threshold" && electionSetupResult) {
-                // Store threshold metadata (no private key!)
-                const meta = {
-                    title: electionTitle.trim(),
-                    labels,
-                    mode: "threshold" as const,
-                    threshold: electionSetupResult.threshold,
-                    totalShares: electionSetupResult.totalShares,
-                    committee: committeMembers
-                        .filter(m => m.name.trim() && m.pubkey.trim())
-                        .map(m => ({ id: m.name.trim(), publicKeyHex: m.pubkey })),
-                    encryptedShares: electionSetupResult.encryptedShares.map(s => ({
-                        memberId: s.memberId,
-                        shareIndex: s.shareIndex.toString(),
-                        encryptedDataHex: encryptedShareToHex(s.encryptedData),
-                    })),
-                }
-                localStorage.setItem(`spectre-election-meta-${electionAddr}`, JSON.stringify(meta))
-                addLog(`Threshold election created: "${meta.title}" (${threshold}-of-${meta.committee.length})`)
+            // Cache metadata in localStorage
+            localStorage.setItem(`spectre-election-meta-${electionAddr}`, JSON.stringify(metaObj))
 
-                // Show share distribution UI
-                setCreatedElectionSetup({
-                    electionAddr,
-                    shares: meta.encryptedShares,
-                    threshold: meta.threshold,
-                    totalShares: meta.totalShares,
-                })
-                setShowShareDistribution(true)
+            if (encryptionMode === "threshold") {
+                addLog(`Election created. Setting up ${threshold}-of-${validMembers.length} committee...`)
+
+                // Second transaction: call setupCommittee on the election contract
+                const election = new Contract(electionAddr, SPECTRE_VOTING_ABI, signer)
+                const memberAddresses = validMembers.map(m => m.address.trim())
+                const tx2 = await election.setupCommittee(threshold, memberAddresses)
+                addLog(`Committee tx sent: ${tx2.hash.slice(0, 16)}...`)
+                await tx2.wait()
+
+                addLog(`Committee configured! Members must register keys on the election page.`)
             } else {
-                // Store single-key election data
+                // Store single-key election private key
                 if (privKeyHex) {
                     localStorage.setItem(`spectre-election-key-${electionAddr}`, privKeyHex)
                 }
-                const meta = { title: electionTitle.trim(), labels }
-                localStorage.setItem(`spectre-election-meta-${electionAddr}`, JSON.stringify(meta))
                 addLog(`Election created: "${electionTitle.trim()}" (${numOptions} options)`)
             }
 
             // Copy share link
-            const shareUrl = `${window.location.origin}/election/${electionAddr}?t=${encodeURIComponent(electionTitle.trim())}&labels=${encodeURIComponent(labels.join(","))}`
+            const shareUrl = `${window.location.origin}/election/${electionAddr}`
             navigator.clipboard.writeText(shareUrl)
             addLog("Share link copied to clipboard!")
 
-            if (!showShareDistribution) {
-                setElectionTitle("")
-                setOptionLabels(["Yes", "No"])
-                setShowCreate(false)
-            }
+            setElectionTitle("")
+            setOptionLabels(["Yes", "No"])
+            setShowCreate(false)
+            setCommitteMembers([{ name: "", address: "" }, { name: "", address: "" }, { name: "", address: "" }])
+            setEncryptionMode("single")
             await loadElections()
         } catch (err: any) {
             addLog(`Failed: ${friendlyError(err)}`)
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, encryptionMode, committeMembers, threshold, showShareDistribution, addLog, loadElections])
-
-    const [showIdentity, setShowIdentity] = useState(false)
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections])
 
     return (
         <>
-            {/* Identity */}
-            <div className="card" style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                    onClick={() => setShowIdentity(!showIdentity)}
-                    role="button"
-                >
-                    <h3 style={{ fontSize: "0.95rem", fontWeight: 700 }}>
-                        {identity ? "Identity Active" : "Set Up Identity"}
-                    </h3>
-                    {identity ? (
-                        <span style={{ fontSize: "0.7rem", color: "var(--success)", background: "#22c55e18", padding: "4px 10px", borderRadius: 20, cursor: "pointer" }}>
-                            {showIdentity ? "Hide" : "Show"}
-                        </span>
-                    ) : (
-                        <span style={{ fontSize: "0.7rem", color: "var(--warning)", background: "#f59e0b18", padding: "4px 10px", borderRadius: 20, cursor: "pointer" }}>
-                            Required to vote
-                        </span>
-                    )}
-                </div>
-
-                {(showIdentity || !identity) && (
-                    <div style={{ marginTop: 12 }}>
-                        {!address ? (
-                            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
-                                Connect your wallet first — each wallet gets its own identity.
-                            </p>
-                        ) : identity ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                                <div>
-                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                                        Your Voter ID
-                                    </label>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
-                                            {identity.commitment.toString()}
-                                        </code>
-                                        <button onClick={() => copyToClipboard(identity.commitment.toString(), "c")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                            {copied === "c" ? "Copied!" : "Copy"}
-                                        </button>
-                                    </div>
-                                </div>
-                                <details style={{ fontSize: "0.8rem" }}>
-                                    <summary style={{ color: "var(--text-muted)", cursor: "pointer" }}>Advanced: backup key</summary>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem", minWidth: 0 }}>
-                                            {identity.export()}
-                                        </code>
-                                        <button onClick={() => copyToClipboard(identity.export(), "pk")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                            {copied === "pk" ? "Copied!" : "Copy"}
-                                        </button>
-                                    </div>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                                        <button className="btn-secondary" onClick={createIdentity} style={{ flex: 1, fontSize: "0.8rem" }}>Regenerate</button>
-                                        <button className="btn-secondary" onClick={clearIdentity} style={{ flex: 1, fontSize: "0.8rem" }}>Clear</button>
-                                    </div>
-                                </details>
-                            </div>
-                        ) : (
-                            <div>
-                                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 12 }}>
-                                    Create an anonymous identity for this wallet. Each wallet gets its own identity.
-                                </p>
-                                <button className="btn-primary" onClick={createIdentity} style={{ marginBottom: 12 }}>
-                                    Create Identity
-                                </button>
-                                <details style={{ fontSize: "0.8rem" }}>
-                                    <summary style={{ color: "var(--text-muted)", cursor: "pointer" }}>Import existing identity</summary>
-                                    <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                                        <input placeholder="Paste base64 private key..." value={importKey} onChange={e => setImportKey(e.target.value)} style={{ flex: 1, fontSize: "0.8rem", minWidth: 0 }} />
-                                        <button className="btn-secondary" onClick={() => { importIdentity(importKey); setImportKey("") }} disabled={!importKey} style={{ width: "auto", padding: "10px 14px", fontSize: "0.8rem" }}>Import</button>
-                                    </div>
-                                </details>
-                            </div>
-                        )}
-                    </div>
-                )}
-            </div>
-
             {/* Elections header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <h3 style={{ fontSize: "1rem", fontWeight: 700 }}>Elections</h3>
@@ -501,6 +413,40 @@ export default function HomePage() {
                             </div>
                         </div>
 
+                        {/* Voter access mode toggle */}
+                        <div
+                            onClick={() => !creating && setGaslessMode(!gaslessMode)}
+                            role="button"
+                            style={{
+                                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                                background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)",
+                                cursor: creating ? "not-allowed" : "pointer", userSelect: "none",
+                            }}
+                        >
+                            <div style={{
+                                width: 36, height: 20, borderRadius: 10,
+                                background: gaslessMode ? "var(--success)" : "var(--border)",
+                                position: "relative", transition: "background 0.2s", flexShrink: 0,
+                            }}>
+                                <div style={{
+                                    width: 16, height: 16, borderRadius: "50%", background: "white",
+                                    position: "absolute", top: 2,
+                                    left: gaslessMode ? 18 : 2,
+                                    transition: "left 0.2s",
+                                }} />
+                            </div>
+                            <div>
+                                <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                                    {gaslessMode ? "Gasless" : "Wallet required"}
+                                </span>
+                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
+                                    {gaslessMode
+                                        ? "No wallet needed \u2014 votes are relayed on-chain automatically"
+                                        : "Voters need a crypto wallet with ETH to submit votes"}
+                                </p>
+                            </div>
+                        </div>
+
                         {/* Encryption mode */}
                         <div>
                             <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
@@ -553,6 +499,9 @@ export default function HomePage() {
                                         </select>
                                     </div>
                                 </div>
+                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.4 }}>
+                                    Each member generates their own key on the election page. No private keys are shared.
+                                </p>
                                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                     {committeMembers.map((m, i) => (
                                         <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 10px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)" }}>
@@ -568,34 +517,16 @@ export default function HomePage() {
                                                         style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 4px" }}>×</button>
                                                 )}
                                             </div>
-                                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22, flexWrap: "wrap" }}>
+                                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22 }}>
                                                 <input
-                                                    type="text" placeholder="Public key (66 hex chars)"
-                                                    value={m.pubkey} onChange={e => updateCommitteeMember(i, "pubkey", e.target.value)}
+                                                    type="text" placeholder="Wallet address (0x...)"
+                                                    value={m.address} onChange={e => updateCommitteeMember(i, "address", e.target.value)}
                                                     disabled={creating} className="mono"
-                                                    style={{ flex: 1, padding: "6px 10px", fontSize: "0.65rem", minWidth: 0 }}
+                                                    style={{ flex: 1, padding: "6px 10px", fontSize: "0.75rem", minWidth: 0 }}
                                                 />
-                                                <button onClick={() => generateKeyForMember(i)} disabled={creating}
-                                                    className="btn-secondary" style={{ width: "auto", padding: "6px 10px", fontSize: "0.65rem", whiteSpace: "nowrap" }}>
-                                                    Generate
-                                                </button>
                                             </div>
-                                            {m.generatedPrivkey && (
-                                                <div style={{ marginLeft: 22, padding: "6px 10px", background: "#f59e0b10", borderRadius: 6, border: "1px solid #f59e0b30" }}>
-                                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                                        <span style={{ fontSize: "0.6rem", color: "var(--warning)" }}>Private key (send securely to member!):</span>
-                                                        <button onClick={() => copyToClipboard(m.generatedPrivkey!, `pk-${i}`)}
-                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.65rem", cursor: "pointer" }}>
-                                                            {copied === `pk-${i}` ? "Copied!" : "Copy"}
-                                                        </button>
-                                                    </div>
-                                                    <code className="mono" style={{ fontSize: "0.65rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block", marginTop: 2 }}>
-                                                        {m.generatedPrivkey}
-                                                    </code>
-                                                </div>
-                                            )}
-                                            {m.pubkey && !isValidPublicKey(m.pubkey) && (
-                                                <p style={{ marginLeft: 22, fontSize: "0.65rem", color: "var(--error)" }}>Invalid public key</p>
+                                            {m.address && !isAddress(m.address.trim()) && (
+                                                <p style={{ marginLeft: 22, fontSize: "0.65rem", color: "var(--error)" }}>Invalid Ethereum address</p>
                                             )}
                                         </div>
                                     ))}
@@ -611,63 +542,17 @@ export default function HomePage() {
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            Signup: {signupHours}h → Voting: {votingHours}h · {selfSignup ? "Open" : "Gated"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && m.pubkey).length} threshold` : "Single key"} · Share link auto-copied
+                            Signup: {signupHours}h → Voting: {votingHours}h · {selfSignup ? "Open" : "Gated"} · {gaslessMode ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
                         </p>
                         <button
                             className="btn-primary"
                             onClick={createElection}
-                            disabled={creating || !electionTitle.trim() || (encryptionMode === "threshold" && committeMembers.filter(m => m.name.trim() && isValidPublicKey(m.pubkey)).length < 2)}
+                            disabled={creating || !electionTitle.trim() || (encryptionMode === "threshold" && committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length < 2)}
                             style={{ width: "auto", padding: "12px 20px" }}
                         >
                             {creating ? "Deploying..." : "Create"}
                         </button>
                     </div>
-                </div>
-            )}
-
-            {/* Share Distribution Modal (after threshold election creation) */}
-            {showShareDistribution && createdElectionSetup && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8, color: "var(--success)" }}>Threshold Election Created!</h4>
-                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                        {createdElectionSetup.threshold} of {createdElectionSetup.totalShares} committee members must cooperate to decrypt results.
-                        Distribute each member&apos;s encrypted share to them privately.
-                    </p>
-
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
-                        {createdElectionSetup.shares.map((s, i) => (
-                            <div key={i} style={{ padding: "10px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{s.memberId}</span>
-                                    <button onClick={() => copyToClipboard(s.encryptedDataHex, `share-${i}`)}
-                                        className="btn-secondary" style={{ width: "auto", padding: "4px 10px", fontSize: "0.65rem" }}>
-                                        {copied === `share-${i}` ? "Copied!" : "Copy Share"}
-                                    </button>
-                                </div>
-                                <code className="mono" style={{ fontSize: "0.5rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block" }}>
-                                    {s.encryptedDataHex.slice(0, 64)}...
-                                </code>
-                            </div>
-                        ))}
-                    </div>
-
-                    <button onClick={() => {
-                        copyToClipboard(JSON.stringify(createdElectionSetup.shares, null, 2), "all-shares")
-                    }} className="btn-secondary" style={{ marginBottom: 8 }}>
-                        {copied === "all-shares" ? "Copied!" : "Copy All Shares (JSON)"}
-                    </button>
-
-                    <button onClick={() => {
-                        setShowShareDistribution(false)
-                        setCreatedElectionSetup(null)
-                        setElectionTitle("")
-                        setOptionLabels(["Yes", "No"])
-                        setEncryptionMode("single")
-                        setCommitteMembers([{ name: "", pubkey: "" }, { name: "", pubkey: "" }, { name: "", pubkey: "" }])
-                        setShowCreate(false)
-                    }} className="btn-primary">
-                        Done
-                    </button>
                 </div>
             )}
 

@@ -40,6 +40,8 @@ node_modules/
 
 # dotenv environment variable files
 .env
+.env.local
+.env*.local
 
 # Optional npm cache directory
 .npm

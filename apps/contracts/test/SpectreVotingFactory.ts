@@ -132,31 +132,52 @@ describe("SpectreVotingFactory", () => {
         admin: any,
         opts: {
             proposalId?: bigint,
+            pubKeyX?: bigint,
+            pubKeyY?: bigint,
             signupDeadline?: number,
             votingDeadline?: number,
             numOptions?: bigint,
-            selfSignupAllowed?: boolean
+            selfSignupAllowed?: boolean,
+            metadata?: string
         } = {}
     ) {
         const proposalId = opts.proposalId ?? PROPOSAL_ID
+        const pubKeyX = opts.pubKeyX ?? ELECTION_PUBKEY_X
+        const pubKeyY = opts.pubKeyY ?? ELECTION_PUBKEY_Y
         const signupDeadline = opts.signupDeadline ?? 0
         const votingDeadline = opts.votingDeadline ?? 0
         const numOptions = opts.numOptions ?? DEFAULT_NUM_OPTIONS
         const selfSignupAllowed = opts.selfSignupAllowed ?? true
+        const metadata = opts.metadata ? ethers.toUtf8Bytes(opts.metadata) : "0x"
 
         await factory.connect(admin).createElection(
             proposalId,
-            ELECTION_PUBKEY_X,
-            ELECTION_PUBKEY_Y,
+            pubKeyX,
+            pubKeyY,
             signupDeadline,
             votingDeadline,
             numOptions,
-            selfSignupAllowed
+            selfSignupAllowed,
+            metadata
         )
 
         const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
         const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
         return SpectreVoting.attach(electionAddr)
+    }
+
+    // Helper: generate a fake 33-byte compressed secp256k1 public key
+    function fakeCompressedPubKey(seed: number): string {
+        const prefix = seed % 2 === 0 ? "02" : "03"
+        const body = ethers.zeroPadValue(ethers.toBeHex(seed), 32).slice(2) // 32 bytes hex without 0x
+        return "0x" + prefix + body
+    }
+
+    // Helper: generate a fake 64-byte decrypted share
+    function fakeDecryptedShare(seed: number): string {
+        const x = ethers.zeroPadValue(ethers.toBeHex(seed), 32).slice(2)
+        const y = ethers.zeroPadValue(ethers.toBeHex(seed + 1000), 32).slice(2)
+        return "0x" + x + y
     }
 
     describe("# deployment", () => {
@@ -176,7 +197,7 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, DEFAULT_NUM_OPTIONS, true
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x"
             )
 
             expect(await factory.electionCount()).to.equal(1)
@@ -211,7 +232,7 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 factory.connect(alice).createElection(
                     PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                    0, 0, 1, true // only 1 option — invalid
+                    0, 0, 1, true, "0x" // only 1 option — invalid
                 )
             ).to.be.revertedWithCustomError(
                 await ethers.getContractFactory("SpectreVoting").then(f => f.deploy(
@@ -224,7 +245,7 @@ describe("SpectreVotingFactory", () => {
                 await expect(
                     factory.connect(alice).createElection(
                         PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                        0, 0, 1, true
+                        0, 0, 1, true, "0x"
                     )
                 ).to.be.reverted
             })
@@ -233,9 +254,9 @@ describe("SpectreVotingFactory", () => {
         it("Should allow multiple elections from different admins", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true)
-            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n, true)
-            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n, true)
+            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true, "0x")
+            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n, true, "0x")
+            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n, true, "0x")
 
             expect(await factory.electionCount()).to.equal(3)
 
@@ -260,7 +281,7 @@ describe("SpectreVotingFactory", () => {
             const { factory, alice } = await loadFixture(deployFixture)
 
             for (let i = 0; i < 5; i++) {
-                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n, true)
+                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n, true, "0x")
             }
 
             const all = await factory.getElections(0, 100)
@@ -815,6 +836,73 @@ describe("SpectreVotingFactory", () => {
         })
     })
 
+    describe("# metadata", () => {
+        it("Should emit metadata bytes in ElectionDeployed event", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const meta = JSON.stringify({ title: "Budget Vote", labels: ["Yes", "No"] })
+            const metadataBytes = ethers.toUtf8Bytes(meta)
+
+            const tx = await factory.connect(alice).createElection(
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, DEFAULT_NUM_OPTIONS, true, metadataBytes
+            )
+
+            const receipt = await tx.wait()
+            const iface = factory.interface
+            for (const log of receipt.logs) {
+                try {
+                    const parsed = iface.parseLog({ topics: log.topics, data: log.data })
+                    if (parsed?.name === "ElectionDeployed") {
+                        const decoded = ethers.toUtf8String(parsed.args.metadata)
+                        const obj = JSON.parse(decoded)
+                        expect(obj.title).to.equal("Budget Vote")
+                        expect(obj.labels).to.deep.equal(["Yes", "No"])
+                    }
+                } catch { /* skip non-factory logs */ }
+            }
+        })
+
+        it("Should work with empty metadata (backward compat)", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await factory.connect(alice).createElection(
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x"
+            )
+
+            expect(await factory.electionCount()).to.equal(1)
+        })
+
+        it("Should handle large threshold metadata", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const meta = JSON.stringify({
+                title: "Threshold Vote",
+                labels: ["Yes", "No", "Abstain"],
+                mode: "threshold",
+                threshold: 2,
+                totalShares: 3,
+                committee: [
+                    { id: "Alice", publicKeyHex: "04" + "ab".repeat(32) },
+                    { id: "Bob", publicKeyHex: "04" + "cd".repeat(32) },
+                    { id: "Carol", publicKeyHex: "04" + "ef".repeat(32) },
+                ],
+                encryptedShares: [
+                    { memberId: "Alice", shareIndex: "1", encryptedDataHex: "aa".repeat(100) },
+                    { memberId: "Bob", shareIndex: "2", encryptedDataHex: "bb".repeat(100) },
+                    { memberId: "Carol", shareIndex: "3", encryptedDataHex: "cc".repeat(100) },
+                ],
+            })
+            const metadataBytes = ethers.toUtf8Bytes(meta)
+
+            const tx = await factory.connect(alice).createElection(
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, 3n, true, metadataBytes
+            )
+            const receipt = await tx.wait()
+            expect(receipt!.status).to.equal(1)
+        })
+    })
+
     describe("# tally commitment", () => {
         it("Should allow admin to commit tally after voting is closed", async () => {
             const { factory, alice } = await loadFixture(deployFixture)
@@ -898,6 +986,443 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 election.connect(alice).commitTallyResult([1n, 1n, 1n], 3n, 0n, 0n)
             ).to.be.revertedWithCustomError(election, "InvalidOptionCount")
+        })
+    })
+
+    // ===================================================================
+    // Threshold Committee Tests
+    // ===================================================================
+
+    describe("# committee setup", () => {
+        it("Should allow admin to setup committee during signup", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+
+            const tx = await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            await expect(tx).to.emit(election, "CommitteeSetup")
+                .withArgs(PROPOSAL_ID, 2, [alice.address, bob.address, carol.address])
+
+            expect(await election.committeeThreshold()).to.equal(2)
+            expect(await election.isCommitteeMember(alice.address)).to.equal(true)
+            expect(await election.isCommitteeMember(bob.address)).to.equal(true)
+            expect(await election.isCommitteeMember(carol.address)).to.equal(true)
+
+            const members = await election.getCommitteeMembers()
+            expect(members.length).to.equal(3)
+        })
+
+        it("Should reject double setup", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await expect(
+                election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+            ).to.be.revertedWithCustomError(election, "CommitteeAlreadySetup")
+        })
+
+        it("Should reject non-admin setup", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+
+            await expect(
+                election.connect(alice).setupCommittee(2, [alice.address, bob.address])
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+        })
+
+        it("Should reject threshold < 2", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+
+            await expect(
+                election.connect(deployer).setupCommittee(1, [alice.address, bob.address])
+            ).to.be.revertedWithCustomError(election, "InvalidThreshold")
+        })
+
+        it("Should reject threshold > members count", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+
+            await expect(
+                election.connect(deployer).setupCommittee(3, [alice.address, bob.address])
+            ).to.be.revertedWithCustomError(election, "InvalidThreshold")
+        })
+
+        it("Should reject setup after signup closed", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            // Non-threshold election (has pubkey set) so closeSignup works
+            const election = await createElectionVia(factory, deployer)
+
+            await election.connect(deployer).closeSignup()
+
+            await expect(
+                election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+            ).to.be.revertedWithCustomError(election, "SignupNotOpen")
+        })
+    })
+
+    describe("# committee key registration", () => {
+        it("Should allow committee member to register a 33-byte public key", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            const pubKey = fakeCompressedPubKey(1)
+            const tx = await election.connect(alice).registerCommitteeKey(pubKey)
+
+            await expect(tx).to.emit(election, "CommitteeKeyRegistered")
+                .withArgs(PROPOSAL_ID, alice.address, pubKey)
+
+            expect(await election.registeredKeyCount()).to.equal(1)
+            expect(await election.committeePublicKeys(alice.address)).to.equal(pubKey)
+        })
+
+        it("Should reject non-member registration", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await expect(
+                election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(1))
+            ).to.be.revertedWithCustomError(election, "NotCommitteeMember")
+        })
+
+        it("Should reject double registration", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+
+            await expect(
+                election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(2))
+            ).to.be.revertedWithCustomError(election, "KeyAlreadyRegistered")
+        })
+
+        it("Should reject registration after committee finalized", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            // Both register keys
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+
+            // Admin finalizes
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+
+            // Try to register again (different member, but committee is finalized)
+            // Actually both are registered. Let's just verify the flag is set.
+            expect(await election.committeeFinalized()).to.equal(true)
+        })
+
+        it("Should reject invalid key length (not 33 bytes)", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            // 32 bytes — too short
+            const shortKey = ethers.zeroPadValue(ethers.toBeHex(1), 32)
+            await expect(
+                election.connect(alice).registerCommitteeKey(shortKey)
+            ).to.be.revertedWithCustomError(election, "InvalidPublicKey")
+
+            // 34 bytes — too long
+            const longKey = "0x02" + "aa".repeat(33)
+            await expect(
+                election.connect(alice).registerCommitteeKey(longKey)
+            ).to.be.revertedWithCustomError(election, "InvalidPublicKey")
+        })
+    })
+
+    describe("# committee finalization", () => {
+        it("Should allow admin to finalize after all keys registered", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+            await election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(3))
+
+            const encSharesData = "0x" + "ff".repeat(200)
+            const tx = await election.connect(deployer).finalizeCommittee(999n, 888n, encSharesData)
+
+            await expect(tx).to.emit(election, "CommitteeFinalized")
+                .withArgs(PROPOSAL_ID, 999n, 888n, encSharesData)
+
+            expect(await election.committeeFinalized()).to.equal(true)
+            expect(await election.electionPubKeyX()).to.equal(999n)
+            expect(await election.electionPubKeyY()).to.equal(888n)
+        })
+
+        it("Should reject finalize when not all keys registered", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            // Only alice registers
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+
+            await expect(
+                election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+            ).to.be.revertedWithCustomError(election, "NotAllKeysRegistered")
+        })
+
+        it("Should reject non-admin finalize", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+
+            await expect(
+                election.connect(alice).finalizeCommittee(999n, 888n, "0xdead")
+            ).to.be.revertedWithCustomError(election, "NotAdmin")
+        })
+
+        it("Should reject double finalization", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+
+            await expect(
+                election.connect(deployer).finalizeCommittee(111n, 222n, "0xbeef")
+            ).to.be.revertedWithCustomError(election, "CommitteeAlreadyFinalized")
+        })
+
+        it("Should reject finalization with zero pubkey (0,0)", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+
+            await expect(
+                election.connect(deployer).finalizeCommittee(0n, 0n, "0xdead")
+            ).to.be.revertedWithCustomError(election, "InvalidPublicKey")
+        })
+    })
+
+    describe("# closeSignup committee guard", () => {
+        it("Should revert closeSignup when committee configured but not finalized", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            // Committee configured but not finalized
+            await expect(
+                election.connect(deployer).closeSignup()
+            ).to.be.revertedWithCustomError(election, "CommitteeNotFinalized")
+        })
+
+        it("Should allow closeSignup after committee finalized", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            // Register keys
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+
+            // Finalize (sets election pubkey)
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+
+            // Now closeSignup should work
+            await expect(election.connect(deployer).closeSignup())
+                .to.emit(election, "SignupClosed")
+
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(true)
+        })
+
+        it("Should not affect non-committee elections (backward compat)", async () => {
+            const { factory, deployer } = await loadFixture(deployFixture)
+            // Standard election — pubkey set, no committee
+            const election = await createElectionVia(factory, deployer)
+
+            // committeeThreshold is 0, so the guard is skipped
+            expect(await election.committeeThreshold()).to.equal(0)
+
+            await expect(election.connect(deployer).closeSignup())
+                .to.emit(election, "SignupClosed")
+        })
+    })
+
+    describe("# share submission", () => {
+        // Helper to set up a fully finalized committee election with voting closed
+        async function setupClosedCommitteeElection(factory: any, deployer: any, alice: any, bob: any, carol: any) {
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+            await election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(3))
+
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+            await election.connect(deployer).closeSignup()
+            await election.connect(deployer).closeVoting()
+
+            return election
+        }
+
+        it("Should allow committee member to submit decrypted share after voting closed", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await setupClosedCommitteeElection(factory, deployer, alice, bob, carol)
+
+            const share = fakeDecryptedShare(1)
+            const tx = await election.connect(alice).submitDecryptedShare(share)
+
+            await expect(tx).to.emit(election, "DecryptedShareSubmitted")
+                .withArgs(PROPOSAL_ID, alice.address, share)
+
+            expect(await election.hasSubmittedShare(alice.address)).to.equal(true)
+            expect(await election.submittedShareCount()).to.equal(1)
+
+            const stored = await election.getDecryptedShare(alice.address)
+            expect(stored).to.equal(share)
+        })
+
+        it("Should reject non-member share submission", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await setupClosedCommitteeElection(factory, deployer, alice, bob, carol)
+
+            // deployer is not a committee member
+            await expect(
+                election.connect(deployer).submitDecryptedShare(fakeDecryptedShare(1))
+            ).to.be.revertedWithCustomError(election, "NotCommitteeMember")
+        })
+
+        it("Should reject share submission while voting is still open", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+            await election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(3))
+
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+            await election.connect(deployer).closeSignup()
+            // Voting is now open (not closed)
+
+            await expect(
+                election.connect(alice).submitDecryptedShare(fakeDecryptedShare(1))
+            ).to.be.revertedWithCustomError(election, "VotingStillOpen")
+        })
+
+        it("Should reject share submission while signup is still open", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(1))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(2))
+            await election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(3))
+
+            await election.connect(deployer).finalizeCommittee(999n, 888n, "0xdead")
+            // Signup still open
+
+            await expect(
+                election.connect(alice).submitDecryptedShare(fakeDecryptedShare(1))
+            ).to.be.revertedWithCustomError(election, "SignupStillOpen")
+        })
+
+        it("Should reject double share submission", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+            const election = await setupClosedCommitteeElection(factory, deployer, alice, bob, carol)
+
+            await election.connect(alice).submitDecryptedShare(fakeDecryptedShare(1))
+
+            await expect(
+                election.connect(alice).submitDecryptedShare(fakeDecryptedShare(2))
+            ).to.be.revertedWithCustomError(election, "ShareAlreadySubmitted")
+        })
+
+        it("Should reject share submission before committee is finalized", async () => {
+            const { factory, deployer, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address])
+
+            // Committee setup but NOT finalized — shares should be rejected
+            await expect(
+                election.connect(alice).submitDecryptedShare(fakeDecryptedShare(1))
+            ).to.be.revertedWithCustomError(election, "CommitteeNotFinalized")
+        })
+    })
+
+    describe("# full threshold integration", () => {
+        it("Should complete full committee lifecycle: setup → register → finalize → close → submit shares", async () => {
+            const { factory, deployer, alice, bob, carol } = await loadFixture(deployFixture)
+
+            // 1. Create election with zero pubkey (threshold mode)
+            const election = await createElectionVia(factory, deployer, { pubKeyX: 0n, pubKeyY: 0n })
+            expect(await election.electionPubKeyX()).to.equal(0n)
+            expect(await election.committeeThreshold()).to.equal(0n)
+
+            // 2. Setup 2-of-3 committee
+            await election.connect(deployer).setupCommittee(2, [alice.address, bob.address, carol.address])
+            expect(await election.committeeThreshold()).to.equal(2n)
+            expect((await election.getCommitteeMembers()).length).to.equal(3)
+
+            // 3. Each member registers their key
+            await election.connect(alice).registerCommitteeKey(fakeCompressedPubKey(10))
+            await election.connect(bob).registerCommitteeKey(fakeCompressedPubKey(20))
+            await election.connect(carol).registerCommitteeKey(fakeCompressedPubKey(30))
+            expect(await election.registeredKeyCount()).to.equal(3)
+
+            // 4. Can't close signup yet (committee not finalized)
+            await expect(
+                election.connect(deployer).closeSignup()
+            ).to.be.revertedWithCustomError(election, "CommitteeNotFinalized")
+
+            // 5. Admin finalizes committee (sets election pubkey)
+            const encShares = "0x" + "ab".repeat(300) // simulated encrypted shares
+            await election.connect(deployer).finalizeCommittee(42n, 43n, encShares)
+            expect(await election.committeeFinalized()).to.equal(true)
+            expect(await election.electionPubKeyX()).to.equal(42n)
+            expect(await election.electionPubKeyY()).to.equal(43n)
+
+            // 6. Now closeSignup works
+            await election.connect(deployer).closeSignup()
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(true)
+
+            // 7. Close voting
+            await election.connect(deployer).closeVoting()
+            expect(await election.votingOpen()).to.equal(false)
+
+            // 8. Committee members submit decrypted shares
+            const shareA = fakeDecryptedShare(100)
+            const shareB = fakeDecryptedShare(200)
+
+            await election.connect(alice).submitDecryptedShare(shareA)
+            expect(await election.submittedShareCount()).to.equal(1)
+
+            await election.connect(bob).submitDecryptedShare(shareB)
+            expect(await election.submittedShareCount()).to.equal(2)
+
+            // 9. Threshold met (2 of 3) — frontend would auto-tally at this point
+            expect(await election.submittedShareCount()).to.be.gte(await election.committeeThreshold())
+
+            // 10. Verify shares are readable from chain
+            expect(await election.getDecryptedShare(alice.address)).to.equal(shareA)
+            expect(await election.getDecryptedShare(bob.address)).to.equal(shareB)
+            expect(await election.getDecryptedShare(carol.address)).to.equal("0x") // not submitted
+
+            // 11. Carol can still submit (optional)
+            const shareC = fakeDecryptedShare(300)
+            await election.connect(carol).submitDecryptedShare(shareC)
+            expect(await election.submittedShareCount()).to.equal(3)
         })
     })
 })

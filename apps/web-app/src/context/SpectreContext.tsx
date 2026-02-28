@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react"
 import { BrowserProvider, JsonRpcSigner } from "ethers"
-import { Identity } from "@semaphore-protocol/core"
 import { SEPOLIA_CHAIN_ID } from "@/lib/contracts"
 
 declare global {
@@ -23,11 +22,8 @@ export interface SpectreContextType {
     provider: BrowserProvider | null
     connectWallet: () => Promise<void>
 
-    // Identity
-    identity: Identity | null
-    createIdentity: () => void
-    importIdentity: (exportedKey: string) => void
-    clearIdentity: () => void
+    // Anonymous ID (for gasless/walletless voting)
+    anonymousId: string | null
 
     // Status
     logs: LogEntry[]
@@ -36,47 +32,33 @@ export interface SpectreContextType {
 
 const SpectreContext = createContext<SpectreContextType | null>(null)
 
+/** Get or create a stable anonymous ID for walletless voters */
+function getOrCreateAnonymousId(): string {
+    if (typeof window === "undefined") return ""
+    const key = "spectre-anonymous-id"
+    let id = localStorage.getItem(key)
+    if (!id) {
+        id = crypto.randomUUID()
+        localStorage.setItem(key, id)
+    }
+    return id
+}
+
 export function SpectreProvider({ children }: { children: ReactNode }) {
     const [address, setAddress] = useState<string | null>(null)
     const [signer, setSigner] = useState<JsonRpcSigner | null>(null)
     const [provider, setProvider] = useState<BrowserProvider | null>(null)
-    const [identity, setIdentity] = useState<Identity | null>(null)
+    const [anonymousId, setAnonymousId] = useState<string | null>(null)
     const [logs, setLogs] = useState<LogEntry[]>([])
 
     const addLog = useCallback((msg: string) => {
         setLogs(prev => [{ msg, time: new Date() }, ...prev].slice(0, 100))
     }, [])
 
-    // Identity storage key scoped to wallet address
-    const identityKey = useCallback((addr: string) => `spectre-identity-${addr.toLowerCase()}`, [])
-
-    // Load identity when wallet address changes
+    // Initialize anonymous ID on mount
     useEffect(() => {
-        if (!address) { setIdentity(null); return }
-        const key = identityKey(address)
-        const saved = localStorage.getItem(key)
-        if (saved) {
-            try {
-                const id = Identity.import(saved)
-                setIdentity(id)
-                return
-            } catch { localStorage.removeItem(key) }
-        }
-
-        // Backward compat: migrate global "spectre-identity" to this wallet's scoped key
-        const global = localStorage.getItem("spectre-identity")
-        if (global) {
-            try {
-                const id = Identity.import(global)
-                setIdentity(id)
-                localStorage.setItem(key, global)
-                localStorage.removeItem("spectre-identity")
-                return
-            } catch { localStorage.removeItem("spectre-identity") }
-        }
-
-        setIdentity(null)
-    }, [address, identityKey])
+        setAnonymousId(getOrCreateAnonymousId())
+    }, [])
 
     // Wallet connection
     const connectWallet = useCallback(async () => {
@@ -112,14 +94,31 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
         }
     }, [addLog])
 
-    // Listen for wallet events
+    // Auto-connect on page load if wallet was previously authorized
+    useEffect(() => {
+        if (typeof window === "undefined" || !window.ethereum) return
+        const bp = new BrowserProvider(window.ethereum)
+        bp.send("eth_accounts", []).then(async (accounts: string[]) => {
+            if (accounts.length > 0) {
+                try {
+                    const network = await bp.getNetwork()
+                    if (Number(network.chainId) === SEPOLIA_CHAIN_ID) {
+                        setProvider(bp)
+                        setSigner(await bp.getSigner())
+                        setAddress(accounts[0])
+                    }
+                } catch { /* silently fail */ }
+            }
+        }).catch(() => {})
+    }, [])
+
+    // Listen for wallet events (account switch, chain switch)
     useEffect(() => {
         if (typeof window === "undefined" || !window.ethereum) return
         const onAccounts = async (accts: string[]) => {
             if (accts.length === 0) {
                 setAddress(null); setSigner(null); setProvider(null)
             } else {
-                // Update address, signer, and provider when wallet switches
                 try {
                     const bp = new BrowserProvider(window.ethereum)
                     setProvider(bp)
@@ -140,35 +139,10 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
         }
     }, [addLog])
 
-    // Identity management — scoped to current wallet address
-    const createIdentity = useCallback(() => {
-        if (!address) { addLog("Connect wallet first"); return }
-        const id = new Identity()
-        setIdentity(id)
-        localStorage.setItem(identityKey(address), id.export())
-        addLog("New Semaphore identity created")
-    }, [addLog, address, identityKey])
-
-    const importIdentity = useCallback((key: string) => {
-        if (!address) { addLog("Connect wallet first"); return }
-        try {
-            const id = Identity.import(key)
-            setIdentity(id)
-            localStorage.setItem(identityKey(address), key)
-            addLog("Identity imported successfully")
-        } catch { addLog("Invalid key format") }
-    }, [addLog, address, identityKey])
-
-    const clearIdentity = useCallback(() => {
-        setIdentity(null)
-        if (address) localStorage.removeItem(identityKey(address))
-        addLog("Identity cleared")
-    }, [addLog, address, identityKey])
-
     return (
         <SpectreContext.Provider value={{
             address, signer, provider, connectWallet,
-            identity, createIdentity, importIdentity, clearIdentity,
+            anonymousId,
             logs, addLog,
         }}>
             {children}

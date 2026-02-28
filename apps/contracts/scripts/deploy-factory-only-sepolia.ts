@@ -16,7 +16,7 @@ async function main() {
     const VOTE_VERIFIER = "0xe4a2be410766bCB37Df956334869135fe80AF36d"
     const JOIN_VERIFIER = "0xdeE4c3F80332119f59940c363947865bbF7d0585"
 
-    console.log("Deploying SpectreVotingFactory (v3.1: gated signup)...")
+    console.log("Deploying SpectreVotingFactory (v5: committee bug fixes)...")
     console.log("  Semaphore:", SEMAPHORE)
     console.log("  VoteVerifier:", VOTE_VERIFIER)
     console.log("  JoinVerifier:", JOIN_VERIFIER)

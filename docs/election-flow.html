@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spectre — Election Flow</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: #0a0a0f;
+    color: #e4e4ef;
+    padding: 48px;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+
+  .header h1 {
+    font-size: 2.2rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    margin-bottom: 8px;
+  }
+
+  .header h1 span { color: #6366f1; }
+
+  .header p {
+    color: #8888a0;
+    font-size: 1rem;
+    max-width: 600px;
+    margin: 0 auto;
+    line-height: 1.5;
+  }
+
+  .phases {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 40px;
+  }
+
+  .phase {
+    background: #141420;
+    border-radius: 16px;
+    border: 1px solid #2a2a3e;
+    overflow: hidden;
+  }
+
+  .phase-header {
+    padding: 14px 20px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-bottom: 1px solid #2a2a3e;
+  }
+
+  .phase:nth-child(1) .phase-header { background: #6366f115; color: #818cf8; }
+  .phase:nth-child(2) .phase-header { background: #22c55e10; color: #22c55e; }
+  .phase:nth-child(3) .phase-header { background: #f59e0b10; color: #f59e0b; }
+
+  .phase-body { padding: 20px; }
+
+  .step {
+    position: relative;
+    padding-left: 40px;
+    margin-bottom: 24px;
+  }
+
+  .step:last-child { margin-bottom: 0; }
+
+  .step-num {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+
+  .phase:nth-child(1) .step-num { background: #6366f125; color: #818cf8; }
+  .phase:nth-child(2) .step-num { background: #22c55e18; color: #22c55e; }
+  .phase:nth-child(3) .step-num { background: #f59e0b18; color: #f59e0b; }
+
+  .step h3 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin-bottom: 3px;
+    line-height: 28px;
+  }
+
+  .step p {
+    font-size: 0.78rem;
+    color: #8888a0;
+    line-height: 1.45;
+  }
+
+  .step-arrow {
+    position: absolute;
+    left: 13px;
+    top: 32px;
+    bottom: -20px;
+    width: 2px;
+    background: #2a2a3e;
+  }
+
+  .step:last-child .step-arrow { display: none; }
+
+  .role-tag {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    margin-bottom: 4px;
+  }
+
+  .role-admin { background: #6366f120; color: #a5b4fc; }
+  .role-committee { background: #8b5cf620; color: #c4b5fd; }
+  .role-voter { background: #22c55e15; color: #86efac; }
+
+  .bottom-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .roles-card, .key-points {
+    background: #141420;
+    border-radius: 16px;
+    border: 1px solid #2a2a3e;
+    padding: 24px;
+  }
+
+  .roles-card h3, .key-points h3 {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #8888a0;
+    margin-bottom: 16px;
+  }
+
+  .role-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .role-row:last-child { margin-bottom: 0; }
+
+  .role-label {
+    width: 90px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .role-steps {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .role-step-pill {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+
+  .role-admin-bg .role-step-pill { background: #6366f118; color: #a5b4fc; }
+  .role-committee-bg .role-step-pill { background: #8b5cf618; color: #c4b5fd; }
+  .role-voter-bg .role-step-pill { background: #22c55e12; color: #86efac; }
+
+  .arrow-between {
+    font-size: 0.65rem;
+    color: #4a4a5e;
+  }
+
+  .key-point {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+    align-items: flex-start;
+  }
+
+  .key-point:last-child { margin-bottom: 0; }
+
+  .key-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .key-point p {
+    font-size: 0.8rem;
+    color: #b0b0c8;
+    line-height: 1.45;
+  }
+
+  .key-point strong { color: #e4e4ef; }
+
+  .footer {
+    text-align: center;
+    margin-top: 40px;
+    color: #4a4a5e;
+    font-size: 0.7rem;
+  }
+
+  .footer a { color: #6366f1; text-decoration: none; }
+
+  @media print {
+    body { background: #0a0a0f; padding: 24px; }
+    .container { max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1><span>Spectre</span> Election Flow</h1>
+    <p>End-to-end anonymous voting with threshold committee decryption. Every step happens on-chain — no trust required.</p>
+  </div>
+
+  <div class="phases">
+
+    <!-- SETUP -->
+    <div class="phase">
+      <div class="phase-header">Setup</div>
+      <div class="phase-body">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-admin">Admin</span>
+          <h3>Create Election</h3>
+          <p>Set the question, voting options, and assign committee members by wallet address.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-committee">Committee</span>
+          <h3>Register Keys</h3>
+          <p>Each committee member generates a keypair and registers their public key on-chain.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-admin">Admin</span>
+          <h3>Finalize Committee</h3>
+          <p>Run the dealer ceremony to generate the election encryption key and distribute encrypted shares.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-admin">Voters / Admin</span>
+          <h3>Register Voters</h3>
+          <p>Eligible voters sign up with their identity commitment, or the admin registers them directly. This must happen before voting opens.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <span class="role-tag role-admin">Admin</span>
+          <h3>Close Signup &amp; Open Voting</h3>
+          <p>Lock the voter list and open the voting period. No more registrations after this point.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- VOTING -->
+    <div class="phase">
+      <div class="phase-header">Voting</div>
+      <div class="phase-body">
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-voter">Voters</span>
+          <h3>Vote</h3>
+          <p>Pick an option and submit. Behind the scenes, a ZK proof anonymizes your identity and your vote is encrypted.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">7</div>
+          <span class="role-tag role-admin">Admin</span>
+          <h3>Close Voting</h3>
+          <p>End the voting period. No more votes accepted after this point.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- RESULTS -->
+    <div class="phase">
+      <div class="phase-header">Results</div>
+      <div class="phase-body">
+        <div class="step">
+          <div class="step-num">8</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-committee">Committee</span>
+          <h3>Decrypt Shares</h3>
+          <p>Committee members submit their decrypted key shares on-chain. Only the threshold is needed (e.g., 2 of 3).</p>
+        </div>
+        <div class="step">
+          <div class="step-num">9</div>
+          <div class="step-arrow"></div>
+          <span class="role-tag role-voter">Automatic</span>
+          <h3>Tally Votes</h3>
+          <p>Once enough shares are submitted, votes are automatically decrypted and counted in the browser.</p>
+        </div>
+        <div class="step">
+          <div class="step-num">10</div>
+          <span class="role-tag role-admin">Admin</span>
+          <h3>Commit Results</h3>
+          <p>Publish the final vote counts and a cryptographic hash on-chain. Anyone can independently verify.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="bottom-section">
+
+    <div class="roles-card">
+      <h3>Who Does What</h3>
+      <div class="role-row role-admin-bg">
+        <div class="role-label" style="color: #a5b4fc;">Admin</div>
+        <div class="role-steps">
+          <span class="role-step-pill">1. Create</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">3. Finalize</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">5. Open</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">7. Close</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">10. Commit</span>
+        </div>
+      </div>
+      <div class="role-row role-committee-bg">
+        <div class="role-label" style="color: #c4b5fd;">Committee</div>
+        <div class="role-steps">
+          <span class="role-step-pill">2. Register Keys</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">8. Decrypt Shares</span>
+        </div>
+      </div>
+      <div class="role-row role-voter-bg">
+        <div class="role-label" style="color: #86efac;">Voters</div>
+        <div class="role-steps">
+          <span class="role-step-pill">4. Register</span>
+          <span class="arrow-between">&rarr;</span>
+          <span class="role-step-pill">6. Vote</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="key-points">
+      <h3>Key Properties</h3>
+      <div class="key-point">
+        <div class="key-icon">&#128373;</div>
+        <p><strong>Anonymous</strong> — ZK proofs break the link between your identity and your vote. Nobody can tell who voted for what.</p>
+      </div>
+      <div class="key-point">
+        <div class="key-icon">&#128274;</div>
+        <p><strong>Encrypted</strong> — Votes are sealed until the committee decrypts. No one sees results early — not even the admin.</p>
+      </div>
+      <div class="key-point">
+        <div class="key-icon">&#9989;</div>
+        <p><strong>Verifiable</strong> — All data is on-chain. Anyone can re-tally from the raw encrypted votes and verify the results match.</p>
+      </div>
+      <div class="key-point">
+        <div class="key-icon">&#128101;</div>
+        <p><strong>Threshold trust</strong> — No single person can decrypt votes. A quorum of committee members must cooperate (e.g., 2 of 3).</p>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    Spectre Protocol &mdash; <a href="https://github.com/nexosynths/spectre-voting">github.com/nexosynths/spectre-voting</a>
+  </div>
+
+</div>
+</body>
+</html>

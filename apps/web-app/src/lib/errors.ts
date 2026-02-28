@@ -29,6 +29,18 @@ const ERROR_MESSAGES: Record<string, string> = {
     TallyAlreadyCommitted: "The tally has already been committed for this election",
     VotingStillOpen: "Voting must be closed before committing the tally",
     InvalidOptionCount: "Option counts array length doesn't match the election's numOptions",
+    // Committee errors
+    CommitteeAlreadySetup: "Committee has already been configured for this election",
+    CommitteeNotSetup: "No committee has been configured — set up a committee first",
+    NotCommitteeMember: "Only committee members can perform this action",
+    KeyAlreadyRegistered: "You've already registered your committee key",
+    CommitteeAlreadyFinalized: "Committee has already been finalized",
+    NotAllKeysRegistered: "All committee members must register their keys before finalizing",
+    InvalidThreshold: "Threshold must be at least 2 and at most the number of members",
+    ShareAlreadySubmitted: "You've already submitted your decrypted share",
+    InvalidPublicKey: "Public key must be exactly 33 bytes (compressed secp256k1)",
+    ElectionKeyNotSet: "Committee must be finalized before voting can start",
+    CommitteeNotFinalized: "Committee must be finalized before this action is allowed",
 }
 
 // Lazy-init interface for manual selector decoding

@@ -246,6 +246,20 @@ export function generateCommitteeKeypair(): { privateKeyHex: string; publicKeyHe
     }
 }
 
+/**
+ * Parse an ethers hex string (0x-prefixed, 130 hex chars = 64 bytes) to a Share.
+ * Used for reading decrypted shares stored on-chain via contract storage.
+ */
+export function deserializeShareFromHex(hex: string): Share {
+    const clean = hex.startsWith("0x") ? hex.slice(2) : hex
+    if (clean.length !== 128) throw new Error(`Expected 128 hex chars (64 bytes), got ${clean.length}`)
+    const buf = new Uint8Array(64)
+    for (let i = 0; i < 64; i++) {
+        buf[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16)
+    }
+    return deserializeShare(buf)
+}
+
 /** Validate a hex string is a valid compressed secp256k1 public key. */
 export function isValidPublicKey(hex: string): boolean {
     try {
