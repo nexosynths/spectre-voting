@@ -20,7 +20,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { JsonRpcProvider, Wallet, Contract } from "ethers"
+import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
 import { CONTRACTS, SEPOLIA_RPC, FACTORY_ABI, SPECTRE_VOTING_ABI } from "@/lib/contracts"
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,80 @@ function checkRateLimit(ip: string, election: string): boolean {
     if (count >= MAX_CALLS_PER_IP_PER_ELECTION) return false
     rateLimitMap.set(key, count + 1)
     return true
+}
+
+// ---------------------------------------------------------------------------
+// Used invite code tracking (in-memory, resets on cold start)
+// ---------------------------------------------------------------------------
+const usedCodeHashes = new Map<string, Set<string>>() // electionAddr → set of used code hashes
+
+function markCodeUsed(election: string, codeHash: string): void {
+    const key = election.toLowerCase()
+    if (!usedCodeHashes.has(key)) usedCodeHashes.set(key, new Set())
+    usedCodeHashes.get(key)!.add(codeHash)
+}
+
+function unmarkCodeUsed(election: string, codeHash: string): void {
+    const key = election.toLowerCase()
+    usedCodeHashes.get(key)?.delete(codeHash)
+}
+
+function isCodeUsed(election: string, codeHash: string): boolean {
+    return usedCodeHashes.get(election.toLowerCase())?.has(codeHash) ?? false
+}
+
+function usedCodeCount(election: string): number {
+    return usedCodeHashes.get(election.toLowerCase())?.size ?? 0
+}
+
+// ---------------------------------------------------------------------------
+// Election metadata cache (in-memory, avoids re-fetching events)
+// ---------------------------------------------------------------------------
+const metadataCache = new Map<string, Record<string, any>>()
+
+async function getElectionMetadata(
+    electionAddress: string,
+    provider: JsonRpcProvider
+): Promise<Record<string, any> | null> {
+    const key = electionAddress.toLowerCase()
+    if (metadataCache.has(key)) return metadataCache.get(key)!
+
+    try {
+        const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
+        const currentBlock = await provider.getBlockNumber()
+        const fromBlock = Math.max(0, currentBlock - 49000)
+        const events = await factory.queryFilter(
+            factory.filters.ElectionDeployed(electionAddress),
+            fromBlock
+        )
+        if (events.length === 0) return null
+        const args = (events[0] as any).args
+        if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
+        const decoded = toUtf8String(args.metadata)
+        const meta = JSON.parse(decoded)
+        metadataCache.set(key, meta)
+        return meta
+    } catch {
+        return null
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Signup count helper (for cold-start rehydration)
+// ---------------------------------------------------------------------------
+async function getSignupCount(
+    electionAddress: string,
+    provider: JsonRpcProvider
+): Promise<number> {
+    try {
+        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
+        const currentBlock = await provider.getBlockNumber()
+        const fromBlock = Math.max(0, currentBlock - 49000)
+        const events = await election.queryFilter(election.filters.VoterSignedUp(), fromBlock)
+        return events.length
+    } catch {
+        return 0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +187,7 @@ export async function POST(request: NextRequest) {
         // Dispatch by action
         switch (action) {
             case "signUp":
-                return await handleSignUp(election, body)
+                return await handleSignUp(election, body, provider)
             case "anonJoin":
                 return await handleAnonJoin(election, body)
             case "castVote":
@@ -142,9 +216,10 @@ export async function POST(request: NextRequest) {
 
 async function handleSignUp(
     election: Contract,
-    body: any
+    body: any,
+    provider: JsonRpcProvider
 ): Promise<NextResponse> {
-    const { identityCommitment } = body
+    const { identityCommitment, code } = body
     if (!identityCommitment) {
         return NextResponse.json(
             { success: false, error: "Missing identityCommitment" },
@@ -152,10 +227,13 @@ async function handleSignUp(
         )
     }
 
-    // Pre-checks in parallel
-    const [signupOpen, selfSignupAllowed] = await Promise.all([
+    const electionAddress = await election.getAddress()
+
+    // Pre-checks + metadata fetch in parallel
+    const [signupOpen, selfSignupAllowed, meta] = await Promise.all([
         election.signupOpen(),
         election.selfSignupAllowed(),
+        getElectionMetadata(electionAddress, provider),
     ])
 
     if (!signupOpen) {
@@ -169,6 +247,67 @@ async function handleSignUp(
             { success: false, error: "Self-signup is not allowed. Admin must register voters." },
             { status: 400 }
         )
+    }
+
+    // ── Invite code validation ──
+    if (meta?.gateType === "invite-codes") {
+        if (!code) {
+            return NextResponse.json(
+                { success: false, error: "Invite code required for this election" },
+                { status: 400 }
+            )
+        }
+
+        // Validate format: 8 lowercase hex chars
+        const normalized = code.toLowerCase().trim()
+        if (!/^[0-9a-f]{8}$/.test(normalized)) {
+            return NextResponse.json(
+                { success: false, error: "Invalid invite code format" },
+                { status: 400 }
+            )
+        }
+
+        const codeHashes: string[] = meta.inviteCodes?.codeHashes || []
+        const codeHash = keccak256(toUtf8Bytes(normalized))
+
+        // Check code is in the valid set
+        if (!codeHashes.includes(codeHash)) {
+            return NextResponse.json(
+                { success: false, error: "Invalid invite code" },
+                { status: 400 }
+            )
+        }
+
+        // Check code hasn't been used
+        if (isCodeUsed(electionAddress, codeHash)) {
+            return NextResponse.json(
+                { success: false, error: "This invite code has already been used" },
+                { status: 400 }
+            )
+        }
+
+        // Cold start fallback: if no codes tracked yet, count signups
+        if (usedCodeCount(electionAddress) === 0) {
+            const signupCount = await getSignupCount(electionAddress, provider)
+            if (signupCount >= (meta.inviteCodes?.totalCodes || codeHashes.length)) {
+                return NextResponse.json(
+                    { success: false, error: "All invite codes have been used" },
+                    { status: 400 }
+                )
+            }
+        }
+
+        // Mark code used BEFORE submitting tx (Node.js single-threaded — no race)
+        markCodeUsed(electionAddress, codeHash)
+
+        try {
+            const tx = await election.signUp(identityCommitment)
+            return NextResponse.json({ success: true, txHash: tx.hash })
+        } catch (err) {
+            // On tx failure: un-mark code to allow retry
+            unmarkCodeUsed(electionAddress, codeHash)
+            throw err
+        }
     }
 
     // Submit transaction (returns immediately, don't wait for confirmation)

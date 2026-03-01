@@ -12,6 +12,7 @@ import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compr
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, explorerTxUrl, RelayError } from "@/lib/relayer"
+import { validateCode, getAdminCodes, codesToCsv, downloadCsv } from "@/lib/inviteCodes"
 import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, encryptedShareToHex, generateCommitteeKeypair, deserializeShareFromHex, type Share, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
@@ -174,6 +175,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [signupLoading, setSignupLoading] = useState(false)
     const [signupStatus, setSignupStatus] = useState<"unknown" | "checking" | "signed-up" | "not-signed-up">("unknown")
 
+    // Invite code state
+    const [inviteCode, setInviteCode] = useState("")
+    const [codeValid, setCodeValid] = useState(false)
+    const [codeError, setCodeError] = useState("")
+
     // Join state (has voter already anonymously joined?)
     const [joinStatus, setJoinStatus] = useState<"unknown" | "checking" | "joined" | "not-joined">("unknown")
 
@@ -263,11 +269,22 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 })
                 // Read gasless mode from metadata
                 if (onChain.gaslessEnabled) setGaslessEnabled(true)
+                // Invite-code elections force gasless
+                if (onChain.gateType === "invite-codes") setGaslessEnabled(true)
             }
             setMetaLoaded(true)
         })
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [electionAddress])
+
+    // Auto-fill invite code from URL param
+    useEffect(() => {
+        const urlCode = searchParams.get("code")
+        if (urlCode && !inviteCode) {
+            setInviteCode(urlCode.toLowerCase().trim())
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchParams])
 
     const displayTitle = meta.title || (state ? `Proposal #${state.proposalId}` : "Election")
 
@@ -289,6 +306,51 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [electionAddress, metaLoaded])
 
     const isThresholdElection = thresholdMeta !== null
+
+    // Invite code metadata detection
+    const inviteCodeMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.gateType === "invite-codes" && stored.inviteCodes) {
+                return {
+                    totalCodes: stored.inviteCodes.totalCodes as number,
+                    codeHashes: stored.inviteCodes.codeHashes as string[],
+                }
+            }
+        } catch { /* ignore */ }
+        return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [electionAddress, metaLoaded])
+
+    const isInviteCodeElection = inviteCodeMeta !== null
+
+    // Validate invite code client-side
+    useEffect(() => {
+        if (!inviteCodeMeta || !inviteCode) {
+            setCodeValid(false)
+            setCodeError("")
+            return
+        }
+        const normalized = inviteCode.toLowerCase().trim()
+        if (normalized.length === 0) {
+            setCodeValid(false)
+            setCodeError("")
+            return
+        }
+        if (!/^[0-9a-f]{8}$/.test(normalized)) {
+            setCodeValid(false)
+            setCodeError("Code must be 8 hex characters")
+            return
+        }
+        const match = validateCode(normalized, inviteCodeMeta.codeHashes)
+        if (match) {
+            setCodeValid(true)
+            setCodeError("")
+        } else {
+            setCodeValid(false)
+            setCodeError("Invalid invite code")
+        }
+    }, [inviteCode, inviteCodeMeta])
 
     // Option labels: use meta labels, fall back to "Option 0", "Option 1", etc.
     const optionLabels = useMemo(() => {
@@ -474,12 +536,18 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // ── SIGNUP (Phase 1) ──
     const handleSignUp = useCallback(async () => {
         if (!identity || !state) return
+        // Invite code validation check
+        if (isInviteCodeElection && !codeValid) {
+            addLog("Valid invite code required to sign up")
+            return
+        }
+        const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
         // Gasless mode: relay signup (no wallet needed)
         if (gaslessEnabled) {
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment)
+                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend)
                 addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
                 await waitForRelayTx(txHash)
                 const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
@@ -505,7 +573,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -1229,8 +1297,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                     <span>{state.voteCount} vote{state.voteCount !== 1 ? "s" : ""}</span>
                     <span>{state.numOptions} options</span>
-                    <span style={{ color: state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
-                        {state.selfSignupAllowed ? "Open signup" : "Gated"}
+                    <span style={{ color: isInviteCodeElection ? "var(--accent)" : state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
+                        {isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Gated"}
                     </span>
                     {gaslessEnabled && (
                         <span style={{ color: "var(--success)", fontSize: "0.75rem" }}>
@@ -1326,82 +1394,90 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     {/* ── SIGNUP PHASE ── */}
                     {phase === "signup" && identity && (gaslessEnabled || address) && (
                         <div className="card" style={{ marginBottom: 16 }}>
-                            {!state.selfSignupAllowed ? (
-                                /* GATED MODE */
+                            {/* Shared: checking + signed-up states */}
+                            {signupStatus === "checking" && (
+                                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                    <div className="spinner" />
+                                    <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking signup status...</p>
+                                </div>
+                            )}
+
+                            {signupStatus === "signed-up" && (
+                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                    <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
+                                    <div>
+                                        <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
+                                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                            Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* ADMIN-ONLY MODE */}
+                            {signupStatus !== "checking" && signupStatus !== "signed-up" && !state.selfSignupAllowed && (
                                 <>
-                                    {signupStatus === "checking" && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                                            <div className="spinner" />
-                                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking registration status...</p>
-                                        </div>
-                                    )}
-
-                                    {signupStatus === "signed-up" && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                            <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                                            <div>
-                                                <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re registered!</p>
-                                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                                    The admin has added you. Once voting opens, you&apos;ll anonymously join and cast your vote.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {(signupStatus === "not-signed-up" || signupStatus === "unknown") && (
-                                        <>
-                                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Admin-Only Registration</h4>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                                This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
-                                            </p>
-                                            <div style={{ display: "flex", gap: 8 }}>
-                                                <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
-                                                    {identity.commitment.toString()}
-                                                </code>
-                                                <button onClick={() => copyToClipboard(identity.commitment.toString(), "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                                    {copied === "vid" ? "Copied!" : "Copy ID"}
-                                                </button>
-                                            </div>
-                                        </>
-                                    )}
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Admin-Only Registration</h4>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
+                                    </p>
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
+                                            {identity.commitment.toString()}
+                                        </code>
+                                        <button onClick={() => copyToClipboard(identity.commitment.toString(), "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
+                                            {copied === "vid" ? "Copied!" : "Copy ID"}
+                                        </button>
+                                    </div>
                                 </>
-                            ) : (
-                                /* OPEN MODE */
+                            )}
+
+                            {/* INVITE CODE MODE */}
+                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && isInviteCodeElection && (
                                 <>
-                                    {signupStatus === "checking" && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                                            <div className="spinner" />
-                                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking signup status...</p>
-                                        </div>
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Enter Invite Code</h4>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        This election requires an invite code to sign up. Enter the code you received from the election admin.
+                                    </p>
+                                    <input
+                                        type="text"
+                                        placeholder="8-character code"
+                                        value={inviteCode}
+                                        onChange={e => setInviteCode(e.target.value.toLowerCase().replace(/[^0-9a-f]/g, ""))}
+                                        maxLength={8}
+                                        className="mono"
+                                        disabled={signupLoading}
+                                        style={{ textAlign: "center", fontSize: "1.1rem", letterSpacing: "0.15em", marginBottom: 8 }}
+                                    />
+                                    {inviteCode.length > 0 && (
+                                        <p style={{ fontSize: "0.8rem", marginBottom: 8, color: codeValid ? "var(--success)" : codeError ? "var(--error)" : "var(--text-muted)" }}>
+                                            {codeValid ? "Code valid" : codeError || "..."}
+                                        </p>
                                     )}
+                                    <button
+                                        className="btn-primary"
+                                        onClick={handleSignUp}
+                                        disabled={signupLoading || !codeValid}
+                                    >
+                                        {signupLoading ? "Signing up..." : "Sign Up with Code"}
+                                    </button>
+                                </>
+                            )}
 
-                                    {signupStatus === "signed-up" && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                            <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                                            <div>
-                                                <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
-                                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                                    Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {(signupStatus === "not-signed-up" || signupStatus === "unknown") && (
-                                        <>
-                                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                                Register your identity for this election. This is public — the admin can see who signed up. But when voting opens, you&apos;ll use a ZK proof to anonymously re-key into the voting group. <strong>Nobody can link your signup to your vote.</strong>
-                                            </p>
-                                            <button
-                                                className="btn-primary"
-                                                onClick={handleSignUp}
-                                                disabled={signupLoading}
-                                            >
-                                                {signupLoading ? "Signing up..." : "Sign Up"}
-                                            </button>
-                                        </>
-                                    )}
+                            {/* OPEN MODE */}
+                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && !isInviteCodeElection && (
+                                <>
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        Register your identity for this election. This is public — the admin can see who signed up. But when voting opens, you&apos;ll use a ZK proof to anonymously re-key into the voting group. <strong>Nobody can link your signup to your vote.</strong>
+                                    </p>
+                                    <button
+                                        className="btn-primary"
+                                        onClick={handleSignUp}
+                                        disabled={signupLoading}
+                                    >
+                                        {signupLoading ? "Signing up..." : "Sign Up"}
+                                    </button>
                                 </>
                             )}
                         </div>
@@ -2107,9 +2183,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <div className="card" style={{ marginBottom: 16 }}>
                         <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Share Election</h4>
                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            {state.selfSignupAllowed
-                                ? "Send this link to voters. They can sign up directly during the signup phase."
-                                : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
+                            {isInviteCodeElection
+                                ? "Use the per-code share links below to send voters a link with their code pre-filled."
+                                : state.selfSignupAllowed
+                                    ? "Send this link to voters. They can sign up directly during the signup phase."
+                                    : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
                         </p>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
@@ -2120,6 +2198,55 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             </button>
                         </div>
                     </div>
+
+                    {/* Invite codes section (admin) */}
+                    {isInviteCodeElection && (() => {
+                        const adminCodes = getAdminCodes(electionAddress)
+                        return (
+                            <div className="card" style={{ marginBottom: 16 }}>
+                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
+                                    Invite Codes ({inviteCodeMeta?.totalCodes || 0} total)
+                                </h4>
+                                {adminCodes ? (
+                                    <>
+                                        <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                            {adminCodes.map((code, i) => {
+                                                const codeShareUrl = `${shareUrl}?code=${code}`
+                                                return (
+                                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < adminCodes.length - 1 ? "1px solid var(--border)" : "none" }}>
+                                                        <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
+                                                        <button
+                                                            onClick={() => { navigator.clipboard.writeText(codeShareUrl); setCopied(`clink-${i}`); setTimeout(() => setCopied(""), 2000) }}
+                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
+                                                        >{copied === `clink-${i}` ? "Copied!" : "Copy link"}</button>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                        <div style={{ display: "flex", gap: 8 }}>
+                                            <button
+                                                className="btn-primary"
+                                                onClick={() => { navigator.clipboard.writeText(adminCodes.join("\n")); setCopied("admin-all-codes"); setTimeout(() => setCopied(""), 2000) }}
+                                                style={{ flex: 1, fontSize: "0.8rem" }}
+                                            >{copied === "admin-all-codes" ? "Copied!" : "Copy All Codes"}</button>
+                                            <button
+                                                className="btn-secondary"
+                                                onClick={() => {
+                                                    const csv = codesToCsv(adminCodes, shareUrl)
+                                                    downloadCsv(csv, `invite-codes-${electionAddress.slice(0, 8)}.csv`)
+                                                }}
+                                                style={{ flex: 1, fontSize: "0.8rem" }}
+                                            >Download CSV</button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                        Codes not available in this browser. They are only stored in the browser that created the election. Total codes from metadata: {inviteCodeMeta?.totalCodes || "unknown"}.
+                                    </p>
+                                )}
+                            </div>
+                        )
+                    })()}
 
                     {/* Admin register (during signup phase) */}
                     {phase === "signup" && (

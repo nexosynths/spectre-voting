@@ -78,13 +78,16 @@ async function callRelay(body: Record<string, any>): Promise<string> {
  */
 export async function relaySignUp(
     electionAddress: string,
-    identityCommitment: bigint | string
+    identityCommitment: bigint | string,
+    code?: string
 ): Promise<string> {
-    return callRelay({
+    const body: Record<string, any> = {
         action: "signUp",
         electionAddress,
         identityCommitment: identityCommitment.toString(),
-    })
+    }
+    if (code) body.code = code.toLowerCase().trim()
+    return callRelay(body)
 }
 
 /**

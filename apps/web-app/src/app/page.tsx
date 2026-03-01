@@ -7,6 +7,7 @@ import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
+import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes } from "@/lib/inviteCodes"
 
 interface ElectionInfo {
     address: string
@@ -35,8 +36,14 @@ export default function HomePage() {
     const [signupHours, setSignupHours] = useState("24")
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
-    const [selfSignup, setSelfSignup] = useState(true)
+    const [gateType, setGateType] = useState<"open" | "invite-codes" | "admin-only">("open")
+    const [codeCount, setCodeCount] = useState("20")
+    const [generatedCodes, setGeneratedCodes] = useState<string[]>([])
+    const [showCodesModal, setShowCodesModal] = useState(false)
     const [gaslessMode, setGaslessMode] = useState(false)
+
+    // Derive selfSignup from gateType
+    const selfSignup = gateType !== "admin-only"
 
     // Threshold encryption state
     const [encryptionMode, setEncryptionMode] = useState<"single" | "threshold">("single")
@@ -214,7 +221,16 @@ export default function HomePage() {
 
             // Build metadata JSON for on-chain storage
             const metaObj: Record<string, any> = { title: electionTitle.trim(), labels }
-            if (gaslessMode) metaObj.gaslessEnabled = true
+            if (gaslessMode || gateType === "invite-codes") metaObj.gaslessEnabled = true
+            // Invite code gate: generate codes, hash them, add to metadata
+            let inviteCodes: string[] = []
+            if (gateType === "invite-codes") {
+                const count = Math.max(2, Math.min(250, Number(codeCount) || 20))
+                inviteCodes = generateCodes(count)
+                const codeHashes = hashCodes(inviteCodes)
+                metaObj.gateType = "invite-codes"
+                metaObj.inviteCodes = { totalCodes: count, codeHashes }
+            }
             if (encryptionMode === "threshold") {
                 metaObj.mode = "threshold"
                 metaObj.threshold = threshold
@@ -245,6 +261,12 @@ export default function HomePage() {
             // Cache metadata in localStorage
             localStorage.setItem(`spectre-election-meta-${electionAddr}`, JSON.stringify(metaObj))
 
+            // Store invite codes in localStorage + show modal
+            if (gateType === "invite-codes" && inviteCodes.length > 0) {
+                storeAdminCodes(electionAddr, inviteCodes)
+                setGeneratedCodes(inviteCodes)
+            }
+
             if (encryptionMode === "threshold") {
                 addLog(`Election created. Setting up ${threshold}-of-${validMembers.length} committee...`)
 
@@ -274,13 +296,20 @@ export default function HomePage() {
             setShowCreate(false)
             setCommitteMembers([{ name: "", address: "" }, { name: "", address: "" }, { name: "", address: "" }])
             setEncryptionMode("single")
+            setGateType("open")
+            setCodeCount("20")
             await loadElections()
+
+            // Show codes modal after everything else is done
+            if (gateType === "invite-codes" && inviteCodes.length > 0) {
+                setShowCodesModal(true)
+            }
         } catch (err: any) {
             addLog(`Failed: ${friendlyError(err)}`)
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount])
 
     return (
         <>
@@ -379,38 +408,50 @@ export default function HomePage() {
                                 />
                             </div>
                         </div>
-                        {/* Signup mode toggle */}
-                        <div
-                            onClick={() => !creating && setSelfSignup(!selfSignup)}
-                            role="button"
-                            style={{
-                                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                                background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)",
-                                cursor: creating ? "not-allowed" : "pointer", userSelect: "none",
-                            }}
-                        >
-                            <div style={{
-                                width: 36, height: 20, borderRadius: 10,
-                                background: selfSignup ? "var(--accent)" : "var(--border)",
-                                position: "relative", transition: "background 0.2s", flexShrink: 0,
-                            }}>
-                                <div style={{
-                                    width: 16, height: 16, borderRadius: "50%", background: "white",
-                                    position: "absolute", top: 2,
-                                    left: selfSignup ? 18 : 2,
-                                    transition: "left 0.2s",
-                                }} />
+                        {/* Signup gate selector */}
+                        <div>
+                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
+                                Signup Gate
+                            </label>
+                            <div style={{ display: "flex", gap: 8 }}>
+                                {([
+                                    { key: "open" as const, label: "Open", desc: "Anyone with the link can vote" },
+                                    { key: "invite-codes" as const, label: "Invite Codes", desc: "One-time codes you distribute" },
+                                    { key: "admin-only" as const, label: "Admin Only", desc: "You register each voter" },
+                                ]).map(g => (
+                                    <div
+                                        key={g.key}
+                                        onClick={() => !creating && setGateType(g.key)}
+                                        style={{
+                                            flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
+                                            border: `1px solid ${gateType === g.key ? "var(--accent)" : "var(--border)"}`,
+                                            background: gateType === g.key ? "#6366f115" : "var(--bg)",
+                                        }}
+                                    >
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{g.label}</span>
+                                        <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>{g.desc}</p>
+                                    </div>
+                                ))}
                             </div>
-                            <div>
-                                <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                    {selfSignup ? "Open signup" : "Gated (admin-only)"}
-                                </span>
-                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
-                                    {selfSignup
-                                        ? "Anyone with the link can self-register to vote"
-                                        : "Only you (admin) can register voters"}
-                                </p>
-                            </div>
+                            {gateType === "invite-codes" && (
+                                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                        Number of invite codes (2–250)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min={2}
+                                        max={250}
+                                        value={codeCount}
+                                        onChange={e => setCodeCount(e.target.value)}
+                                        disabled={creating}
+                                        style={{ width: 100, fontSize: "0.85rem" }}
+                                    />
+                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
+                                        Each code lets one voter sign up. Codes are shown after election creation.
+                                    </p>
+                                </div>
+                            )}
                         </div>
 
                         {/* Voter access mode toggle */}
@@ -542,7 +583,7 @@ export default function HomePage() {
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            Signup: {signupHours}h → Voting: {votingHours}h · {selfSignup ? "Open" : "Gated"} · {gaslessMode ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
+                            Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
                         </p>
                         <button
                             className="btn-primary"
@@ -552,6 +593,54 @@ export default function HomePage() {
                         >
                             {creating ? "Deploying..." : "Create"}
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Invite codes modal */}
+            {showCodesModal && generatedCodes.length > 0 && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700 }}>Invite Codes ({generatedCodes.length})</h4>
+                        <button
+                            onClick={() => setShowCodesModal(false)}
+                            style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "1.1rem", cursor: "pointer", padding: "0 4px" }}
+                        >×</button>
+                    </div>
+                    <div style={{ padding: "8px 12px", background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440", marginBottom: 12 }}>
+                        <p style={{ fontSize: "0.8rem", color: "var(--error)", fontWeight: 600 }}>
+                            Save these codes now — they cannot be recovered later
+                        </p>
+                    </div>
+                    <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                        {generatedCodes.map((code, i) => (
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < generatedCodes.length - 1 ? "1px solid var(--border)" : "none" }}>
+                                <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
+                                <button
+                                    onClick={() => copyToClipboard(code, `code-${i}`)}
+                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
+                                >{copied === `code-${i}` ? "Copied!" : "Copy"}</button>
+                            </div>
+                        ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                            className="btn-primary"
+                            onClick={() => {
+                                navigator.clipboard.writeText(generatedCodes.join("\n"))
+                                setCopied("all-codes")
+                                setTimeout(() => setCopied(""), 2000)
+                            }}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >{copied === "all-codes" ? "Copied!" : "Copy All"}</button>
+                        <button
+                            className="btn-secondary"
+                            onClick={() => {
+                                const csv = codesToCsv(generatedCodes, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
+                                downloadCsv(csv, `invite-codes-${new Date().toISOString().slice(0, 10)}.csv`)
+                            }}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >Download CSV</button>
                     </div>
                 </div>
             )}
