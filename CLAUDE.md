@@ -153,7 +153,9 @@ spectre-voting/
 │       │   │   ├── threshold.ts          # Browser Shamir + dealer + share reconstruction
 │       │   │   ├── errors.ts             # Human-readable contract error decoder
 │       │   │   ├── proof.ts              # Browser SpectreVote proof generation
-│       │   │   └── anonJoinProof.ts      # Browser AnonJoin proof generation
+│       │   │   ├── anonJoinProof.ts      # Browser AnonJoin proof generation
+│       │   │   ├── relayer.ts            # Gasless relay client (anti-censorship)
+│       │   │   └── inviteCodes.ts        # Invite code generation, hashing, validation, CSV export
 │       │   ├── context/
 │       │   │   └── SpectreContext.tsx     # Wallet + identity state (per-wallet scoping)
 │       │   └── components/
@@ -234,7 +236,44 @@ spectre-voting/
 - [x] Per-election identity (fresh Semaphore identity per election — no cross-election participation tracking)
 - [x] Wallet switching support (accountsChanged updates signer + loads correct identity)
 
-### v6 — Proof-Only Relayer (Gasless Voting) (COMPLETE)
+### Done (v7.0 — Invite Codes Signup Gate)
+- [x] New `lib/inviteCodes.ts` — code generation (8-char lowercase hex, 4 random bytes), keccak256 hashing, client-side validation, CSV export with per-code share links, localStorage persistence
+- [x] 3-option signup gate selector on election creation: Open / Invite Codes / Admin Only (replaces binary toggle)
+- [x] Admin configures code count (2–250) at creation → codes generated, hashes committed on-chain in metadata
+- [x] Post-creation codes modal with Copy All + Download CSV + per-code copy buttons
+- [x] Relay API (`route.ts`): server-side invite code validation — format check, hash match against on-chain metadata, used-code tracking (in-memory), cold-start rehydration via signup event count, mark-before-submit with rollback on tx failure
+- [x] Election metadata cache in relay to avoid re-fetching `ElectionDeployed` events
+- [x] Election page: invite code input UI (monospace, centered, hex-filtered, maxLength 8) with real-time client-side validation (green "Code valid" / red error)
+- [x] URL auto-fill: `?code=xxx` param auto-populates invite code input
+- [x] Admin Manage tab: scrollable code list with per-code "Copy link" buttons (appends `?code=xxx`), Copy All Codes + Download CSV
+- [x] Invite-code elections force gasless mode (relay is the only practical signup path)
+- [x] Backward compatible: old elections without `gateType` work exactly as before
+- [x] No contract changes — all validation at application layer
+
+#### Metadata Format
+```json
+{
+  "gateType": "invite-codes",
+  "gaslessEnabled": true,
+  "inviteCodes": { "totalCodes": 20, "codeHashes": ["0x4a3b...", "..."] }
+}
+```
+
+#### Edge Cases
+- **Cold start**: Relay rehydrates by counting `VoterSignedUp` events. If signups >= totalCodes, rejects all new codes.
+- **Race condition**: `markCodeUsed()` runs synchronously before async tx. Node.js single-threaded event loop prevents interleaving.
+- **Tx failure**: Code un-marked in catch block, allowing retry.
+- **Direct contract bypass**: Accepted trade-off. Invite-code elections are gasless by default; the relay is the only practical signup path.
+- **Admin loses codes**: Only stored in creating browser's localStorage. CSV download encouraged.
+
+#### Files
+- `apps/web-app/src/lib/inviteCodes.ts` — Code generation, hashing, validation, CSV, localStorage
+- `apps/web-app/src/lib/relayer.ts` — Optional `code` param on `relaySignUp()`
+- `apps/web-app/src/app/api/relay/route.ts` — Server-side code validation + metadata cache
+- `apps/web-app/src/app/page.tsx` — 3-option gate selector + codes modal
+- `apps/web-app/src/app/election/[address]/page.tsx` — Code input UI + admin code viewer
+
+### Done (v6 — Proof-Only Relayer / Gasless Voting)
 
 - [x] API route: `/api/relay` — server-side tx submission, rate limiting, pre-checks
 - [x] Client module: `lib/relayer.ts` — relay calls, tx polling, anti-censorship verification
@@ -292,57 +331,68 @@ Browser → generate proof → POST /api/relay → server verifies proof → ser
 - `apps/web-app/src/context/SpectreContext.tsx` — Walletless identity
 - `apps/web-app/src/app/page.tsx` — Voter access mode toggle
 
+### Next Up — v7: Modular Signup Gates (continued)
+
+Invite codes (v7.0) shipped. The contract doesn't change — all gates control who can call `signUp()`. The ZK voting protocol downstream is identical regardless of which gate is used.
+
+#### Remaining Gate Types
+
+**1. Allowlist (v7.1 — NEXT)**
+- Admin uploads CSV of emails or identifiers
+- Server checks against list at signup
+- Variant of invite codes — same architecture, different input format
+- **Tradeoff:** Admin controls the list
+
+**2. Email Domain Gate (v7.2)**
+- Prove you have an @company.com email (verification code sent to email)
+- Rule is public and algorithmic — admin sets the domain, not individual people
+- Requires email sending service (SendGrid, Resend, etc.)
+- **Tradeoff:** Trust the email provider. Email provider sees who verified.
+
+**3. OAuth Group Gate (v7.3)**
+- Must be in a Google Workspace org, GitHub team, or Slack channel
+- Each provider is its own integration (different OAuth APIs)
+- Rule is algorithmic — "members of this org" not "these specific people"
+- **Tradeoff:** Trust the identity provider. IdP logs + election metadata = potential deanonymization.
+
+**4. Token/NFT Gate (v7.4)**
+- Must hold specific ERC-20 balance or NFT
+- On-chain check only — no external dependencies
+- Wallet infrastructure already exists
+- **Tradeoff:** Requires voter to have a wallet (doesn't work with gasless)
+
+**5. ZK Credential Proofs (v7.5 — long-term)**
+- Voter proves eligibility via ZK proof of an external credential (Zupass, ZK Passport, EAS attestation)
+- No identity provider sees the voter authenticated — fully private eligibility
+- **Tradeoff:** Requires credential infrastructure to exist and be adopted. Emerging tech.
+
+#### Threat Model — Eligibility
+
+Every gate answers: "who can vote?" Every gate requires trusting *something*:
+| Gate | Trust Assumption | Sybil Resistance | Wallet Needed |
+|------|------------------|-------------------|---------------|
+| Open | None — anyone can join | None | No (gasless) |
+| Invite codes | Admin distributes fairly | Strong (1 code = 1 vote) | No (gasless) |
+| Allowlist | Admin list is accurate | Strong | No (gasless) |
+| Email domain | Email provider honest | Medium (shared accounts) | No (gasless) |
+| OAuth group | Identity provider honest | Strong | No (gasless) |
+| Token gate | Token distribution fair | Medium (tokens can be bought) | Yes |
+| ZK credentials | Credential issuer honest | Strong | No (gasless) |
+
+**No system exists where eligibility is both fully trustless AND sybil-resistant.** The admin/gate just decides which trust assumption fits the context.
+
+#### Architecture
+
+The election creation form becomes a decision tree:
+- Admin picks gate type → configures parameters → creates election
+- Election metadata stores gate config (type, parameters)
+- Signup page renders the right UI based on gate type (code input, email input, OAuth button, etc.)
+- Gate validation happens server-side (API route) or on-chain (token gate)
+- On successful validation → identity commitment registered in signup group (same as today)
+
 ### Later
-- [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms
+- [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms (~2s blocks, ~$0.01 per vote)
 - [ ] **Mainnet deployment**
-
-### Future — Modular Signup Gates (Flexible Voter Eligibility)
-
-Currently signup is binary: open (anyone) or admin-only (gated). A modular gate system would let elections use pluggable eligibility criteria without changing the core contract.
-
-#### Design Sketch
-- **`ISignupGate` interface** — single `canSignup(election, voter, proof) → bool` method
-- **Election contract** — stores optional `signupGate` address, checks it during `signup()`. `address(0)` = open signup (current behavior)
-- **Gate implementations** (deploy once, reuse across elections):
-  - **MerkleAllowlistGate** — admin publishes Merkle root of eligible addresses, voters prove inclusion. Handles 10k+ voter lists with one tx instead of batch-registering on-chain. Highest impact.
-  - **TokenGate** — must hold minimum ERC-20 balance
-  - **NFTGate** — must hold specific NFT (DAO membership, credential, etc.)
-  - **AttestationGate** — EAS attestation, Gitcoin Passport score, World ID proof of humanity
-- **Replaces `selfSignupAllowed` boolean** — no gate = open, gate = criteria-based, no self-signup function = admin-only
-
-#### Why Not Now
-Build this after real usage reveals whether admin-only + open signup is sufficient. Merkle gate is the clear first candidate if/when needed.
-
-### Future — Enterprise Abstraction (Gas-Free Voter Experience)
-
-For non-crypto enterprise use cases (company votes, shareholder votes, board elections), the voter should never see a wallet, pay gas, or know blockchain is involved.
-
-#### Proposed Architecture
-```
-Enterprise Admin                     Employee/Voter
-     |                                    |
-     |-- Creates election (wallet) -----> |
-     |-- Sends invite email ------------> |
-     |                                    |-- Clicks link
-     |                                    |-- Browser generates identity (auto)
-     |                                    |-- "Sign Up" -> relayer submits tx (pays gas)
-     |                                    |
-     |-- Closes registration              |
-     |                                    |
-     |                                    |-- "Vote" -> browser generates ZK re-key proof (local)
-     |                                    |-- Relayer submits anon join + vote tx (pays gas)
-     |                                    |-- Voter sees: "Your vote has been cast"
-     |
-     |-- Tallies results (threshold decryption with trustees)
-```
-
-#### Key Components
-- **Relayer API:** Thin backend that wraps voter transactions and submits them from a funded wallet. Accepts ZK proofs from the frontend.
-- **Email-based invite:** Admin enters employee emails. System sends links with embedded invite tokens.
-- **No wallet required:** Voter's browser generates ZK identity silently. Relayer pays all gas.
-- **Same ZK re-key circuit:** The re-key proof is pure client-side math — works identically whether the voter has a wallet or the relayer submits for them.
-- **Authentication:** Invite token (single-use, tied to email) gates Phase 1 signup. Could use OAuth/SSO for enterprise identity verification.
-- **Threshold decryption:** 3-of-5 trustees must cooperate to tally. No single person can see results early.
 
 ## Development
 
@@ -367,7 +417,7 @@ yarn dev  # starts Next.js on localhost:3000
 ### Run contract tests
 ```bash
 cd apps/contracts
-npx hardhat test  # 61 tests, ~11s
+npx hardhat test  # 63 tests, ~11s
 ```
 
 ### Compile circuits
@@ -409,10 +459,11 @@ snarkjs zkey export solidityverifier build/AnonJoin_final.zkey ../contracts/cont
 - **Threat model completed** — 22 findings assessed, 3 real issues fixed (commitment validation, payload privacy, voting deadline).
 - **Client-side key management** — Single-key election private keys stored in localStorage. Threshold elections store encrypted shares in localStorage (no master key retained). For production, use threshold mode.
 - **No formal audit** — This is a proof of concept, not audited production code.
-- **Identity scoping** — Identities are scoped to wallet address to prevent cross-wallet leakage. Voting identities are scoped to both election address and wallet address.
+- **Identity scoping** — Identities are scoped per-election (election address + wallet/anonymous ID) to prevent cross-election participation tracking. Voting identities are also per-election.
 
 ## Developer Context
 - Built as a proof of concept for anonymous encrypted voting with ZK re-key identity delinking
 - Closest existing protocols: MACI v3 (anonymous poll joining, unaudited) and aMACI (DoraHacks, optional re-key)
-- Core protocol is complete and end-to-end tested; next priority is UX (relayer for gas-free voting)
+- Core protocol, gasless relay, and invite codes signup gate complete; next priority is remaining modular signup gates (allowlist, email domain, OAuth, token gate)
 - Prioritize clean UX and iterate — the cryptographic foundation is solid
+- Relayer wallet: `0x2f30dF147C922cFce314D47ecA240953eCFc622f` (Sepolia, `RELAYER_PRIVATE_KEY` env var on Vercel)
