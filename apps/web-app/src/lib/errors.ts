@@ -18,9 +18,9 @@ const ERROR_MESSAGES: Record<string, string> = {
     SignupAlreadyClosed: "Signup has already been closed",
     NullifierAlreadyUsed: "You've already voted in this election",
     JoinNullifierAlreadyUsed: "You've already joined the voting group",
-    InvalidProof: "ZK proof verification failed — please try again",
-    MerkleRootMismatch: "Group membership is stale — try refreshing the page",
-    InvalidCommitment: "Identity commitment is invalid",
+    InvalidProof: "Verification failed — please refresh the page and try again",
+    MerkleRootMismatch: "The voter list has changed — please refresh the page and try again",
+    InvalidCommitment: "Your voter identity could not be verified. Try refreshing or re-registering",
     VotingDeadlinePassed: "The voting deadline has passed",
     SignupDeadlinePassed: "The signup deadline has passed",
     SignupStillOpen: "Signup must be closed before opening voting",
@@ -28,7 +28,7 @@ const ERROR_MESSAGES: Record<string, string> = {
     SelfSignupNotAllowed: "Self-signup is disabled — only the admin can register voters",
     TallyAlreadyCommitted: "The tally has already been committed for this election",
     VotingStillOpen: "Voting must be closed before committing the tally",
-    InvalidOptionCount: "Option counts array length doesn't match the election's numOptions",
+    InvalidOptionCount: "The results don't match the number of options in this election",
     // Committee errors
     CommitteeAlreadySetup: "Committee has already been configured for this election",
     CommitteeNotSetup: "No committee has been configured — set up a committee first",
@@ -37,8 +37,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     CommitteeAlreadyFinalized: "Committee has already been finalized",
     NotAllKeysRegistered: "All committee members must register their keys before finalizing",
     InvalidThreshold: "Threshold must be at least 2 and at most the number of members",
-    ShareAlreadySubmitted: "You've already submitted your decrypted share",
-    InvalidPublicKey: "Public key must be exactly 33 bytes (compressed secp256k1)",
+    ShareAlreadySubmitted: "You've already submitted your share for this election",
+    InvalidPublicKey: "The encryption key format is invalid. Please regenerate your key",
     ElectionKeyNotSet: "Committee must be finalized before voting can start",
     CommitteeNotFinalized: "Committee must be finalized before this action is allowed",
 }
@@ -110,7 +110,9 @@ export function friendlyError(err: any): string {
     }
 
     // Strategy 6: cleaned-up fallback
-    if (err?.reason) return err.reason
-    if (msg.length > 200) return msg.slice(0, 180) + "…"
-    return msg || "Unknown error"
+    if (err?.reason) {
+        const r = err.reason.replace("execution reverted: ", "")
+        if (r.length < 100) return r
+    }
+    return "Something went wrong. Please try again or contact the election admin."
 }

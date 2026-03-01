@@ -131,6 +131,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // ── Per-election identity (scoped to election + wallet/anonymous session) ──
     const [identity, setIdentity] = useState<Identity | null>(null)
 
+    // Gasless relay state (hoisted — used in identity loading effect)
+    const [gaslessEnabled, setGaslessEnabled] = useState(false)
+
     // Scope key: election address + wallet address (or anonymous ID for gasless)
     const identityStorageKey = useMemo(() => {
         const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
@@ -144,15 +147,23 @@ export default function ElectionPage({ params }: { params: { address: string } }
         if (saved) {
             try { setIdentity(Identity.import(saved)); return } catch { localStorage.removeItem(identityStorageKey) }
         }
+        // Auto-create identity for gasless voters (no user action needed)
+        if (gaslessEnabled) {
+            const id = new Identity()
+            setIdentity(id)
+            localStorage.setItem(identityStorageKey, id.export())
+            addLog("Ready to participate")
+            return
+        }
         setIdentity(null)
-    }, [identityStorageKey])
+    }, [identityStorageKey, gaslessEnabled, addLog])
 
     const createIdentity = useCallback(() => {
-        if (!identityStorageKey) { addLog("Connect wallet or enable gasless mode first"); return }
+        if (!identityStorageKey) { addLog("Connect your wallet first"); return }
         const id = new Identity()
         setIdentity(id)
         localStorage.setItem(identityStorageKey, id.export())
-        addLog("New identity created for this election")
+        addLog("Ready to participate")
     }, [identityStorageKey, addLog])
 
     const [tab, setTab] = useState<Tab>("vote")
@@ -167,8 +178,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [txHash, setTxHash] = useState("")
     const [error, setError] = useState("")
 
-    // Gasless relay state
-    const [gaslessEnabled, setGaslessEnabled] = useState(false)
+    // Gasless relay state (cont.)
     const [onChainVerified, setOnChainVerified] = useState<boolean | null>(null) // null = not checked, true/false = result
 
     // Signup state
@@ -339,7 +349,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         }
         if (!/^[0-9a-f]{8}$/.test(normalized)) {
             setCodeValid(false)
-            setCodeError("Code must be 8 hex characters")
+            setCodeError("Code must be 8 characters (letters a-f, numbers 0-9)")
             return
         }
         const match = validateCode(normalized, inviteCodeMeta.codeHashes)
@@ -590,23 +600,23 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 // Create per-election voting identity if not exists
                 if (!votingId) {
                     votingId = createVotingIdentity()
-                    addLog("Created per-election voting identity")
+                    addLog("Preparing anonymous vote...")
                 }
 
                 setVoteStep("fetching-signup-group"); setStepMsg("Fetching signup group...")
                 const signupMembers = await fetchGroupMembers(BigInt(state.signupGroupId))
                 const signupGroup = new Group()
                 for (const m of signupMembers) signupGroup.addMember(m)
-                addLog(`Signup group: ${signupMembers.length} member(s)`)
+                addLog(`Checking registration (${signupMembers.length} registered)`)
 
                 if (signupGroup.indexOf(identity.commitment) === -1) {
-                    throw new Error("Your identity is not in the signup group. Did you sign up during Phase 1?")
+                    throw new Error("You're not registered for this election. You need to sign up during the registration phase.")
                 }
 
                 setVoteStep("generating-join-proof"); setStepMsg("Generating anonymous join proof (10-30s)...")
-                addLog("Generating AnonJoin proof...")
+                addLog("Generating anonymous proof...")
                 const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId))
-                addLog("AnonJoin proof ready")
+                addLog("Proof ready")
 
                 if (gaslessEnabled) {
                     // ── GASLESS: relay anonJoin ──
@@ -616,13 +626,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     await waitForRelayTx(joinTxHash)
                     const joinVerified = await verifyJoinOnChain(electionAddress, joinProof.joinNullifier, joinTxHash)
                     if (!joinVerified) addLog("Warning: join event not verified on-chain")
-                    addLog("Anonymous join confirmed! Identity delinked.")
+                    addLog("Anonymous registration confirmed")
 
                     // IP-timing decorrelation: random delay before castVote
                     // Only applies in production — on localhost both calls come from same machine
                     if (window.location.hostname !== "localhost") {
-                        setVoteStep("timing-delay"); setStepMsg("Privacy delay...")
-                        addLog("Waiting (random delay for IP-timing privacy)...")
+                        setVoteStep("timing-delay"); setStepMsg("Securing your anonymity...")
+                        addLog("Random delay to protect your identity (a few seconds)...")
                         await randomTimingDelay()
                     }
                 } else {
@@ -635,11 +645,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     )
                     setStepMsg("Waiting for join confirmation...")
                     await joinTx.wait()
-                    addLog("Anonymous join confirmed! Identity delinked.")
+                    addLog("Anonymous registration confirmed")
                 }
                 setJoinStatus("joined")
             } else {
-                if (!votingId) throw new Error("No voting identity found. This shouldn't happen.")
+                if (!votingId) throw new Error("Something went wrong with your voting identity. Try refreshing the page.")
             }
 
             // Step 2: Cast vote
@@ -647,14 +657,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const votingMembers = await fetchGroupMembers(BigInt(state.votingGroupId))
             const votingGroup = new Group()
             for (const m of votingMembers) votingGroup.addMember(m)
-            addLog(`Voting group: ${votingMembers.length} member(s)`)
+            addLog(`Verified voters: ${votingMembers.length}`)
 
             if (votingGroup.indexOf(votingId!.commitment) === -1) {
-                throw new Error("Your voting identity is not in the voting group yet. Try refreshing.")
+                throw new Error("Your anonymous registration hasn't been confirmed yet. Try refreshing the page.")
             }
 
             setVoteStep("generating-vote-proof"); setStepMsg("Generating vote proof (10-30s)...")
-            addLog("Generating SpectreVote proof...")
+            addLog("Generating vote proof...")
 
             const rnd = randomBytes(31)
             let voteRand = 0n
@@ -664,7 +674,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 votingId!, votingGroup, BigInt(state.proposalId),
                 BigInt(selectedVote), voteRand, BigInt(state.numOptions)
             )
-            addLog("Vote proof ready")
+            addLog("Proof ready")
 
             setVoteStep("encrypting"); setStepMsg("Encrypting vote...")
             const pubKey = compressPublicKey(BigInt(state.electionPubKeyX), BigInt(state.electionPubKeyY))
@@ -677,7 +687,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const voteTxHash = await relayCastVote(electionAddress, proof, blob)
                 setStepMsg("Waiting for vote confirmation...")
                 const blockNum = await waitForRelayTx(voteTxHash)
-                addLog(`Vote relayed in block ${blockNum}`)
+                addLog("Vote submitted successfully")
 
                 // Anti-censorship: independently verify on-chain
                 setVoteStep("verifying"); setStepMsg("Verifying vote on-chain...")
@@ -686,7 +696,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 if (verified) {
                     addLog("Vote verified on-chain!")
                 } else {
-                    addLog("WARNING: Vote not verified on-chain. Consider submitting with wallet.")
+                    addLog("Warning: vote not verified on-chain. Try refreshing later to check.")
                 }
 
                 setTxHash(voteTxHash); setVoteStep("done"); setStepMsg("")
@@ -702,7 +712,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const receipt = await tx.wait()
 
                 setTxHash(tx.hash); setVoteStep("done"); setStepMsg("")
-                addLog(`Vote confirmed in block ${receipt.blockNumber}`)
+                addLog("Vote confirmed")
             }
             await refresh()
         } catch (err: any) {
@@ -1256,6 +1266,31 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const isAdmin = address && state?.admin && address.toLowerCase() === state.admin.toLowerCase()
     const hasPubKey = state ? (state.electionPubKeyX !== "0" || state.electionPubKeyY !== "0") : false
     const isProcessing = !["idle", "done", "error"].includes(voteStep)
+
+    const stepInfo = useMemo(() => {
+        if (!isProcessing) return null
+        const gasless = gaslessEnabled
+        const steps: Record<string, { step: number; total: number; label: string }> = gasless ? {
+            "fetching-signup-group":  { step: 1, total: 6, label: "Preparing..." },
+            "generating-join-proof":  { step: 2, total: 6, label: "Proving your eligibility (~15s)" },
+            "submitting-join":        { step: 3, total: 6, label: "Submitting anonymous registration" },
+            "timing-delay":           { step: 3, total: 6, label: "Securing your anonymity..." },
+            "fetching-voting-group":  { step: 4, total: 6, label: "Preparing your ballot..." },
+            "generating-vote-proof":  { step: 5, total: 6, label: "Sealing your vote (~15s)" },
+            "encrypting":             { step: 5, total: 6, label: "Encrypting your ballot" },
+            "submitting-vote":        { step: 6, total: 6, label: "Submitting your encrypted vote" },
+            "verifying":              { step: 6, total: 6, label: "Confirming on-chain..." },
+        } : {
+            "fetching-signup-group":  { step: 1, total: 5, label: "Preparing..." },
+            "generating-join-proof":  { step: 2, total: 5, label: "Proving your eligibility (~15s)" },
+            "submitting-join":        { step: 3, total: 5, label: "Confirm in wallet" },
+            "fetching-voting-group":  { step: 3, total: 5, label: "Preparing your ballot..." },
+            "generating-vote-proof":  { step: 4, total: 5, label: "Sealing your vote (~15s)" },
+            "encrypting":             { step: 4, total: 5, label: "Encrypting your ballot" },
+            "submitting-vote":        { step: 5, total: 5, label: "Confirm in wallet" },
+        }
+        return steps[voteStep] || null
+    }, [voteStep, isProcessing, gaslessEnabled])
     const isOnChainCommittee = committeeState !== null && committeeState.threshold > 0
     const canVote = isOnChainCommittee ? (committeeState?.finalized ?? false) : hasPubKey
     const isMyCommitteeMember = !!(address && committeeState?.members.some(m => m.toLowerCase() === address.toLowerCase()))
@@ -1298,16 +1333,16 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <span>{state.voteCount} vote{state.voteCount !== 1 ? "s" : ""}</span>
                     <span>{state.numOptions} options</span>
                     <span style={{ color: isInviteCodeElection ? "var(--accent)" : state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
-                        {isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Gated"}
+                        {isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Admin only"}
                     </span>
                     {gaslessEnabled && (
                         <span style={{ color: "var(--success)", fontSize: "0.75rem" }}>
-                            ⚡ Gasless
+                            ⚡ No wallet needed
                         </span>
                     )}
                     {isThresholdElection && thresholdMeta && (
                         <span style={{ color: "#a855f7", fontSize: "0.75rem" }}>
-                            {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} threshold
+                            {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} committee
                         </span>
                     )}
                     {phase === "signup" && state.signupDeadline > 0 && (
@@ -1377,15 +1412,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     )}
 
                     {/* Step 2: Identity */}
-                    {(gaslessEnabled || address) && !identity && (
+                    {address && !gaslessEnabled && !identity && (
                         <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>
-                                {gaslessEnabled ? "Step 1: Create Identity" : "Step 2: Create Identity"}
-                            </h4>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 2: Create Identity</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                                {gaslessEnabled
-                                    ? "Generate an anonymous identity to vote in this election. This stays in your browser — nobody can link it to you."
-                                    : "Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote."}
+                                Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
                             </p>
                             <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
                         </div>
@@ -1469,7 +1500,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 <>
                                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        Register your identity for this election. This is public — the admin can see who signed up. But when voting opens, you&apos;ll use a ZK proof to anonymously re-key into the voting group. <strong>Nobody can link your signup to your vote.</strong>
+                                        Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong>
                                     </p>
                                     <button
                                         className="btn-primary"
@@ -1493,7 +1524,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
                                         <div>
                                             <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>Anonymously joined</p>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Your voting identity is delinked from signup. Select an option and cast your vote.</p>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Your identity has been separated from your registration. Select an option and cast your vote.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -1503,8 +1534,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
                                     <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
                                         {gaslessEnabled
-                                            ? "When you cast your vote, you\u2019ll first anonymously re-key into the voting group (ZK proof), then submit your encrypted vote. Both steps are relayed automatically \u2014 no wallet needed."
-                                            : "When you cast your vote, you\u2019ll first anonymously re-key into the voting group (ZK proof), then submit your encrypted vote. This requires two wallet confirmations."}
+                                            ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
+                                            : "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. This requires two wallet confirmations."}
                                     </p>
                                 </div>
                             )}
@@ -1534,12 +1565,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                     <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: 14, background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
                                         <div className="spinner" />
                                         <div>
-                                            <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>{stepMsg}</p>
+                                            <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>
+                                                {stepInfo ? `Step ${stepInfo.step} of ${stepInfo.total}: ${stepInfo.label}` : stepMsg}
+                                            </p>
                                             <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                                                {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "Computing zero-knowledge proof..."}
-                                                {voteStep === "encrypting" && "Encrypting your vote..."}
-                                                {voteStep === "timing-delay" && "Adding random delay for IP-timing privacy..."}
-                                                {voteStep === "verifying" && "Independently checking vote on-chain..."}
+                                                {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
+                                                {voteStep === "timing-delay" && "Random delay protects your identity"}
+                                                {voteStep === "verifying" && "Independently checking the blockchain"}
                                             </p>
                                         </div>
                                     </div>
@@ -1553,7 +1585,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         </p>
                                         {gaslessEnabled && onChainVerified === false && (
                                             <p style={{ color: "var(--warning)", fontSize: "0.8rem", marginBottom: 6 }}>
-                                                ⚠ Could not verify vote on-chain. Consider submitting with a wallet as fallback.
+                                                ⚠ Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
                                             </p>
                                         )}
                                         <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
@@ -1577,9 +1609,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                     {isProcessing ? "Processing..." : voteStep === "done" ? "Vote Submitted!" : "Vote"}
                                 </button>
 
-                                {(voteStep === "done" || voteStep === "error") && (
+                                {voteStep === "error" && (
                                     <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ marginTop: 8 }}>
-                                        {voteStep === "done" ? "Vote Again" : "Try Again"}
+                                        Try Again
                                     </button>
                                 )}
                             </div>
@@ -1728,8 +1760,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         </p>
                                     </div>
                                 </>
+                            ) : !isAdmin && !hasStoredKey ? (
+                                /* ── NON-ADMIN WITHOUT KEY — show waiting message ── */
+                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
+                                    {onChainTally?.committed
+                                        ? "The admin has published verified results below."
+                                        : "Results will be available once the election admin publishes them."}
+                                </p>
                             ) : (
-                                /* ── SINGLE KEY TALLY UI (existing) ── */
+                                /* ── SINGLE KEY TALLY UI (admin or key holder) ── */
                                 <>
                                     {hasStoredKey ? (
                                         <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
@@ -1765,6 +1804,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 </div>
                             )}
 
+                            {/* Hide tally button for non-admin voters without a key */}
+                            {(isAdmin || hasStoredKey || isOnChainCommittee || isThresholdElection) && (
                             <button
                                 className="btn-primary"
                                 onClick={() =>
@@ -1783,6 +1824,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             >
                                 {tallyStep === "fetching" || tallyStep === "decrypting" ? "Computing..." : "Tally Votes"}
                             </button>
+                            )}
                         </div>
                     )}
 

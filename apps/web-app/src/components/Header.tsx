@@ -18,7 +18,7 @@ export default function Header() {
                     </span>
                 ) : (
                     <button className="btn-secondary" onClick={connectWallet} style={{ width: "auto", padding: "8px 16px", fontSize: "0.8rem" }}>
-                        Connect
+                        Connect Wallet
                     </button>
                 )}
             </div>

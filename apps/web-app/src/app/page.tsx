@@ -151,7 +151,7 @@ export default function HomePage() {
                             if (meta.title) title = meta.title
                         } catch { /* ignore */ }
                     }
-                    if (!title) title = `Proposal #${pid.toString()}`
+                    if (!title) title = "Untitled Election"
 
                     const phase = sOpen ? "signup" : vOpen ? "voting" : "closed"
 
@@ -411,7 +411,7 @@ export default function HomePage() {
                         {/* Signup gate selector */}
                         <div>
                             <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-                                Signup Gate
+                                Who can join?
                             </label>
                             <div style={{ display: "flex", gap: 8 }}>
                                 {([
@@ -478,11 +478,11 @@ export default function HomePage() {
                             </div>
                             <div>
                                 <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                    {gaslessMode ? "Gasless" : "Wallet required"}
+                                    {gaslessMode ? "No wallet needed" : "Wallet required"}
                                 </span>
                                 <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
                                     {gaslessMode
-                                        ? "No wallet needed \u2014 votes are relayed on-chain automatically"
+                                        ? "No wallet needed \u2014 votes are submitted automatically"
                                         : "Voters need a crypto wallet with ETH to submit votes"}
                                 </p>
                             </div>
@@ -491,7 +491,7 @@ export default function HomePage() {
                         {/* Encryption mode */}
                         <div>
                             <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-                                Encryption Mode
+                                Results security
                             </label>
                             <div style={{ display: "flex", gap: 8 }}>
                                 <div
@@ -502,8 +502,8 @@ export default function HomePage() {
                                         background: encryptionMode === "single" ? "#6366f115" : "var(--bg)",
                                     }}
                                 >
-                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Single Key</span>
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>You hold the decryption key</p>
+                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Only you</span>
+                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>You control when results are revealed</p>
                                 </div>
                                 <div
                                     onClick={() => !creating && setEncryptionMode("threshold")}
@@ -513,8 +513,8 @@ export default function HomePage() {
                                         background: encryptionMode === "threshold" ? "#6366f115" : "var(--bg)",
                                     }}
                                 >
-                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Threshold</span>
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>t-of-n committee decrypts</p>
+                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Committee</span>
+                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>Multiple members must agree to reveal results</p>
                                 </div>
                             </div>
                         </div>
@@ -591,7 +591,7 @@ export default function HomePage() {
                             disabled={creating || !electionTitle.trim() || (encryptionMode === "threshold" && committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length < 2)}
                             style={{ width: "auto", padding: "12px 20px" }}
                         >
-                            {creating ? "Deploying..." : "Create"}
+                            {creating ? "Creating..." : "Create"}
                         </button>
                     </div>
                 </div>
@@ -682,14 +682,11 @@ export default function HomePage() {
                                         {e.title}
                                     </span>
                                     <span className={`status-badge ${e.phase === "closed" ? "status-closed" : "status-open"}`}>
-                                        {e.phase === "signup" ? "SIGNUP" : e.phase === "voting" ? "VOTING" : "CLOSED"}
+                                        {e.phase === "signup" ? "REGISTRATION" : e.phase === "voting" ? "VOTING" : "ENDED"}
                                     </span>
                                 </div>
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                                     <span>{e.voteCount} vote{e.voteCount !== 1 ? "s" : ""}</span>
-                                    <span className="mono" style={{ fontSize: "0.7rem" }}>
-                                        {e.address.slice(0, 8)}...{e.address.slice(-6)}
-                                    </span>
                                 </div>
                             </div>
                         </Link>
