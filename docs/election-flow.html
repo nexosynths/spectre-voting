@@ -143,7 +143,75 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 20px;
+    margin-bottom: 20px;
   }
+
+  .gates-section {
+    background: #141420;
+    border-radius: 16px;
+    border: 1px solid #2a2a3e;
+    padding: 24px;
+    margin-bottom: 0;
+  }
+
+  .gates-section h3 {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #8888a0;
+    margin-bottom: 16px;
+  }
+
+  .gates-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 12px;
+  }
+
+  .gate-card {
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid #2a2a3e;
+    background: #1a1a28;
+  }
+
+  .gate-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .gate-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+  }
+
+  .gate-card h4 {
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .gate-card p {
+    font-size: 0.72rem;
+    color: #8888a0;
+    line-height: 1.45;
+    margin-bottom: 8px;
+  }
+
+  .gate-tag {
+    display: inline-block;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+
+  .gate-tag-gasless { background: #22c55e12; color: #86efac; }
+  .gate-tag-wallet { background: #f59e0b12; color: #fbbf24; }
 
   .roles-card, .key-points {
     background: #141420;
@@ -260,7 +328,7 @@
           <div class="step-arrow"></div>
           <span class="role-tag role-admin">Admin</span>
           <h3>Create Election</h3>
-          <p>Set the question, voting options, and assign committee members by wallet address.</p>
+          <p>Set the question, voting options, signup gate, and assign committee members by wallet address.</p>
         </div>
         <div class="step">
           <div class="step-num">2</div>
@@ -281,7 +349,7 @@
           <div class="step-arrow"></div>
           <span class="role-tag role-admin">Voters / Admin</span>
           <h3>Register Voters</h3>
-          <p>Eligible voters sign up with their identity commitment, or the admin registers them directly. This must happen before voting opens.</p>
+          <p>How voters register depends on the signup gate the admin chose — open link, invite code, allowlist identifier, or admin-registered. This must happen before voting opens.</p>
         </div>
         <div class="step">
           <div class="step-num">5</div>
@@ -397,6 +465,44 @@
       </div>
     </div>
 
+  </div>
+
+  <div class="gates-section">
+    <h3>Signup Gates &mdash; Who Can Vote?</h3>
+    <div class="gates-grid">
+      <div class="gate-card">
+        <div class="gate-card-header">
+          <span class="gate-icon">&#127760;</span>
+          <h4>Open</h4>
+        </div>
+        <p>Anyone with the election link can sign up. No restrictions.</p>
+        <span class="gate-tag gate-tag-gasless">No wallet needed</span>
+      </div>
+      <div class="gate-card">
+        <div class="gate-card-header">
+          <span class="gate-icon">&#127915;</span>
+          <h4>Invite Codes</h4>
+        </div>
+        <p>Admin generates one-time codes. Each code lets one voter sign up.</p>
+        <span class="gate-tag gate-tag-gasless">No wallet needed</span>
+      </div>
+      <div class="gate-card">
+        <div class="gate-card-header">
+          <span class="gate-icon">&#128203;</span>
+          <h4>Allowlist</h4>
+        </div>
+        <p>Admin provides a list of known identifiers (emails, names, IDs). Voters enter theirs to sign up.</p>
+        <span class="gate-tag gate-tag-gasless">No wallet needed</span>
+      </div>
+      <div class="gate-card">
+        <div class="gate-card-header">
+          <span class="gate-icon">&#128272;</span>
+          <h4>Admin Only</h4>
+        </div>
+        <p>Only the admin can register voters directly by their identity commitment.</p>
+        <span class="gate-tag gate-tag-wallet">Wallet required</span>
+      </div>
+    </div>
   </div>
 
   <div class="footer">
