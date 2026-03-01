@@ -79,7 +79,8 @@ async function callRelay(body: Record<string, any>): Promise<string> {
 export async function relaySignUp(
     electionAddress: string,
     identityCommitment: bigint | string,
-    code?: string
+    code?: string,
+    identifier?: string,
 ): Promise<string> {
     const body: Record<string, any> = {
         action: "signUp",
@@ -87,6 +88,7 @@ export async function relaySignUp(
         identityCommitment: identityCommitment.toString(),
     }
     if (code) body.code = code.toLowerCase().trim()
+    if (identifier) body.identifier = identifier.trim()
     return callRelay(body)
 }
 

@@ -219,7 +219,7 @@ async function handleSignUp(
     body: any,
     provider: JsonRpcProvider
 ): Promise<NextResponse> {
-    const { identityCommitment, code } = body
+    const { identityCommitment, code, identifier } = body
     if (!identityCommitment) {
         return NextResponse.json(
             { success: false, error: "Missing identityCommitment" },
@@ -306,6 +306,62 @@ async function handleSignUp(
         } catch (err) {
             // On tx failure: un-mark code to allow retry
             unmarkCodeUsed(electionAddress, codeHash)
+            throw err
+        }
+    }
+
+    // ── Allowlist validation ──
+    if (meta?.gateType === "allowlist") {
+        if (!identifier) {
+            return NextResponse.json(
+                { success: false, error: "Identifier required for this election" },
+                { status: 400 }
+            )
+        }
+
+        const normalized = identifier.toLowerCase().trim()
+        if (!normalized) {
+            return NextResponse.json(
+                { success: false, error: "Identifier cannot be empty" },
+                { status: 400 }
+            )
+        }
+
+        const identifierHashes: string[] = meta.allowlist?.identifierHashes || []
+        const idHash = keccak256(toUtf8Bytes(normalized))
+
+        if (!identifierHashes.includes(idHash)) {
+            return NextResponse.json(
+                { success: false, error: "Not on the allowlist" },
+                { status: 400 }
+            )
+        }
+
+        if (isCodeUsed(electionAddress, idHash)) {
+            return NextResponse.json(
+                { success: false, error: "This identifier has already been used" },
+                { status: 400 }
+            )
+        }
+
+        // Cold start fallback
+        if (usedCodeCount(electionAddress) === 0) {
+            const signupCount = await getSignupCount(electionAddress, provider)
+            if (signupCount >= (meta.allowlist?.totalEntries || identifierHashes.length)) {
+                return NextResponse.json(
+                    { success: false, error: "All allowlist entries have been used" },
+                    { status: 400 }
+                )
+            }
+        }
+
+        markCodeUsed(electionAddress, idHash)
+
+        try {
+            const tx = await election.signUp(identityCommitment)
+            return NextResponse.json({ success: true, txHash: tx.hash })
+        } catch (err) {
+            unmarkCodeUsed(electionAddress, idHash)
             throw err
         }
     }

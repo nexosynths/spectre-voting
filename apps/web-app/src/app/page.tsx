@@ -7,7 +7,7 @@ import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes } from "@/lib/inviteCodes"
+import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes, hashIdentifiers, storeAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
 
 interface ElectionInfo {
     address: string
@@ -36,10 +36,13 @@ export default function HomePage() {
     const [signupHours, setSignupHours] = useState("24")
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
-    const [gateType, setGateType] = useState<"open" | "invite-codes" | "admin-only">("open")
+    const [gateType, setGateType] = useState<"open" | "invite-codes" | "allowlist" | "admin-only">("open")
     const [codeCount, setCodeCount] = useState("20")
     const [generatedCodes, setGeneratedCodes] = useState<string[]>([])
     const [showCodesModal, setShowCodesModal] = useState(false)
+    const [allowlistInput, setAllowlistInput] = useState("")
+    const [allowlistIdentifiers, setAllowlistIdentifiers] = useState<string[]>([])
+    const [showAllowlistModal, setShowAllowlistModal] = useState(false)
     const [gaslessMode, setGaslessMode] = useState(false)
 
     // Derive selfSignup from gateType
@@ -221,7 +224,7 @@ export default function HomePage() {
 
             // Build metadata JSON for on-chain storage
             const metaObj: Record<string, any> = { title: electionTitle.trim(), labels }
-            if (gaslessMode || gateType === "invite-codes") metaObj.gaslessEnabled = true
+            if (gaslessMode || gateType === "invite-codes" || gateType === "allowlist") metaObj.gaslessEnabled = true
             // Invite code gate: generate codes, hash them, add to metadata
             let inviteCodes: string[] = []
             if (gateType === "invite-codes") {
@@ -230,6 +233,15 @@ export default function HomePage() {
                 const codeHashes = hashCodes(inviteCodes)
                 metaObj.gateType = "invite-codes"
                 metaObj.inviteCodes = { totalCodes: count, codeHashes }
+            }
+            // Allowlist gate: parse identifiers, hash them, add to metadata
+            let parsedAllowlist: string[] = []
+            if (gateType === "allowlist") {
+                parsedAllowlist = [...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))]
+                if (parsedAllowlist.length < 2) throw new Error("Need at least 2 allowlist entries")
+                const allowlistHashes = hashIdentifiers(parsedAllowlist)
+                metaObj.gateType = "allowlist"
+                metaObj.allowlist = { totalEntries: parsedAllowlist.length, identifierHashes: allowlistHashes }
             }
             if (encryptionMode === "threshold") {
                 metaObj.mode = "threshold"
@@ -266,6 +278,11 @@ export default function HomePage() {
                 storeAdminCodes(electionAddr, inviteCodes)
                 setGeneratedCodes(inviteCodes)
             }
+            // Store allowlist identifiers in localStorage + show modal
+            if (gateType === "allowlist" && parsedAllowlist.length > 0) {
+                storeAdminAllowlist(electionAddr, parsedAllowlist)
+                setAllowlistIdentifiers(parsedAllowlist)
+            }
 
             if (encryptionMode === "threshold") {
                 addLog(`Election created. Setting up ${threshold}-of-${validMembers.length} committee...`)
@@ -298,18 +315,22 @@ export default function HomePage() {
             setEncryptionMode("single")
             setGateType("open")
             setCodeCount("20")
+            setAllowlistInput("")
             await loadElections()
 
-            // Show codes modal after everything else is done
+            // Show codes/allowlist modal after everything else is done
             if (gateType === "invite-codes" && inviteCodes.length > 0) {
                 setShowCodesModal(true)
+            }
+            if (gateType === "allowlist" && parsedAllowlist.length > 0) {
+                setShowAllowlistModal(true)
             }
         } catch (err: any) {
             addLog(`Failed: ${friendlyError(err)}`)
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput])
 
     return (
         <>
@@ -413,10 +434,11 @@ export default function HomePage() {
                             <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
                                 Who can join?
                             </label>
-                            <div style={{ display: "flex", gap: 8 }}>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                                 {([
                                     { key: "open" as const, label: "Open", desc: "Anyone with the link can vote" },
                                     { key: "invite-codes" as const, label: "Invite Codes", desc: "One-time codes you distribute" },
+                                    { key: "allowlist" as const, label: "Allowlist", desc: "Only people on your list" },
                                     { key: "admin-only" as const, label: "Admin Only", desc: "You register each voter" },
                                 ]).map(g => (
                                     <div
@@ -426,6 +448,7 @@ export default function HomePage() {
                                             flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
                                             border: `1px solid ${gateType === g.key ? "var(--accent)" : "var(--border)"}`,
                                             background: gateType === g.key ? "var(--accent-bg)" : "var(--bg)",
+                                            minWidth: "calc(50% - 4px)",
                                         }}
                                     >
                                         <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{g.label}</span>
@@ -449,6 +472,27 @@ export default function HomePage() {
                                     />
                                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
                                         Each code lets one voter sign up. Codes are shown after election creation.
+                                    </p>
+                                </div>
+                            )}
+                            {gateType === "allowlist" && (
+                                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                        One identifier per line (email, name, ID...)
+                                    </label>
+                                    <textarea
+                                        placeholder={"alice@example.com\nbob@example.com\ncharlie smith"}
+                                        value={allowlistInput}
+                                        onChange={e => setAllowlistInput(e.target.value)}
+                                        disabled={creating}
+                                        rows={5}
+                                        style={{ width: "100%", background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", padding: "10px 14px", fontFamily: "inherit", fontSize: "0.85rem", resize: "vertical", outline: "none", marginBottom: 4 }}
+                                    />
+                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>
+                                        {(() => {
+                                            const count = [...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length
+                                            return `${count} identifier${count !== 1 ? "s" : ""}`
+                                        })()} — Voters enter their identifier to sign up
                                     </p>
                                 </div>
                             )}
@@ -583,7 +627,7 @@ export default function HomePage() {
                     </div>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                         <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
+                            Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : gateType === "allowlist" ? `${[...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length} entries` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" || gateType === "allowlist" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
                         </p>
                         <button
                             className="btn-primary"
@@ -638,6 +682,54 @@ export default function HomePage() {
                             onClick={() => {
                                 const csv = codesToCsv(generatedCodes, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
                                 downloadCsv(csv, `invite-codes-${new Date().toISOString().slice(0, 10)}.csv`)
+                            }}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >Download CSV</button>
+                    </div>
+                </div>
+            )}
+
+            {/* Allowlist modal */}
+            {showAllowlistModal && allowlistIdentifiers.length > 0 && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700 }}>Allowlist ({allowlistIdentifiers.length} entries)</h4>
+                        <button
+                            onClick={() => setShowAllowlistModal(false)}
+                            style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "1.1rem", cursor: "pointer", padding: "0 4px" }}
+                        >×</button>
+                    </div>
+                    <div style={{ padding: "8px 12px", background: "var(--success-bg)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)", marginBottom: 12 }}>
+                        <p style={{ fontSize: "0.8rem", color: "var(--success)", fontWeight: 600 }}>
+                            Allowlist saved. Share links with voters or let them enter their identifier manually.
+                        </p>
+                    </div>
+                    <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                        {allowlistIdentifiers.map((id, i) => (
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < allowlistIdentifiers.length - 1 ? "1px solid var(--border)" : "none" }}>
+                                <span style={{ fontSize: "0.8rem" }}>{id}</span>
+                                <button
+                                    onClick={() => copyToClipboard(id, `allowlist-${i}`)}
+                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
+                                >{copied === `allowlist-${i}` ? "Copied!" : "Copy"}</button>
+                            </div>
+                        ))}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                            className="btn-primary"
+                            onClick={() => {
+                                navigator.clipboard.writeText(allowlistIdentifiers.join("\n"))
+                                setCopied("all-allowlist")
+                                setTimeout(() => setCopied(""), 2000)
+                            }}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >{copied === "all-allowlist" ? "Copied!" : "Copy All"}</button>
+                        <button
+                            className="btn-secondary"
+                            onClick={() => {
+                                const csv = allowlistToCsv(allowlistIdentifiers, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
+                                downloadCsv(csv, `allowlist-${new Date().toISOString().slice(0, 10)}.csv`)
                             }}
                             style={{ flex: 1, fontSize: "0.8rem" }}
                         >Download CSV</button>

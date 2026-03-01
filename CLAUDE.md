@@ -155,7 +155,7 @@ spectre-voting/
 │       │   │   ├── proof.ts              # Browser SpectreVote proof generation
 │       │   │   ├── anonJoinProof.ts      # Browser AnonJoin proof generation
 │       │   │   ├── relayer.ts            # Gasless relay client (anti-censorship)
-│       │   │   └── inviteCodes.ts        # Invite code generation, hashing, validation, CSV export
+│       │   │   └── inviteCodes.ts        # Invite code + allowlist: generation, hashing, validation, CSV export
 │       │   ├── context/
 │       │   │   └── SpectreContext.tsx     # Wallet + identity state (per-wallet scoping)
 │       │   └── components/
@@ -238,7 +238,7 @@ spectre-voting/
 
 ### Done (v7.0 — Invite Codes Signup Gate)
 - [x] New `lib/inviteCodes.ts` — code generation (8-char lowercase hex, 4 random bytes), keccak256 hashing, client-side validation, CSV export with per-code share links, localStorage persistence
-- [x] 3-option signup gate selector on election creation: Open / Invite Codes / Admin Only (replaces binary toggle)
+- [x] Signup gate selector on election creation (now 4-option with v7.1 allowlist added)
 - [x] Admin configures code count (2–250) at creation → codes generated, hashes committed on-chain in metadata
 - [x] Post-creation codes modal with Copy All + Download CSV + per-code copy buttons
 - [x] Relay API (`route.ts`): server-side invite code validation — format check, hash match against on-chain metadata, used-code tracking (in-memory), cold-start rehydration via signup event count, mark-before-submit with rollback on tx failure
@@ -272,6 +272,42 @@ spectre-voting/
 - `apps/web-app/src/app/api/relay/route.ts` — Server-side code validation + metadata cache
 - `apps/web-app/src/app/page.tsx` — 3-option gate selector + codes modal
 - `apps/web-app/src/app/election/[address]/page.tsx` — Code input UI + admin code viewer
+
+### Done (v7.1 — Allowlist Signup Gate)
+- [x] Allowlist functions in `lib/inviteCodes.ts` — `hashIdentifier()`, `hashIdentifiers()`, `validateIdentifier()` (thin wrappers over existing `hashCode`/`validateCode`), `storeAdminAllowlist()`, `getAdminAllowlist()` (scoped localStorage key), `allowlistToCsv()` (URL-encoded `?id=` links)
+- [x] 4-option signup gate selector on election creation: Open / Invite Codes / Allowlist / Admin Only
+- [x] Admin configures allowlist via textarea (one identifier per line), live count display, deduplication
+- [x] Post-creation allowlist modal with Copy All + Download CSV + per-identifier copy buttons
+- [x] Relay API (`route.ts`): server-side allowlist validation — normalize + keccak256 hash, match against on-chain metadata, used-identifier tracking (reuses invite code `markCodeUsed`/`isCodeUsed` infrastructure), cold-start rehydration, rollback on tx failure
+- [x] `relaySignUp()` extended with optional `identifier` param (alongside existing `code`)
+- [x] Election page: allowlist identifier input UI (normal text field, no format restriction) with real-time client-side validation (green "You're on the list" / red "Not on the allowlist")
+- [x] URL auto-fill: `?id=xxx` param (URL-decoded) auto-populates identifier input
+- [x] Admin Manage tab: scrollable identifier list with per-entry "Copy link" buttons (appends `?id=encodeURIComponent(identifier)`), Copy All Identifiers + Download CSV
+- [x] Allowlist elections force gasless mode (same as invite codes)
+- [x] Header badge: shows `Allowlist (N)` for allowlist elections
+- [x] Backward compatible: existing invite code, open, and admin-only elections unchanged
+- [x] No contract changes — all validation at application layer
+
+#### Metadata Format
+```json
+{
+  "gateType": "allowlist",
+  "gaslessEnabled": true,
+  "allowlist": { "totalEntries": 15, "identifierHashes": ["0xabc...", "0xdef...", "..."] }
+}
+```
+
+#### Edge Cases
+- Same as invite codes: cold-start rehydration, race condition prevention, tx failure rollback, direct contract bypass accepted trade-off
+- **No ownership verification**: Same trust model as invite codes — anyone who knows an identifier can use it. Human-readable but not cryptographically bound to the person.
+- **Admin loses identifiers**: Only stored in creating browser's localStorage. CSV download encouraged.
+
+#### Files
+- `apps/web-app/src/lib/inviteCodes.ts` — Allowlist hashing, validation, CSV, localStorage (extends invite code module)
+- `apps/web-app/src/lib/relayer.ts` — Optional `identifier` param on `relaySignUp()`
+- `apps/web-app/src/app/api/relay/route.ts` — Server-side allowlist validation (parallel to invite code block)
+- `apps/web-app/src/app/page.tsx` — 4-option gate selector + allowlist textarea + modal
+- `apps/web-app/src/app/election/[address]/page.tsx` — Identifier input UI + admin allowlist viewer
 
 ### Done (v6 — Proof-Only Relayer / Gasless Voting)
 
@@ -333,35 +369,29 @@ Browser → generate proof → POST /api/relay → server verifies proof → ser
 
 ### Next Up — v7: Modular Signup Gates (continued)
 
-Invite codes (v7.0) shipped. The contract doesn't change — all gates control who can call `signUp()`. The ZK voting protocol downstream is identical regardless of which gate is used.
+Invite codes (v7.0) and allowlist (v7.1) shipped. The contract doesn't change — all gates control who can call `signUp()`. The ZK voting protocol downstream is identical regardless of which gate is used.
 
 #### Remaining Gate Types
 
-**1. Allowlist (v7.1 — NEXT)**
-- Admin uploads CSV of emails or identifiers
-- Server checks against list at signup
-- Variant of invite codes — same architecture, different input format
-- **Tradeoff:** Admin controls the list
-
-**2. Email Domain Gate (v7.2)**
+**1. Email Domain Gate (v7.2 — NEXT)**
 - Prove you have an @company.com email (verification code sent to email)
 - Rule is public and algorithmic — admin sets the domain, not individual people
 - Requires email sending service (SendGrid, Resend, etc.)
 - **Tradeoff:** Trust the email provider. Email provider sees who verified.
 
-**3. OAuth Group Gate (v7.3)**
+**2. OAuth Group Gate (v7.3)**
 - Must be in a Google Workspace org, GitHub team, or Slack channel
 - Each provider is its own integration (different OAuth APIs)
 - Rule is algorithmic — "members of this org" not "these specific people"
 - **Tradeoff:** Trust the identity provider. IdP logs + election metadata = potential deanonymization.
 
-**4. Token/NFT Gate (v7.4)**
+**3. Token/NFT Gate (v7.4)**
 - Must hold specific ERC-20 balance or NFT
 - On-chain check only — no external dependencies
 - Wallet infrastructure already exists
 - **Tradeoff:** Requires voter to have a wallet (doesn't work with gasless)
 
-**5. ZK Credential Proofs (v7.5 — long-term)**
+**4. ZK Credential Proofs (v7.5 — long-term)**
 - Voter proves eligibility via ZK proof of an external credential (Zupass, ZK Passport, EAS attestation)
 - No identity provider sees the voter authenticated — fully private eligibility
 - **Tradeoff:** Requires credential infrastructure to exist and be adopted. Emerging tech.
@@ -464,6 +494,6 @@ snarkjs zkey export solidityverifier build/AnonJoin_final.zkey ../contracts/cont
 ## Developer Context
 - Built as a proof of concept for anonymous encrypted voting with ZK re-key identity delinking
 - Closest existing protocols: MACI v3 (anonymous poll joining, unaudited) and aMACI (DoraHacks, optional re-key)
-- Core protocol, gasless relay, and invite codes signup gate complete; next priority is remaining modular signup gates (allowlist, email domain, OAuth, token gate)
+- Core protocol, gasless relay, invite codes, and allowlist signup gates complete; next priority is remaining modular signup gates (email domain, OAuth, token gate)
 - Prioritize clean UX and iterate — the cryptographic foundation is solid
 - Relayer wallet: `0x2f30dF147C922cFce314D47ecA240953eCFc622f` (Sepolia, `RELAYER_PRIVATE_KEY` env var on Vercel)

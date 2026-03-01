@@ -12,7 +12,7 @@ import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compr
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, explorerTxUrl, RelayError } from "@/lib/relayer"
-import { validateCode, getAdminCodes, codesToCsv, downloadCsv } from "@/lib/inviteCodes"
+import { validateCode, getAdminCodes, codesToCsv, downloadCsv, validateIdentifier, getAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
 import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, encryptedShareToHex, generateCommitteeKeypair, deserializeShareFromHex, type Share, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
@@ -190,6 +190,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [codeValid, setCodeValid] = useState(false)
     const [codeError, setCodeError] = useState("")
 
+    // Allowlist state
+    const [allowlistId, setAllowlistId] = useState("")
+    const [idValid, setIdValid] = useState(false)
+    const [idError, setIdError] = useState("")
+
     // Join state (has voter already anonymously joined?)
     const [joinStatus, setJoinStatus] = useState<"unknown" | "checking" | "joined" | "not-joined">("unknown")
 
@@ -279,8 +284,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 })
                 // Read gasless mode from metadata
                 if (onChain.gaslessEnabled) setGaslessEnabled(true)
-                // Invite-code elections force gasless
+                // Invite-code and allowlist elections force gasless
                 if (onChain.gateType === "invite-codes") setGaslessEnabled(true)
+                if (onChain.gateType === "allowlist") setGaslessEnabled(true)
             }
             setMetaLoaded(true)
         })
@@ -292,6 +298,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
         const urlCode = searchParams.get("code")
         if (urlCode && !inviteCode) {
             setInviteCode(urlCode.toLowerCase().trim())
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchParams])
+
+    // Auto-fill allowlist identifier from URL param
+    useEffect(() => {
+        const urlId = searchParams.get("id")
+        if (urlId && !allowlistId) {
+            setAllowlistId(decodeURIComponent(urlId))
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams])
@@ -333,6 +348,40 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [electionAddress, metaLoaded])
 
     const isInviteCodeElection = inviteCodeMeta !== null
+
+    // Allowlist metadata detection
+    const allowlistMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.gateType === "allowlist" && stored.allowlist) {
+                return {
+                    totalEntries: stored.allowlist.totalEntries as number,
+                    identifierHashes: stored.allowlist.identifierHashes as string[],
+                }
+            }
+        } catch { /* ignore */ }
+        return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [electionAddress, metaLoaded])
+
+    const isAllowlistElection = allowlistMeta !== null
+
+    // Validate allowlist identifier client-side
+    useEffect(() => {
+        if (!allowlistMeta || !allowlistId.trim()) {
+            setIdValid(false)
+            setIdError("")
+            return
+        }
+        const match = validateIdentifier(allowlistId, allowlistMeta.identifierHashes)
+        if (match) {
+            setIdValid(true)
+            setIdError("")
+        } else {
+            setIdValid(false)
+            setIdError("Not on the allowlist")
+        }
+    }, [allowlistId, allowlistMeta])
 
     // Validate invite code client-side
     useEffect(() => {
@@ -551,13 +600,19 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog("Valid invite code required to sign up")
             return
         }
+        // Allowlist validation check
+        if (isAllowlistElection && !idValid) {
+            addLog("Valid identifier required to sign up")
+            return
+        }
         const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
+        const identifierToSend = isAllowlistElection ? allowlistId.trim() : undefined
         // Gasless mode: relay signup (no wallet needed)
         if (gaslessEnabled) {
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend)
+                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend)
                 addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
                 await waitForRelayTx(txHash)
                 const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
@@ -583,7 +638,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -1332,8 +1387,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                     <span>{state.voteCount} vote{state.voteCount !== 1 ? "s" : ""}</span>
                     <span>{state.numOptions} options</span>
-                    <span style={{ color: isInviteCodeElection ? "var(--accent)" : state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
-                        {isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Admin only"}
+                    <span style={{ color: isInviteCodeElection || isAllowlistElection ? "var(--accent)" : state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
+                        {isAllowlistElection ? `Allowlist (${allowlistMeta?.totalEntries || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Admin only"}
                     </span>
                     {gaslessEnabled && (
                         <span style={{ color: "var(--success)", fontSize: "0.75rem" }}>
@@ -1495,8 +1550,38 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 </>
                             )}
 
+                            {/* ALLOWLIST MODE */}
+                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && isAllowlistElection && (
+                                <>
+                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Enter Your Identifier</h4>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                        This election uses an allowlist. Enter the email, name, or ID the admin registered for you.
+                                    </p>
+                                    <input
+                                        type="text"
+                                        placeholder="Your identifier (email, name, ID...)"
+                                        value={allowlistId}
+                                        onChange={e => setAllowlistId(e.target.value)}
+                                        disabled={signupLoading}
+                                        style={{ marginBottom: 8 }}
+                                    />
+                                    {allowlistId.trim().length > 0 && (
+                                        <p style={{ fontSize: "0.8rem", marginBottom: 8, color: idValid ? "var(--success)" : idError ? "var(--error)" : "var(--text-muted)" }}>
+                                            {idValid ? "You're on the list" : idError || "..."}
+                                        </p>
+                                    )}
+                                    <button
+                                        className="btn-primary"
+                                        onClick={handleSignUp}
+                                        disabled={signupLoading || !idValid}
+                                    >
+                                        {signupLoading ? "Signing up..." : "Sign Up"}
+                                    </button>
+                                </>
+                            )}
+
                             {/* OPEN MODE */}
-                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && !isInviteCodeElection && (
+                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && (
                                 <>
                                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
@@ -2225,11 +2310,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <div className="card" style={{ marginBottom: 16 }}>
                         <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Share Election</h4>
                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            {isInviteCodeElection
-                                ? "Use the per-code share links below to send voters a link with their code pre-filled."
-                                : state.selfSignupAllowed
-                                    ? "Send this link to voters. They can sign up directly during the signup phase."
-                                    : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
+                            {isAllowlistElection
+                                ? "Use the per-identifier share links below to send voters a link with their identifier pre-filled."
+                                : isInviteCodeElection
+                                    ? "Use the per-code share links below to send voters a link with their code pre-filled."
+                                    : state.selfSignupAllowed
+                                        ? "Send this link to voters. They can sign up directly during the signup phase."
+                                        : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
                         </p>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
@@ -2284,6 +2371,55 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 ) : (
                                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                                         Codes not available in this browser. They are only stored in the browser that created the election. Total codes from metadata: {inviteCodeMeta?.totalCodes || "unknown"}.
+                                    </p>
+                                )}
+                            </div>
+                        )
+                    })()}
+
+                    {/* Allowlist section (admin) */}
+                    {isAllowlistElection && (() => {
+                        const adminAllowlist = getAdminAllowlist(electionAddress)
+                        return (
+                            <div className="card" style={{ marginBottom: 16 }}>
+                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
+                                    Allowlist ({allowlistMeta?.totalEntries || 0} entries)
+                                </h4>
+                                {adminAllowlist ? (
+                                    <>
+                                        <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                            {adminAllowlist.map((id, i) => {
+                                                const idShareUrl = `${shareUrl}?id=${encodeURIComponent(id)}`
+                                                return (
+                                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < adminAllowlist.length - 1 ? "1px solid var(--border)" : "none" }}>
+                                                        <span style={{ fontSize: "0.8rem" }}>{id}</span>
+                                                        <button
+                                                            onClick={() => { navigator.clipboard.writeText(idShareUrl); setCopied(`alink-${i}`); setTimeout(() => setCopied(""), 2000) }}
+                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
+                                                        >{copied === `alink-${i}` ? "Copied!" : "Copy link"}</button>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                        <div style={{ display: "flex", gap: 8 }}>
+                                            <button
+                                                className="btn-primary"
+                                                onClick={() => { navigator.clipboard.writeText(adminAllowlist.join("\n")); setCopied("admin-all-ids"); setTimeout(() => setCopied(""), 2000) }}
+                                                style={{ flex: 1, fontSize: "0.8rem" }}
+                                            >{copied === "admin-all-ids" ? "Copied!" : "Copy All Identifiers"}</button>
+                                            <button
+                                                className="btn-secondary"
+                                                onClick={() => {
+                                                    const csv = allowlistToCsv(adminAllowlist, shareUrl)
+                                                    downloadCsv(csv, `allowlist-${electionAddress.slice(0, 8)}.csv`)
+                                                }}
+                                                style={{ flex: 1, fontSize: "0.8rem" }}
+                                            >Download CSV</button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                                        Identifiers not available in this browser. They are only stored in the browser that created the election. Total entries from metadata: {allowlistMeta?.totalEntries || "unknown"}.
                                     </p>
                                 )}
                             </div>
