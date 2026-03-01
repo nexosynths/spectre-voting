@@ -11,6 +11,30 @@
     --error: #ef4444;
     --warning: #f59e0b;
     --radius: 12px;
+
+    /* Base colors */
+    --purple: #a855f7;
+    --cyan: #06b6d4;
+    --orange: #f97316;
+    --pink: #ec4899;
+    --slate: #64748b;
+
+    /* Opacity variants */
+    --success-bg: #22c55e08;
+    --success-bg-light: #22c55e10;
+    --success-bg-medium: #22c55e15;
+    --success-border: #22c55e40;
+    --success-badge: #22c55e18;
+    --error-bg: #ef444410;
+    --error-border: #ef444440;
+    --error-badge: #ef444418;
+    --accent-bg: #6366f115;
+    --purple-bg: #a855f708;
+    --purple-bg-light: #a855f710;
+    --purple-border: #a855f730;
+    --purple-border-strong: #a855f740;
+    --warning-bg: #f59e0b15;
+    --slate-bg: #64748b15;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -106,8 +130,8 @@ button {
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
-.status-open { background: #22c55e18; color: var(--success); }
-.status-closed { background: #ef444418; color: var(--error); }
+.status-open { background: var(--success-badge); color: var(--success); }
+.status-closed { background: var(--error-badge); color: var(--error); }
 
 .mono {
     font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
@@ -139,7 +163,7 @@ input:focus, select:focus { border-color: var(--accent); }
     flex: 1;
 }
 .vote-option:hover { border-color: var(--text-muted); }
-.vote-option.selected { border-color: var(--accent); background: #6366f115; }
+.vote-option.selected { border-color: var(--accent); background: var(--accent-bg); }
 
 .spinner {
     width: 20px;

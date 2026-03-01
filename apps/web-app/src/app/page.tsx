@@ -425,7 +425,7 @@ export default function HomePage() {
                                         style={{
                                             flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
                                             border: `1px solid ${gateType === g.key ? "var(--accent)" : "var(--border)"}`,
-                                            background: gateType === g.key ? "#6366f115" : "var(--bg)",
+                                            background: gateType === g.key ? "var(--accent-bg)" : "var(--bg)",
                                         }}
                                     >
                                         <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{g.label}</span>
@@ -499,7 +499,7 @@ export default function HomePage() {
                                     style={{
                                         flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
                                         border: `1px solid ${encryptionMode === "single" ? "var(--accent)" : "var(--border)"}`,
-                                        background: encryptionMode === "single" ? "#6366f115" : "var(--bg)",
+                                        background: encryptionMode === "single" ? "var(--accent-bg)" : "var(--bg)",
                                     }}
                                 >
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Only you</span>
@@ -510,7 +510,7 @@ export default function HomePage() {
                                     style={{
                                         flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
                                         border: `1px solid ${encryptionMode === "threshold" ? "var(--accent)" : "var(--border)"}`,
-                                        background: encryptionMode === "threshold" ? "#6366f115" : "var(--bg)",
+                                        background: encryptionMode === "threshold" ? "var(--accent-bg)" : "var(--bg)",
                                     }}
                                 >
                                     <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Committee</span>
@@ -607,7 +607,7 @@ export default function HomePage() {
                             style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "1.1rem", cursor: "pointer", padding: "0 4px" }}
                         >×</button>
                     </div>
-                    <div style={{ padding: "8px 12px", background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440", marginBottom: 12 }}>
+                    <div style={{ padding: "8px 12px", background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)", marginBottom: 12 }}>
                         <p style={{ fontSize: "0.8rem", color: "var(--error)", fontWeight: 600 }}>
                             Save these codes now — they cannot be recovered later
                         </p>

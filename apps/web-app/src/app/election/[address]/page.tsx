@@ -1341,7 +1341,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         </span>
                     )}
                     {isThresholdElection && thresholdMeta && (
-                        <span style={{ color: "#a855f7", fontSize: "0.75rem" }}>
+                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }}>
                             {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} committee
                         </span>
                     )}
@@ -1387,7 +1387,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 <>
                     {/* Gasless banner */}
                     {gaslessEnabled && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40", background: "#22c55e08" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                 <span style={{ fontSize: "1.1rem" }}>&#9889;</span>
                                 <div>
@@ -1519,7 +1519,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         <>
                             {/* Join + vote status indicators */}
                             {voteStep === "idle" && joinStatus === "joined" && (
-                                <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40", background: "#22c55e08" }}>
+                                <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                         <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
                                         <div>
@@ -1578,7 +1578,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 )}
 
                                 {voteStep === "done" && txHash && (
-                                    <div style={{ marginBottom: 16, padding: 14, background: "#22c55e10", borderRadius: "var(--radius)", border: "1px solid #22c55e40" }}>
+                                    <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                         <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
                                             Vote submitted anonymously!
                                             {gaslessEnabled && onChainVerified === true && " ✓ Verified on-chain"}
@@ -1595,7 +1595,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 )}
 
                                 {voteStep === "error" && (
-                                    <div style={{ marginBottom: 16, padding: 14, background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440" }}>
+                                    <div style={{ marginBottom: 16, padding: 14, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
                                         <p style={{ color: "var(--error)", fontWeight: 600, marginBottom: 4 }}>Failed</p>
                                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", wordBreak: "break-all" }}>{error}</p>
                                     </div>
@@ -1644,8 +1644,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             {isOnChainCommittee && committeeState ? (
                                 /* ── ON-CHAIN COMMITTEE TALLY UI ── */
                                 <>
-                                    <div style={{ padding: "10px 14px", background: "#a855f710", borderRadius: "var(--radius)", border: "1px solid #a855f730", marginBottom: 14 }}>
-                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#a855f7" }}>
+                                    <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--purple)" }}>
                                             Committee Election — {committeeState.submittedShareCount} of {committeeState.threshold} shares submitted
                                             {committeeSharesReady && <span style={{ color: "var(--success)" }}> — ready to tally!</span>}
                                         </span>
@@ -1660,8 +1660,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             ) : isThresholdElection && thresholdMeta ? (
                                 /* ── LEGACY THRESHOLD TALLY UI (old elections without on-chain committee) ── */
                                 <>
-                                    <div style={{ padding: "10px 14px", background: "#a855f710", borderRadius: "var(--radius)", border: "1px solid #a855f730", marginBottom: 14 }}>
-                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#a855f7" }}>
+                                    <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--purple)" }}>
                                             Threshold Election — {thresholdMeta.threshold} of {thresholdMeta.totalShares} shares needed
                                         </span>
                                     </div>
@@ -1709,7 +1709,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                                 Decrypt My Share
                                             </button>
                                             {decryptedShareResult && (
-                                                <div style={{ padding: "8px 12px", background: "#22c55e10", borderRadius: 8, border: "1px solid #22c55e40" }}>
+                                                <div style={{ padding: "8px 12px", background: "var(--success-bg-light)", borderRadius: 8, border: "1px solid var(--success-border)" }}>
                                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                                                         <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--success)" }}>Decrypted share:</span>
                                                         <button onClick={() => { navigator.clipboard.writeText(decryptedShareResult) }}
@@ -1798,7 +1798,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                             )}
 
                             {tallyStep === "error" && (
-                                <div style={{ marginBottom: 16, padding: 14, background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440" }}>
+                                <div style={{ marginBottom: 16, padding: 14, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
                                     <p style={{ color: "var(--error)", fontWeight: 600, marginBottom: 4 }}>Tally Failed</p>
                                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", wordBreak: "break-all" }}>{tallyError}</p>
                                 </div>
@@ -1844,7 +1844,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                             {tallyResult.optionCounts.map((count: number, i: number) => {
                                                 const pct = (count / tallyResult.totalValid) * 100
                                                 const isWinner = count === Math.max(...tallyResult.optionCounts)
-                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "#a855f7", "#06b6d4", "#f97316", "#ec4899"]
+                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "var(--purple)", "var(--cyan)", "var(--orange)", "var(--pink)"]
                                                 const color = colors[i % colors.length]
                                                 return (
                                                     <div key={i}>
@@ -1868,7 +1868,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                             const maxCount = Math.max(...tallyResult.optionCounts)
                                             const winners = tallyResult.optionCounts.reduce((acc: number[], c: number, i: number) => c === maxCount ? [...acc, i] : acc, [])
                                             if (winners.length === 1) {
-                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "#a855f7", "#06b6d4", "#f97316", "#ec4899"]
+                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "var(--purple)", "var(--cyan)", "var(--orange)", "var(--pink)"]
                                                 return (
                                                     <div style={{ padding: "10px 16px", borderRadius: "var(--radius)", background: "var(--bg)", border: "1px solid var(--border)", marginBottom: 12 }}>
                                                         <span style={{ fontWeight: 700, color: colors[winners[0] % colors.length] }}>
@@ -1960,7 +1960,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         </div>
                                     )}
                                     {commitStep === "done" && commitTxHash && (
-                                        <div style={{ marginBottom: 12, padding: 12, background: "#22c55e10", borderRadius: "var(--radius)", border: "1px solid #22c55e40" }}>
+                                        <div style={{ marginBottom: 12, padding: 12, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                             <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>Tally committed!</p>
                                             <a href={`https://sepolia.etherscan.io/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
                                                 View on Etherscan
@@ -1968,7 +1968,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                         </div>
                                     )}
                                     {commitStep === "error" && commitError && (
-                                        <div style={{ marginBottom: 12, padding: 12, background: "#ef444410", borderRadius: "var(--radius)", border: "1px solid #ef444440" }}>
+                                        <div style={{ marginBottom: 12, padding: 12, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
                                             <p style={{ color: "var(--error)", fontWeight: 600 }}>{commitError}</p>
                                         </div>
                                     )}
@@ -1983,7 +1983,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     {/* On-chain commitment display */}
                     {onChainTally?.committed && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)" }}>
                             <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
                                 On-Chain Commitment
                             </h4>
@@ -2045,19 +2045,19 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                 const memberName = metaStored.committee?.find((c: any) => c.address?.toLowerCase() === addrLower)?.name || ""
 
                                 return (
-                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: isMe ? "#a855f708" : "var(--bg)", borderRadius: 8, border: `1px solid ${isMe ? "#a855f730" : "var(--border)"}` }}>
+                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: isMe ? "var(--purple-bg)" : "var(--bg)", borderRadius: 8, border: `1px solid ${isMe ? "var(--purple-border)" : "var(--border)"}` }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                                             <span className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
                                                 {memberName ? `${memberName} ` : ""}{memberAddr.slice(0, 6)}...{memberAddr.slice(-4)}
                                             </span>
-                                            {isMe && <span style={{ fontSize: "0.65rem", color: "#a855f7", fontWeight: 600 }}>YOU</span>}
+                                            {isMe && <span style={{ fontSize: "0.65rem", color: "var(--purple)", fontWeight: 600 }}>YOU</span>}
                                         </div>
                                         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                                            <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasKey ? "#22c55e15" : "#f59e0b15", color: hasKey ? "var(--success)" : "var(--warning)" }}>
+                                            <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasKey ? "var(--success-bg-medium)" : "var(--warning-bg)", color: hasKey ? "var(--success)" : "var(--warning)" }}>
                                                 {hasKey ? "Key ✓" : "No key"}
                                             </span>
                                             {phase === "closed" && (
-                                                <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasShare ? "#22c55e15" : "#64748b15", color: hasShare ? "var(--success)" : "var(--text-muted)" }}>
+                                                <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasShare ? "var(--success-bg-medium)" : "var(--slate-bg)", color: hasShare ? "var(--success)" : "var(--text-muted)" }}>
                                                     {hasShare ? "Share ✓" : "Pending"}
                                                 </span>
                                             )}
@@ -2070,7 +2070,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     {/* Phase 1: Key registration (during signup, before finalization) */}
                     {phase === "signup" && !committeeState.finalized && isMyCommitteeMember && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#a855f740" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--purple-border-strong)" }}>
                             {!myKeyRegistered ? (
                                 <>
                                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Register Your Key</h4>
@@ -2150,7 +2150,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     {/* Waiting message: finalized but signup still open */}
                     {phase === "signup" && committeeState.finalized && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40", background: "#22c55e08" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                 <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
                                 <div>
@@ -2165,7 +2165,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     {/* Phase 3: Submit share (after voting closed) */}
                     {phase === "closed" && isMyCommitteeMember && !myShareSubmitted && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#a855f740" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--purple-border-strong)" }}>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Decrypt & Submit Your Share</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
                                 Voting is closed. Decrypt your share using the private key stored in this browser and submit it on-chain.
@@ -2180,7 +2180,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     )}
 
                     {phase === "closed" && isMyCommitteeMember && myShareSubmitted && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40", background: "#22c55e08" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                 <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
                                 <div>
@@ -2206,7 +2206,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     {/* Error / success messages */}
                     {committeeMsg && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "#22c55e40" }}>
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--success)" }}>{committeeMsg}</p>
                         </div>
                     )}
