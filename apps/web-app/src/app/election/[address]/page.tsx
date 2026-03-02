@@ -2,7 +2,7 @@
 
 import { useSpectre } from "@/context/SpectreContext"
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { Contract, JsonRpcProvider, toUtf8String } from "ethers"
+import { Contract, JsonRpcProvider, toUtf8String, keccak256, toUtf8Bytes } from "ethers"
 import { Identity, Group } from "@semaphore-protocol/core"
 import { randomBytes } from "@noble/ciphers/webcrypto"
 import { generateProofInBrowser } from "@/lib/proof"
@@ -154,11 +154,31 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // Gasless relay state (hoisted — used in identity loading effect)
     const [gaslessEnabled, setGaslessEnabled] = useState(false)
 
+    // Recovery nudge state (gasless voters)
+    const [showRecoveryNudge, setShowRecoveryNudge] = useState(false)
+    const [recoveryCode, setRecoveryCode] = useState("")
+    const [showRecoveryImport, setShowRecoveryImport] = useState(false)
+    const [recoveryImportValue, setRecoveryImportValue] = useState("")
+    const [recoveryError, setRecoveryError] = useState("")
+
     // Scope key: election address + wallet address (or anonymous ID for gasless)
     const identityStorageKey = useMemo(() => {
         const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
         return scope ? `spectre-identity-${electionAddress}-${scope}` : ""
     }, [electionAddress, address, anonymousId])
+
+    // Derive deterministic identity from wallet signature
+    const deriveIdentityFromWallet = useCallback(async (): Promise<Identity | null> => {
+        if (!signer) return null
+        try {
+            const msg = `Spectre identity for election ${electionAddress}`
+            const signature = await signer.signMessage(msg)
+            const seed = keccak256(toUtf8Bytes(signature))
+            return new Identity(seed)
+        } catch {
+            return null // User rejected signing
+        }
+    }, [signer, electionAddress])
 
     // Load identity from localStorage on mount / key change
     useEffect(() => {
@@ -173,18 +193,63 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setIdentity(id)
             localStorage.setItem(identityStorageKey, id.export())
             addLog("Ready to participate")
+            // Show recovery nudge (only once per election)
+            const nudgeDismissed = localStorage.getItem(`spectre-nudge-dismissed-${electionAddress}`)
+            if (!nudgeDismissed) {
+                setRecoveryCode(id.export())
+                setShowRecoveryNudge(true)
+            }
             return
         }
         setIdentity(null)
-    }, [identityStorageKey, gaslessEnabled, addLog])
+    }, [identityStorageKey, gaslessEnabled, addLog, electionAddress])
 
-    const createIdentity = useCallback(() => {
+    const createIdentity = useCallback(async () => {
         if (!identityStorageKey) { addLog("Connect your wallet first"); return }
+        // Wallet users: derive deterministically from signature
+        if (signer && !gaslessEnabled) {
+            const derived = await deriveIdentityFromWallet()
+            if (derived) {
+                setIdentity(derived)
+                localStorage.setItem(identityStorageKey, derived.export())
+                addLog("Identity created from wallet")
+                return
+            }
+            // User rejected signing — fall back to random identity + nudge
+        }
+        // Fallback: random identity (wallet rejection or no signer)
         const id = new Identity()
         setIdentity(id)
         localStorage.setItem(identityStorageKey, id.export())
         addLog("Ready to participate")
-    }, [identityStorageKey, addLog])
+        const nudgeDismissed = localStorage.getItem(`spectre-nudge-dismissed-${electionAddress}`)
+        if (!nudgeDismissed) {
+            setRecoveryCode(id.export())
+            setShowRecoveryNudge(true)
+        }
+    }, [identityStorageKey, addLog, signer, gaslessEnabled, deriveIdentityFromWallet, electionAddress])
+
+    // Recovery import handler
+    const handleRecoveryImport = useCallback(() => {
+        if (!identityStorageKey || !recoveryImportValue.trim()) return
+        try {
+            const restored = Identity.import(recoveryImportValue.trim())
+            setIdentity(restored)
+            localStorage.setItem(identityStorageKey, restored.export())
+            setShowRecoveryImport(false)
+            setRecoveryImportValue("")
+            setRecoveryError("")
+            addLog("Identity restored from backup")
+        } catch {
+            setRecoveryError("Invalid recovery code")
+        }
+    }, [identityStorageKey, recoveryImportValue, addLog])
+
+    // Dismiss recovery nudge
+    const dismissRecoveryNudge = useCallback(() => {
+        setShowRecoveryNudge(false)
+        localStorage.setItem(`spectre-nudge-dismissed-${electionAddress}`, "1")
+    }, [electionAddress])
 
     const [tab, setTab] = useState<Tab>("vote")
     const [state, setState] = useState<ElectionState | null>(null)
@@ -1472,6 +1537,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         handleSignUp={handleSignUp}
                         copyToClipboard={copyToClipboard}
                         copied={copied}
+                        showRecoveryNudge={showRecoveryNudge}
+                        recoveryCode={recoveryCode}
+                        dismissRecoveryNudge={dismissRecoveryNudge}
+                        showRecoveryImport={showRecoveryImport}
+                        setShowRecoveryImport={setShowRecoveryImport}
+                        recoveryImportValue={recoveryImportValue}
+                        setRecoveryImportValue={setRecoveryImportValue}
+                        recoveryError={recoveryError}
+                        handleRecoveryImport={handleRecoveryImport}
                     />
 
                     <VotingSection
@@ -1513,6 +1587,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     committeeSharesReady={committeeSharesReady}
                     thresholdMeta={thresholdMeta}
                     hasStoredKey={hasStoredKey}
+                    electionKeyHex={typeof window !== "undefined" ? localStorage.getItem(`spectre-election-key-${electionAddress}`) || "" : ""}
                     tallyStep={tallyStep}
                     tallyMsg={tallyMsg}
                     tallyResult={tallyResult}

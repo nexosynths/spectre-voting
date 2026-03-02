@@ -565,7 +565,7 @@ export default function HomePage() {
                                 </div>
                                 <TrustCallout
                                     text={encryptionMode === "single"
-                                        ? "Election key stored in this browser\u2019s localStorage. You alone control when results are revealed. If you clear browser data, the key is lost."
+                                        ? "Election key stored in this browser\u2019s localStorage. You alone control when results are revealed. You can back up the key from the Results tab."
                                         : `Key split via Shamir secret sharing. ${threshold}-of-${committeMembers.length} members must cooperate to decrypt results. No single member can reveal votes alone.`}
                                     variant={encryptionMode === "single" ? "info" : "info"}
                                 />

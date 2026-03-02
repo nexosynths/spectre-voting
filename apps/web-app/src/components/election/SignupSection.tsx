@@ -28,6 +28,16 @@ interface SignupSectionProps {
     handleSignUp: () => void
     copyToClipboard: (text: string, label: string) => void
     copied: string
+    // Recovery
+    showRecoveryNudge: boolean
+    recoveryCode: string
+    dismissRecoveryNudge: () => void
+    showRecoveryImport: boolean
+    setShowRecoveryImport: (v: boolean) => void
+    recoveryImportValue: string
+    setRecoveryImportValue: (v: string) => void
+    recoveryError: string
+    handleRecoveryImport: () => void
 }
 
 export default function SignupSection({
@@ -38,6 +48,10 @@ export default function SignupSection({
     inviteCode, setInviteCode, codeValid, codeError,
     allowlistId, setAllowlistId, idValid, idError,
     identityCommitment, handleSignUp, copyToClipboard, copied,
+    showRecoveryNudge, recoveryCode, dismissRecoveryNudge,
+    showRecoveryImport, setShowRecoveryImport,
+    recoveryImportValue, setRecoveryImportValue,
+    recoveryError, handleRecoveryImport,
 }: SignupSectionProps) {
     const { isSimple } = useMode()
 
@@ -87,6 +101,100 @@ export default function SignupSection({
                             : "Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote."}
                     </p>
                     <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
+                </div>
+            )}
+
+            {/* Recovery nudge (gasless voters after identity creation) */}
+            {showRecoveryNudge && identity && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning-border)", background: "var(--warning-bg)" }}>
+                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                        {isSimple ? "Save Your Backup Code" : "Save Your Recovery Code"}
+                    </h4>
+                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.5 }}>
+                        {isSimple
+                            ? "If you clear your browser data, you\u2019ll need this code to recover your vote. Copy it somewhere safe."
+                            : "Your identity is stored in this browser. If you clear your data or switch devices, paste this code to restore your identity."}
+                    </p>
+                    <code className="mono" style={{
+                        display: "block", background: "var(--bg)", padding: "10px 12px", borderRadius: 8,
+                        border: "1px solid var(--border)", fontSize: "0.65rem", wordBreak: "break-all",
+                        marginBottom: 10, lineHeight: 1.6
+                    }}>
+                        {recoveryCode}
+                    </code>
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                            className="btn-primary"
+                            onClick={() => { navigator.clipboard.writeText(recoveryCode); copyToClipboard(recoveryCode, "recovery-code") }}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >
+                            {copied === "recovery-code" ? "Copied!" : "Copy Code"}
+                        </button>
+                        <button
+                            className="btn-secondary"
+                            onClick={dismissRecoveryNudge}
+                            style={{ flex: 1, fontSize: "0.8rem" }}
+                        >
+                            {isSimple ? "I saved it" : "Dismiss"}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Recovery import (when no identity exists) */}
+            {!identity && (gaslessEnabled || address) && (
+                <div style={{ marginBottom: 16, textAlign: "center" }}>
+                    {!showRecoveryImport ? (
+                        <button
+                            onClick={() => setShowRecoveryImport(true)}
+                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", textDecoration: "underline" }}
+                        >
+                            {isSimple ? "Have a backup code?" : "Recover identity from backup"}
+                        </button>
+                    ) : (
+                        <div className="card">
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                                {isSimple ? "Enter Backup Code" : "Restore Identity"}
+                            </h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
+                                {isSimple
+                                    ? "Paste the backup code you saved earlier."
+                                    : "Paste your exported identity string to restore your identity."}
+                            </p>
+                            <textarea
+                                placeholder="Paste your backup code here..."
+                                value={recoveryImportValue}
+                                onChange={e => setRecoveryImportValue(e.target.value)}
+                                rows={3}
+                                style={{
+                                    width: "100%", background: "var(--bg)", border: "1px solid var(--border)",
+                                    borderRadius: "var(--radius)", color: "var(--text)", padding: "10px 14px",
+                                    fontFamily: "monospace", fontSize: "0.75rem", resize: "vertical",
+                                    outline: "none", marginBottom: 8
+                                }}
+                            />
+                            {recoveryError && (
+                                <p style={{ fontSize: "0.8rem", color: "var(--error)", marginBottom: 8 }}>{recoveryError}</p>
+                            )}
+                            <div style={{ display: "flex", gap: 8 }}>
+                                <button
+                                    className="btn-primary"
+                                    onClick={handleRecoveryImport}
+                                    disabled={!recoveryImportValue.trim()}
+                                    style={{ flex: 1, fontSize: "0.8rem" }}
+                                >
+                                    Restore
+                                </button>
+                                <button
+                                    className="btn-secondary"
+                                    onClick={() => { setShowRecoveryImport(false); setRecoveryImportValue(""); }}
+                                    style={{ flex: 1, fontSize: "0.8rem" }}
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 

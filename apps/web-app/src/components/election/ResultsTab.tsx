@@ -42,6 +42,7 @@ interface ResultsTabProps {
     committeeSharesReady: boolean
     thresholdMeta: any | null
     hasStoredKey: boolean
+    electionKeyHex: string
     tallyStep: TallyStep
     tallyMsg: string
     tallyResult: TallyResult | null
@@ -79,7 +80,7 @@ interface ResultsTabProps {
 export default function ResultsTab({
     phase, state, optionLabels, isAdmin,
     isOnChainCommittee, isThresholdElection,
-    committeeState, committeeSharesReady, thresholdMeta, hasStoredKey,
+    committeeState, committeeSharesReady, thresholdMeta, hasStoredKey, electionKeyHex,
     tallyStep, tallyMsg, tallyResult, tallyError,
     manualKeyInput, setManualKeyInput,
     selectedMemberIdx, setSelectedMemberIdx,
@@ -250,9 +251,25 @@ export default function ResultsTab({
                         /* ── SINGLE KEY TALLY UI (admin or key holder) ── */
                         <>
                             {hasStoredKey ? (
-                                <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
-                                    {isSimple ? "Ready to count votes" : "Election key found in this browser"}
-                                </p>
+                                <div style={{ marginBottom: 12 }}>
+                                    <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: isAdvanced ? 8 : 0 }}>
+                                        {isSimple ? "Ready to count votes" : "Election key found in this browser"}
+                                    </p>
+                                    {isAdvanced && (
+                                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem" }}>
+                                                {electionKeyHex}
+                                            </code>
+                                            <button
+                                                onClick={() => copyToClipboard(electionKeyHex, "election-key")}
+                                                className="btn-secondary"
+                                                style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}
+                                            >
+                                                {copied === "election-key" ? "Copied!" : "Copy Key"}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
                             ) : isAdvanced ? (
                                 <div style={{ marginBottom: 12 }}>
                                     <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
