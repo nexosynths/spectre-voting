@@ -11,12 +11,18 @@ import { secp256k1 } from "@noble/curves/secp256k1"
 import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, explorerTxUrl, RelayError } from "@/lib/relayer"
-import { validateCode, getAdminCodes, codesToCsv, downloadCsv, validateIdentifier, getAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
+import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, RelayError } from "@/lib/relayer"
+import { validateCode, validateIdentifier } from "@/lib/inviteCodes"
 import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, encryptedShareToHex, generateCommitteeKeypair, deserializeShareFromHex, type Share, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
+import { useMode } from "@/context/ModeContext"
+import ElectionHeader from "@/components/election/ElectionHeader"
+import SignupSection from "@/components/election/SignupSection"
+import VotingSection from "@/components/election/VotingSection"
+import ResultsTab from "@/components/election/ResultsTab"
+import ManageTab from "@/components/election/ManageTab"
 
 type Tab = "vote" | "results" | "manage" | "committee"
 type Phase = "signup" | "voting" | "closed"
@@ -140,6 +146,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const electionAddress = params.address
     const searchParams = useSearchParams()
     const { address, signer, connectWallet, addLog, anonymousId } = useSpectre()
+    const { isSimple, isAdvanced } = useMode()
 
     // ── Per-election identity (scoped to election + wallet/anonymous session) ──
     const [identity, setIdentity] = useState<Identity | null>(null)
@@ -183,6 +190,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [state, setState] = useState<ElectionState | null>(null)
     const [loading, setLoading] = useState(true)
     const [copied, setCopied] = useState("")
+
+    // Auto-switch from Committee tab when mode changes to Simple
+    useEffect(() => {
+        if (isSimple && tab === "committee") setTab("vote")
+    }, [isSimple, tab])
 
     // Vote state
     const [selectedVote, setSelectedVote] = useState<number | null>(null)
@@ -1408,734 +1420,132 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     return (
         <>
-            {/* Header */}
-            <div style={{ marginBottom: 12, fontSize: "0.8rem" }}>
-                <Link href="/">← All Elections</Link>
-            </div>
+            <ElectionHeader
+                displayTitle={displayTitle}
+                phase={phase}
+                phaseBadge={phaseBadge}
+                voteCount={state.voteCount}
+                numOptions={state.numOptions}
+                selfSignupAllowed={state.selfSignupAllowed}
+                gaslessEnabled={gaslessEnabled}
+                isInviteCodeElection={isInviteCodeElection}
+                isAllowlistElection={isAllowlistElection}
+                inviteCodeCount={inviteCodeMeta?.totalCodes ?? null}
+                allowlistEntryCount={allowlistMeta?.totalEntries ?? null}
+                isThresholdElection={isThresholdElection}
+                thresholdMeta={thresholdMeta ? { threshold: thresholdMeta.threshold, totalShares: thresholdMeta.totalShares } : null}
+                signupDeadline={state.signupDeadline}
+                votingDeadline={state.votingDeadline}
+                shareUrl={shareUrl}
+                isOnChainCommittee={isOnChainCommittee}
+                isAdmin={!!isAdmin}
+                tab={tab}
+                setTab={setTab}
+                copyToClipboard={copyToClipboard}
+                copied={copied}
+            />
 
-            <div className="card" style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                    <h2 style={{ fontSize: "1.1rem", fontWeight: 700, lineHeight: 1.3, flex: 1, marginRight: 12 }}>{displayTitle}</h2>
-                    <span className={`status-badge ${phaseBadge.cls}`}>{phaseBadge.text}</span>
-                </div>
-                <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
-                    <span>{state.voteCount} vote{state.voteCount !== 1 ? "s" : ""}</span>
-                    <span>{state.numOptions} options</span>
-                    <span style={{ color: isInviteCodeElection || isAllowlistElection ? "var(--accent)" : state.selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
-                        {isAllowlistElection ? `Allowlist (${allowlistMeta?.totalEntries || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeMeta?.totalCodes || "?"})` : state.selfSignupAllowed ? "Open signup" : "Admin only"}
-                    </span>
-                    {gaslessEnabled && (
-                        <span style={{ color: "var(--success)", fontSize: "0.75rem" }}>
-                            ⚡ No wallet needed
-                        </span>
-                    )}
-                    {isThresholdElection && thresholdMeta && (
-                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }}>
-                            {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} committee
-                        </span>
-                    )}
-                    {phase === "signup" && state.signupDeadline > 0 && (
-                        <span>
-                            {Date.now() / 1000 > state.signupDeadline
-                                ? "Signup deadline passed"
-                                : `Signup closes ${new Date(state.signupDeadline * 1000).toLocaleString()}`}
-                        </span>
-                    )}
-                    {(phase === "voting" || phase === "closed") && state.votingDeadline > 0 && (
-                        <span>
-                            {Date.now() / 1000 > state.votingDeadline
-                                ? "Voting deadline passed"
-                                : `Voting closes ${new Date(state.votingDeadline * 1000).toLocaleString()}`}
-                        </span>
-                    )}
-                    <button
-                        onClick={() => copyToClipboard(shareUrl, "share")}
-                        style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: 0 }}
-                    >
-                        {copied === "share" ? "Link copied!" : "Share link"}
-                    </button>
-                </div>
-            </div>
-
-            {/* Tabs */}
-            <div className="nav" style={{ marginBottom: 16 }}>
-                <button onClick={() => setTab("vote")} className={tab === "vote" ? "active" : ""}>
-                    {phase === "signup" ? "Sign Up" : "Vote"}
-                </button>
-                <button onClick={() => setTab("results")} className={tab === "results" ? "active" : ""}>Results</button>
-                {isOnChainCommittee && (
-                    <button onClick={() => setTab("committee")} className={tab === "committee" ? "active" : ""}>Committee</button>
-                )}
-                {isAdmin && (
-                    <button onClick={() => setTab("manage")} className={tab === "manage" ? "active" : ""}>Manage</button>
-                )}
-            </div>
-
-            {/* ═══ VOTE/SIGNUP TAB ═══ */}
+            {/* ═══ VOTE / SIGNUP TAB ═══ */}
             {tab === "vote" && (
                 <>
-                    {/* Gasless banner */}
-                    {gaslessEnabled && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <span style={{ fontSize: "1.1rem" }}>&#9889;</span>
-                                <div>
-                                    <p style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Gasless Voting</p>
-                                    <p style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                                        No wallet or crypto needed. Your vote is relayed on-chain automatically.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    <SignupSection
+                        phase={phase}
+                        gaslessEnabled={gaslessEnabled}
+                        address={address}
+                        identity={identity}
+                        connectWallet={connectWallet}
+                        createIdentity={createIdentity}
+                        signupStatus={signupStatus}
+                        signupLoading={signupLoading}
+                        selfSignupAllowed={state.selfSignupAllowed}
+                        isInviteCodeElection={isInviteCodeElection}
+                        isAllowlistElection={isAllowlistElection}
+                        inviteCode={inviteCode}
+                        setInviteCode={setInviteCode}
+                        codeValid={codeValid}
+                        codeError={codeError}
+                        allowlistId={allowlistId}
+                        setAllowlistId={setAllowlistId}
+                        idValid={idValid}
+                        idError={idError}
+                        identityCommitment={identity ? identity.commitment.toString() : ""}
+                        handleSignUp={handleSignUp}
+                        copyToClipboard={copyToClipboard}
+                        copied={copied}
+                    />
 
-                    {/* Step 1: Wallet (required in wallet mode, optional in gasless) */}
-                    {!address && !gaslessEnabled && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 1: Connect Wallet</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                                Connect to submit transactions on-chain. Your wallet is only for gas — your vote stays anonymous.
-                            </p>
-                            <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>Connect Wallet</button>
-                        </div>
-                    )}
-
-                    {/* Step 2: Identity */}
-                    {address && !gaslessEnabled && !identity && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Step 2: Create Identity</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                                Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
-                            </p>
-                            <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
-                        </div>
-                    )}
-
-                    {/* ── SIGNUP PHASE ── */}
-                    {phase === "signup" && identity && (gaslessEnabled || address) && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            {/* Shared: checking + signed-up states */}
-                            {signupStatus === "checking" && (
-                                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                                    <div className="spinner" />
-                                    <p style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>Checking signup status...</p>
-                                </div>
-                            )}
-
-                            {signupStatus === "signed-up" && (
-                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                    <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                                    <div>
-                                        <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
-                                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                            Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
-                                        </p>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* ADMIN-ONLY MODE */}
-                            {signupStatus !== "checking" && signupStatus !== "signed-up" && !state.selfSignupAllowed && (
-                                <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Admin-Only Registration</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
-                                    </p>
-                                    <div style={{ display: "flex", gap: 8 }}>
-                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
-                                            {identity.commitment.toString()}
-                                        </code>
-                                        <button onClick={() => copyToClipboard(identity.commitment.toString(), "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                            {copied === "vid" ? "Copied!" : "Copy ID"}
-                                        </button>
-                                    </div>
-                                </>
-                            )}
-
-                            {/* INVITE CODE MODE */}
-                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && isInviteCodeElection && (
-                                <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Enter Invite Code</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        This election requires an invite code to sign up. Enter the code you received from the election admin.
-                                    </p>
-                                    <input
-                                        type="text"
-                                        placeholder="8-character code"
-                                        value={inviteCode}
-                                        onChange={e => setInviteCode(e.target.value.toLowerCase().replace(/[^0-9a-f]/g, ""))}
-                                        maxLength={8}
-                                        className="mono"
-                                        disabled={signupLoading}
-                                        style={{ textAlign: "center", fontSize: "1.1rem", letterSpacing: "0.15em", marginBottom: 8 }}
-                                    />
-                                    {inviteCode.length > 0 && (
-                                        <p style={{ fontSize: "0.8rem", marginBottom: 8, color: codeValid ? "var(--success)" : codeError ? "var(--error)" : "var(--text-muted)" }}>
-                                            {codeValid ? "Code valid" : codeError || "..."}
-                                        </p>
-                                    )}
-                                    <button
-                                        className="btn-primary"
-                                        onClick={handleSignUp}
-                                        disabled={signupLoading || !codeValid}
-                                    >
-                                        {signupLoading ? "Signing up..." : "Sign Up with Code"}
-                                    </button>
-                                </>
-                            )}
-
-                            {/* ALLOWLIST MODE */}
-                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && isAllowlistElection && (
-                                <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Enter Your Identifier</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        This election uses an allowlist. Enter the email, name, or ID the admin registered for you.
-                                    </p>
-                                    <input
-                                        type="text"
-                                        placeholder="Your identifier (email, name, ID...)"
-                                        value={allowlistId}
-                                        onChange={e => setAllowlistId(e.target.value)}
-                                        disabled={signupLoading}
-                                        style={{ marginBottom: 8 }}
-                                    />
-                                    {allowlistId.trim().length > 0 && (
-                                        <p style={{ fontSize: "0.8rem", marginBottom: 8, color: idValid ? "var(--success)" : idError ? "var(--error)" : "var(--text-muted)" }}>
-                                            {idValid ? "You're on the list" : idError || "..."}
-                                        </p>
-                                    )}
-                                    <button
-                                        className="btn-primary"
-                                        onClick={handleSignUp}
-                                        disabled={signupLoading || !idValid}
-                                    >
-                                        {signupLoading ? "Signing up..." : "Sign Up"}
-                                    </button>
-                                </>
-                            )}
-
-                            {/* OPEN MODE */}
-                            {signupStatus !== "checking" && signupStatus !== "signed-up" && state.selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && (
-                                <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong>
-                                    </p>
-                                    <button
-                                        className="btn-primary"
-                                        onClick={handleSignUp}
-                                        disabled={signupLoading}
-                                    >
-                                        {signupLoading ? "Signing up..." : "Sign Up"}
-                                    </button>
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    {/* ── VOTING PHASE ── */}
-                    {phase === "voting" && identity && (gaslessEnabled || address) && (
-                        <>
-                            {/* Join + vote status indicators */}
-                            {voteStep === "idle" && joinStatus === "joined" && (
-                                <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                        <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
-                                        <div>
-                                            <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>Anonymously joined</p>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Your identity has been separated from your registration. Select an option and cast your vote.</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {voteStep === "idle" && joinStatus === "not-joined" && (
-                                <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
-                                    <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                                        {gaslessEnabled
-                                            ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
-                                            : "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. This requires two wallet confirmations."}
-                                    </p>
-                                </div>
-                            )}
-
-                            {/* Vote options */}
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-                                    {optionLabels.map((label, i) => (
-                                        <div
-                                            key={i}
-                                            className={`vote-option ${selectedVote === i ? "selected" : ""}`}
-                                            onClick={() => !isProcessing && setSelectedVote(i)}
-                                            style={{
-                                                opacity: isProcessing ? 0.4 : 1,
-                                                cursor: isProcessing ? "not-allowed" : "pointer",
-                                                flex: "1 1 calc(50% - 6px)",
-                                                minWidth: 120,
-                                            }}
-                                        >
-                                            {label}
-                                        </div>
-                                    ))}
-                                </div>
-
-                                {/* Processing indicator */}
-                                {isProcessing && (
-                                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: 14, background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                        <div className="spinner" />
-                                        <div>
-                                            <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>
-                                                {stepInfo ? `Step ${stepInfo.step} of ${stepInfo.total}: ${stepInfo.label}` : stepMsg}
-                                            </p>
-                                            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                                                {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
-                                                {voteStep === "timing-delay" && "Random delay protects your identity"}
-                                                {voteStep === "verifying" && "Independently checking the blockchain"}
-                                            </p>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {voteStep === "done" && txHash && (
-                                    <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
-                                        <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
-                                            Vote submitted anonymously!
-                                            {gaslessEnabled && onChainVerified === true && " ✓ Verified on-chain"}
-                                        </p>
-                                        {gaslessEnabled && onChainVerified === false && (
-                                            <p style={{ color: "var(--warning)", fontSize: "0.8rem", marginBottom: 6 }}>
-                                                ⚠ Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
-                                            </p>
-                                        )}
-                                        <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                            View on Etherscan →
-                                        </a>
-                                    </div>
-                                )}
-
-                                {voteStep === "error" && (
-                                    <div style={{ marginBottom: 16, padding: 14, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
-                                        <p style={{ color: "var(--error)", fontWeight: 600, marginBottom: 4 }}>Failed</p>
-                                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", wordBreak: "break-all" }}>{error}</p>
-                                    </div>
-                                )}
-
-                                <button
-                                    className="btn-primary"
-                                    onClick={handleJoinAndVote}
-                                    disabled={!canVote || selectedVote === null || isProcessing}
-                                >
-                                    {isProcessing ? "Processing..." : voteStep === "done" ? "Vote Submitted!" : "Vote"}
-                                </button>
-
-                                {voteStep === "error" && (
-                                    <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ marginTop: 8 }}>
-                                        Try Again
-                                    </button>
-                                )}
-                            </div>
-                        </>
-                    )}
-
-                    {/* CLOSED phase message */}
-                    {phase === "closed" && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "12px 0" }}>
-                                Voting is closed. Check the Results tab.
-                            </p>
-                        </div>
-                    )}
+                    <VotingSection
+                        phase={phase}
+                        gaslessEnabled={gaslessEnabled}
+                        address={address}
+                        identity={identity}
+                        optionLabels={optionLabels}
+                        selectedVote={selectedVote}
+                        setSelectedVote={setSelectedVote}
+                        voteStep={voteStep}
+                        stepMsg={stepMsg}
+                        stepInfo={stepInfo}
+                        isProcessing={isProcessing}
+                        canVote={canVote}
+                        txHash={txHash}
+                        error={error}
+                        onChainVerified={onChainVerified}
+                        joinStatus={joinStatus}
+                        handleJoinAndVote={handleJoinAndVote}
+                        setVoteStep={setVoteStep}
+                        setSelectedVote_reset={() => setSelectedVote(null)}
+                        setTxHash={setTxHash}
+                        setError={setError}
+                    />
                 </>
             )}
 
             {/* ═══ RESULTS TAB ═══ */}
             {tab === "results" && (
-                <>
-                    {!tallyResult && tallyStep !== "done" && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Decrypt &amp; Tally</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14 }}>
-                                {phase !== "closed"
-                                    ? "Election is still active. You can preview interim results."
-                                    : "Voting is closed. Decrypt all votes to see the final result."}
-                            </p>
-
-                            {isOnChainCommittee && committeeState ? (
-                                /* ── ON-CHAIN COMMITTEE TALLY UI ── */
-                                <>
-                                    <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
-                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--purple)" }}>
-                                            Committee Election — {committeeState.submittedShareCount} of {committeeState.threshold} shares submitted
-                                            {committeeSharesReady && <span style={{ color: "var(--success)" }}> — ready to tally!</span>}
-                                        </span>
-                                    </div>
-                                    {!committeeSharesReady && (
-                                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
-                                            Waiting for committee members to submit their decrypted shares on the Committee tab.
-                                            Need {committeeState.threshold - committeeState.submittedShareCount} more share(s).
-                                        </p>
-                                    )}
-                                </>
-                            ) : isThresholdElection && thresholdMeta ? (
-                                /* ── LEGACY THRESHOLD TALLY UI (old elections without on-chain committee) ── */
-                                <>
-                                    <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
-                                        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--purple)" }}>
-                                            Threshold Election — {thresholdMeta.threshold} of {thresholdMeta.totalShares} shares needed
-                                        </span>
-                                    </div>
-
-                                    {/* Section A: Decrypt Your Share */}
-                                    <details style={{ marginBottom: 14 }}>
-                                        <summary style={{ fontSize: "0.85rem", fontWeight: 600, cursor: "pointer", marginBottom: 8 }}>
-                                            Decrypt Your Share (committee members)
-                                        </summary>
-                                        <div style={{ padding: "12px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.5 }}>
-                                                Select your name, then paste the private key you saved during election setup.
-                                            </p>
-                                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
-                                                <select
-                                                    value={selectedMemberIdx}
-                                                    onChange={e => {
-                                                        const idx = Number(e.target.value)
-                                                        setSelectedMemberIdx(idx)
-                                                        setDecryptedShareResult(""); setDecryptShareError("")
-                                                        if (idx >= 0 && thresholdMeta!.encryptedShares[idx]) {
-                                                            setDecryptShareInput(thresholdMeta!.encryptedShares[idx].encryptedDataHex)
-                                                        } else {
-                                                            setDecryptShareInput("")
-                                                        }
-                                                    }}
-                                                    style={{ fontSize: "0.8rem", padding: "8px 10px" }}
-                                                >
-                                                    <option value={-1}>I am...</option>
-                                                    {thresholdMeta!.committee.map((m: any, i: number) => (
-                                                        <option key={i} value={i}>{m.id || m.name}</option>
-                                                    ))}
-                                                </select>
-                                                <input
-                                                    placeholder="Your personal private key (64 hex chars)"
-                                                    value={decryptKeyInput}
-                                                    onChange={e => setDecryptKeyInput(e.target.value)}
-                                                    className="mono" style={{ fontSize: "0.7rem" }}
-                                                    type="password"
-                                                />
-                                            </div>
-                                            <button className="btn-primary" onClick={handleDecryptShare}
-                                                disabled={selectedMemberIdx < 0 || !decryptShareInput.trim() || !decryptKeyInput.trim()}
-                                                style={{ marginBottom: 8 }}>
-                                                Decrypt My Share
-                                            </button>
-                                            {decryptedShareResult && (
-                                                <div style={{ padding: "8px 12px", background: "var(--success-bg-light)", borderRadius: 8, border: "1px solid var(--success-border)" }}>
-                                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                                                        <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--success)" }}>Decrypted share:</span>
-                                                        <button onClick={() => { navigator.clipboard.writeText(decryptedShareResult) }}
-                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}>Copy</button>
-                                                    </div>
-                                                    <code className="mono" style={{ fontSize: "0.65rem", color: "var(--text-muted)", wordBreak: "break-all", display: "block" }}>
-                                                        {decryptedShareResult}
-                                                    </code>
-                                                </div>
-                                            )}
-                                            {decryptShareError && (
-                                                <p style={{ fontSize: "0.75rem", color: "var(--error)", marginTop: 4 }}>{decryptShareError}</p>
-                                            )}
-                                        </div>
-                                    </details>
-
-                                    {/* Section B: Collect Shares */}
-                                    <div style={{ marginBottom: 14 }}>
-                                        <h4 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 8 }}>Collect Decrypted Shares</h4>
-                                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-                                            {thresholdMeta.committee.map((m: any, i: number) => (
-                                                <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                                                    <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", width: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flexShrink: 0 }}>
-                                                        {m.id || m.name}
-                                                    </span>
-                                                    <input
-                                                        placeholder="Decrypted share (128 hex chars)"
-                                                        value={thresholdShareInputs[i] || ""}
-                                                        onChange={e => {
-                                                            const next = [...thresholdShareInputs]
-                                                            next[i] = e.target.value
-                                                            setThresholdShareInputs(next)
-                                                        }}
-                                                        className="mono" style={{ flex: 1, fontSize: "0.7rem", padding: "6px 8px", minWidth: 0 }}
-                                                    />
-                                                    {thresholdShareInputs[i]?.trim().length === 128 && (
-                                                        <span style={{ color: "var(--success)", fontSize: "0.8rem", flexShrink: 0 }}>&#10003;</span>
-                                                    )}
-                                                </div>
-                                            ))}
-                                        </div>
-                                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                                            {thresholdShareInputs.filter(s => s.trim().length === 128).length} of {thresholdMeta.totalShares} shares collected
-                                            ({thresholdMeta.threshold} needed)
-                                            {thresholdShareInputs.filter(s => s.trim().length === 128).length >= thresholdMeta.threshold && (
-                                                <span style={{ color: "var(--success)", fontWeight: 600 }}> — ready!</span>
-                                            )}
-                                        </p>
-                                    </div>
-                                </>
-                            ) : !isAdmin && !hasStoredKey ? (
-                                /* ── NON-ADMIN WITHOUT KEY — show waiting message ── */
-                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                                    {onChainTally?.committed
-                                        ? "The admin has published verified results below."
-                                        : "Results will be available once the election admin publishes them."}
-                                </p>
-                            ) : (
-                                /* ── SINGLE KEY TALLY UI (admin or key holder) ── */
-                                <>
-                                    {hasStoredKey ? (
-                                        <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 12 }}>
-                                            Election key found in this browser
-                                        </p>
-                                    ) : (
-                                        <div style={{ marginBottom: 12 }}>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
-                                                No election key found. Paste the key from the browser that created this election:
-                                            </p>
-                                            <input
-                                                placeholder="Election private key (64 hex chars)"
-                                                value={manualKeyInput}
-                                                onChange={e => setManualKeyInput(e.target.value)}
-                                                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}
-                                            />
-                                        </div>
-                                    )}
-                                </>
-                            )}
-
-                            {tallyStep !== "idle" && tallyStep !== "error" && (
-                                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: 14, background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                    <div className="spinner" />
-                                    <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>{tallyMsg}</p>
-                                </div>
-                            )}
-
-                            {tallyStep === "error" && (
-                                <div style={{ marginBottom: 16, padding: 14, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
-                                    <p style={{ color: "var(--error)", fontWeight: 600, marginBottom: 4 }}>Tally Failed</p>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", wordBreak: "break-all" }}>{tallyError}</p>
-                                </div>
-                            )}
-
-                            {/* Hide tally button for non-admin voters without a key */}
-                            {(isAdmin || hasStoredKey || isOnChainCommittee || isThresholdElection) && (
-                            <button
-                                className="btn-primary"
-                                onClick={() =>
-                                    isOnChainCommittee ? runOnChainCommitteeTally() :
-                                    isThresholdElection ? runThresholdTally() :
-                                    runTally(manualKeyInput || undefined)
-                                }
-                                disabled={
-                                    tallyStep === "fetching" || tallyStep === "decrypting" ||
-                                    (isOnChainCommittee
-                                        ? !committeeSharesReady
-                                        : isThresholdElection
-                                        ? (thresholdShareInputs.filter(s => s.trim().length === 128).length < (thresholdMeta?.threshold || 2))
-                                        : (!hasStoredKey && !manualKeyInput.trim()))
-                                }
-                            >
-                                {tallyStep === "fetching" || tallyStep === "decrypting" ? "Computing..." : "Tally Votes"}
-                            </button>
-                            )}
-                        </div>
-                    )}
-
-                    {tallyResult && (
-                        <>
-                            <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
-                                <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>
-                                    {phase === "closed" ? "Final Results" : "Interim Results"}
-                                </h4>
-
-                                {tallyResult.totalValid === 0 ? (
-                                    <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", padding: "20px 0" }}>No valid votes</p>
-                                ) : (
-                                    <>
-                                        {/* Per-option bars */}
-                                        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 20 }}>
-                                            {tallyResult.optionCounts.map((count: number, i: number) => {
-                                                const pct = (count / tallyResult.totalValid) * 100
-                                                const isWinner = count === Math.max(...tallyResult.optionCounts)
-                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "var(--purple)", "var(--cyan)", "var(--orange)", "var(--pink)"]
-                                                const color = colors[i % colors.length]
-                                                return (
-                                                    <div key={i}>
-                                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                                                            <span style={{ fontSize: "0.85rem", fontWeight: 600, color }}>{optionLabels[i]}</span>
-                                                            <span style={{ fontSize: "1.1rem", fontWeight: 800, color }}>{count}</span>
-                                                        </div>
-                                                        <div style={{ height: 8, background: "var(--bg)", borderRadius: 4, overflow: "hidden" }}>
-                                                            <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4, transition: "width 0.5s ease" }} />
-                                                        </div>
-                                                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 2, textAlign: "right" }}>
-                                                            {pct.toFixed(1)}%
-                                                        </div>
-                                                    </div>
-                                                )
-                                            })}
-                                        </div>
-
-                                        {/* Winner announcement */}
-                                        {phase === "closed" && (() => {
-                                            const maxCount = Math.max(...tallyResult.optionCounts)
-                                            const winners = tallyResult.optionCounts.reduce((acc: number[], c: number, i: number) => c === maxCount ? [...acc, i] : acc, [])
-                                            if (winners.length === 1) {
-                                                const colors = ["var(--success)", "var(--error)", "var(--accent)", "var(--warning)", "var(--purple)", "var(--cyan)", "var(--orange)", "var(--pink)"]
-                                                return (
-                                                    <div style={{ padding: "10px 16px", borderRadius: "var(--radius)", background: "var(--bg)", border: "1px solid var(--border)", marginBottom: 12 }}>
-                                                        <span style={{ fontWeight: 700, color: colors[winners[0] % colors.length] }}>
-                                                            {optionLabels[winners[0]]} wins
-                                                        </span>
-                                                    </div>
-                                                )
-                                            } else if (winners.length > 1 && tallyResult.totalValid > 0) {
-                                                return (
-                                                    <div style={{ padding: "10px 16px", borderRadius: "var(--radius)", background: "var(--bg-hover)", border: "1px solid var(--border)", marginBottom: 12 }}>
-                                                        <span style={{ fontWeight: 700, color: "var(--warning)" }}>Tie</span>
-                                                    </div>
-                                                )
-                                            }
-                                            return null
-                                        })()}
-                                    </>
-                                )}
-                            </div>
-
-                            {/* Audit stats */}
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Audit</h4>
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "0.85rem" }}>
-                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Valid</div>
-                                        <div style={{ fontWeight: 700, color: "var(--success)" }}>{tallyResult.totalValid}</div>
-                                    </div>
-                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Invalid</div>
-                                        <div style={{ fontWeight: 700, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" }}>{tallyResult.totalInvalid}</div>
-                                    </div>
-                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Duplicates Removed</div>
-                                        <div style={{ fontWeight: 700 }}>{tallyResult.duplicatesRemoved}</div>
-                                    </div>
-                                    <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>On-chain Total</div>
-                                        <div style={{ fontWeight: 700 }}>{state.voteCount}</div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {tallyResult.decryptedVotes.length > 0 && (
-                                <div className="card" style={{ marginBottom: 16 }}>
-                                    <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                                        Votes ({tallyResult.decryptedVotes.length})
-                                    </h4>
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                        {tallyResult.decryptedVotes.map((dv, i) => (
-                                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)", fontSize: "0.8rem" }}>
-                                                <span className="mono" style={{ color: "var(--text-muted)", fontSize: "0.7rem" }}>
-                                                    {dv.nullifierHash.slice(0, 10)}...{dv.nullifierHash.slice(-6)}
-                                                </span>
-                                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                                    {dv.commitmentValid ? (
-                                                        <>
-                                                            <span style={{ fontWeight: 700, fontSize: "0.75rem" }}>
-                                                                {optionLabels[Number(dv.vote)] || `Option ${dv.vote}`}
-                                                            </span>
-                                                            <span style={{ fontSize: "0.65rem", color: "var(--success)" }}>✓</span>
-                                                        </>
-                                                    ) : (
-                                                        <span style={{ fontWeight: 700, fontSize: "0.75rem", color: "var(--error)" }}>INVALID</span>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            <button className="btn-secondary" onClick={() => { setTallyResult(null); setTallyStep("idle") }} style={{ marginBottom: 16 }}>
-                                Re-tally
-                            </button>
-
-                            {/* Commit tally on-chain (admin only, after tally computed, voting closed, not yet committed) */}
-                            {isAdmin && phase === "closed" && !onChainTally?.committed && (
-                                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Commit Results On-Chain</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        Publish the tally permanently on-chain with a Poseidon commitment hash.
-                                        Anyone can verify by recomputing the hash from the stored data. This action is irreversible.
-                                    </p>
-                                    {commitStep === "submitting" && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                                            <div className="spinner" />
-                                            <p style={{ fontSize: "0.85rem" }}>Confirm in wallet...</p>
-                                        </div>
-                                    )}
-                                    {commitStep === "done" && commitTxHash && (
-                                        <div style={{ marginBottom: 12, padding: 12, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
-                                            <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>Tally committed!</p>
-                                            <a href={`${EXPLORER_URL}/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                                View on Basescan
-                                            </a>
-                                        </div>
-                                    )}
-                                    {commitStep === "error" && commitError && (
-                                        <div style={{ marginBottom: 12, padding: 12, background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)" }}>
-                                            <p style={{ color: "var(--error)", fontWeight: 600 }}>{commitError}</p>
-                                        </div>
-                                    )}
-                                    <button className="btn-primary" onClick={handleCommitTally}
-                                        disabled={commitStep === "submitting"}>
-                                        {commitStep === "submitting" ? "Committing..." : "Commit Tally On-Chain"}
-                                    </button>
-                                </div>
-                            )}
-                        </>
-                    )}
-
-                    {/* On-chain commitment display */}
-                    {onChainTally?.committed && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)" }}>
-                            <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                                On-Chain Commitment
-                            </h4>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: "0.8rem" }}>
-                                <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Poseidon Commitment</div>
-                                    <code className="mono" style={{ fontSize: "0.65rem", wordBreak: "break-all" }}>
-                                        {onChainTally.poseidonCommitment}
-                                    </code>
-                                </div>
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                                    <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 2 }}>Valid</div>
-                                        <div style={{ fontWeight: 700 }}>{onChainTally.totalValid}</div>
-                                    </div>
-                                    <div style={{ padding: "8px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 2 }}>Invalid</div>
-                                        <div style={{ fontWeight: 700 }}>{onChainTally.totalInvalid}</div>
-                                    </div>
-                                </div>
-                                {onChainTally.optionCounts.map((count, i) => (
-                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 12px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                        <span>{optionLabels[i] || `Option ${i}`}</span>
-                                        <span style={{ fontWeight: 700 }}>{count}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </>
+                <ResultsTab
+                    phase={phase}
+                    state={{ voteCount: state.voteCount, selfSignupAllowed: state.selfSignupAllowed }}
+                    optionLabels={optionLabels}
+                    isAdmin={!!isAdmin}
+                    isOnChainCommittee={isOnChainCommittee}
+                    isThresholdElection={isThresholdElection}
+                    committeeState={committeeState}
+                    committeeSharesReady={committeeSharesReady}
+                    thresholdMeta={thresholdMeta}
+                    hasStoredKey={hasStoredKey}
+                    tallyStep={tallyStep}
+                    tallyMsg={tallyMsg}
+                    tallyResult={tallyResult}
+                    tallyError={tallyError}
+                    manualKeyInput={manualKeyInput}
+                    setManualKeyInput={setManualKeyInput}
+                    selectedMemberIdx={selectedMemberIdx}
+                    setSelectedMemberIdx={setSelectedMemberIdx}
+                    decryptShareInput={decryptShareInput}
+                    setDecryptShareInput={setDecryptShareInput}
+                    decryptKeyInput={decryptKeyInput}
+                    setDecryptKeyInput={setDecryptKeyInput}
+                    decryptedShareResult={decryptedShareResult}
+                    decryptShareError={decryptShareError}
+                    handleDecryptShare={handleDecryptShare}
+                    thresholdShareInputs={thresholdShareInputs}
+                    setThresholdShareInputs={setThresholdShareInputs}
+                    runTally={runTally}
+                    runThresholdTally={runThresholdTally}
+                    runOnChainCommitteeTally={runOnChainCommitteeTally}
+                    setTallyResult={setTallyResult}
+                    setTallyStep={setTallyStep}
+                    onChainTally={onChainTally}
+                    commitStep={commitStep}
+                    commitTxHash={commitTxHash}
+                    commitError={commitError}
+                    handleCommitTally={handleCommitTally}
+                    copyToClipboard={copyToClipboard}
+                    copied={copied}
+                />
             )}
 
-            {/* ═══ COMMITTEE TAB ═══ */}
+            {/* ═══ COMMITTEE TAB (Advanced only, stays inline) ═══ */}
             {tab === "committee" && committeeState && (
                 <>
                     {/* Committee status header */}
@@ -2337,194 +1747,41 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 </>
             )}
 
-            {/* ═══ MANAGE TAB (admin only) ═══ */}
-            {tab === "manage" && isAdmin && (
-                <>
-                    {/* Share link */}
-                    <div className="card" style={{ marginBottom: 16 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Share Election</h4>
-                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            {isAllowlistElection
-                                ? "Use the per-identifier share links below to send voters a link with their identifier pre-filled."
-                                : isInviteCodeElection
-                                    ? "Use the per-code share links below to send voters a link with their code pre-filled."
-                                    : state.selfSignupAllowed
-                                        ? "Send this link to voters. They can sign up directly during the signup phase."
-                                        : "Send this link to voters. Since this is a gated election, you'll need to register them via the form below."}
-                        </p>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
-                                {shareUrl}
-                            </code>
-                            <button onClick={() => copyToClipboard(shareUrl, "share2")} className="btn-primary" style={{ width: "auto", padding: "10px 16px", fontSize: "0.8rem" }}>
-                                {copied === "share2" ? "Copied!" : "Copy"}
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Invite codes section (admin) */}
-                    {isInviteCodeElection && (() => {
-                        const adminCodes = getAdminCodes(electionAddress)
-                        return (
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
-                                    Invite Codes ({inviteCodeMeta?.totalCodes || 0} total)
-                                </h4>
-                                {adminCodes ? (
-                                    <>
-                                        <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                            {adminCodes.map((code, i) => {
-                                                const codeShareUrl = `${shareUrl}?code=${code}`
-                                                return (
-                                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < adminCodes.length - 1 ? "1px solid var(--border)" : "none" }}>
-                                                        <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
-                                                        <button
-                                                            onClick={() => { navigator.clipboard.writeText(codeShareUrl); setCopied(`clink-${i}`); setTimeout(() => setCopied(""), 2000) }}
-                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
-                                                        >{copied === `clink-${i}` ? "Copied!" : "Copy link"}</button>
-                                                    </div>
-                                                )
-                                            })}
-                                        </div>
-                                        <div style={{ display: "flex", gap: 8 }}>
-                                            <button
-                                                className="btn-primary"
-                                                onClick={() => { navigator.clipboard.writeText(adminCodes.join("\n")); setCopied("admin-all-codes"); setTimeout(() => setCopied(""), 2000) }}
-                                                style={{ flex: 1, fontSize: "0.8rem" }}
-                                            >{copied === "admin-all-codes" ? "Copied!" : "Copy All Codes"}</button>
-                                            <button
-                                                className="btn-secondary"
-                                                onClick={() => {
-                                                    const csv = codesToCsv(adminCodes, shareUrl)
-                                                    downloadCsv(csv, `invite-codes-${electionAddress.slice(0, 8)}.csv`)
-                                                }}
-                                                style={{ flex: 1, fontSize: "0.8rem" }}
-                                            >Download CSV</button>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                        Codes not available in this browser. They are only stored in the browser that created the election. Total codes from metadata: {inviteCodeMeta?.totalCodes || "unknown"}.
-                                    </p>
-                                )}
-                            </div>
-                        )
-                    })()}
-
-                    {/* Allowlist section (admin) */}
-                    {isAllowlistElection && (() => {
-                        const adminAllowlist = getAdminAllowlist(electionAddress)
-                        return (
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
-                                    Allowlist ({allowlistMeta?.totalEntries || 0} entries)
-                                </h4>
-                                {adminAllowlist ? (
-                                    <>
-                                        <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                            {adminAllowlist.map((id, i) => {
-                                                const idShareUrl = `${shareUrl}?id=${encodeURIComponent(id)}`
-                                                return (
-                                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < adminAllowlist.length - 1 ? "1px solid var(--border)" : "none" }}>
-                                                        <span style={{ fontSize: "0.8rem" }}>{id}</span>
-                                                        <button
-                                                            onClick={() => { navigator.clipboard.writeText(idShareUrl); setCopied(`alink-${i}`); setTimeout(() => setCopied(""), 2000) }}
-                                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
-                                                        >{copied === `alink-${i}` ? "Copied!" : "Copy link"}</button>
-                                                    </div>
-                                                )
-                                            })}
-                                        </div>
-                                        <div style={{ display: "flex", gap: 8 }}>
-                                            <button
-                                                className="btn-primary"
-                                                onClick={() => { navigator.clipboard.writeText(adminAllowlist.join("\n")); setCopied("admin-all-ids"); setTimeout(() => setCopied(""), 2000) }}
-                                                style={{ flex: 1, fontSize: "0.8rem" }}
-                                            >{copied === "admin-all-ids" ? "Copied!" : "Copy All Identifiers"}</button>
-                                            <button
-                                                className="btn-secondary"
-                                                onClick={() => {
-                                                    const csv = allowlistToCsv(adminAllowlist, shareUrl)
-                                                    downloadCsv(csv, `allowlist-${electionAddress.slice(0, 8)}.csv`)
-                                                }}
-                                                style={{ flex: 1, fontSize: "0.8rem" }}
-                                            >Download CSV</button>
-                                        </div>
-                                    </>
-                                ) : (
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                        Identifiers not available in this browser. They are only stored in the browser that created the election. Total entries from metadata: {allowlistMeta?.totalEntries || "unknown"}.
-                                    </p>
-                                )}
-                            </div>
-                        )
-                    })()}
-
-                    {/* Admin register (during signup phase) */}
-                    {phase === "signup" && (
-                        <>
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Register Voter</h4>
-                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                                    Admin can also add voters directly. Paste their Voter ID.
-                                </p>
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    <input placeholder="Voter ID (commitment)" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
-                                    <button className="btn-primary" onClick={registerVoter} disabled={adminLoading || !commitment.trim()} style={{ width: "auto", padding: "12px 18px" }}>
-                                        {adminLoading ? "..." : "Add"}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div className="card" style={{ marginBottom: 16 }}>
-                                <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Bulk Register</h4>
-                                <textarea placeholder="One Voter ID per line..." value={bulkCommitments} onChange={e => setBulkCommitments(e.target.value)} disabled={adminLoading} rows={3}
-                                    style={{ width: "100%", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", padding: "10px 14px", fontFamily: "inherit", fontSize: "0.85rem", resize: "vertical", outline: "none", marginBottom: 8 }} />
-                                <button className="btn-primary" onClick={registerBulk} disabled={adminLoading || !bulkCommitments.trim()}>
-                                    {adminLoading ? "Processing..." : "Register All"}
-                                </button>
-                            </div>
-                        </>
-                    )}
-
-                    {/* Close signup */}
-                    {phase === "signup" && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Close Signup &amp; Open Voting</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                                Close registration and open the anonymous join + voting phase. Voters who signed up can now anonymously re-key and vote.
-                            </p>
-                            <button className="btn-primary" onClick={handleCloseSignup} disabled={adminLoading}>
-                                {adminLoading ? "Closing..." : "Close Signup"}
-                            </button>
-                        </div>
-                    )}
-
-                    {/* Close voting */}
-                    {phase === "voting" && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--error)" }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8, color: "var(--error)" }}>Close Voting</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>Permanently close this election. No more joins or votes will be accepted.</p>
-                            <button className="btn-secondary" onClick={handleCloseVoting} disabled={adminLoading} style={{ borderColor: "var(--error)", color: "var(--error)" }}>
-                                {adminLoading ? "Closing..." : "Close Voting"}
-                            </button>
-                        </div>
-                    )}
-
-                    {adminMsg && (
-                        <div className="card" style={{ marginTop: 16, borderColor: adminMsg.startsWith("Error") ? "var(--error)" : "var(--success)" }}>
-                            <p style={{ fontSize: "0.85rem", color: adminMsg.startsWith("Error") ? "var(--error)" : "var(--success)" }}>{adminMsg}</p>
-                        </div>
-                    )}
-                </>
+            {/* ═══ MANAGE TAB ═══ */}
+            {tab === "manage" && (
+                <ManageTab
+                    phase={phase}
+                    isAdmin={!!isAdmin}
+                    electionAddress={electionAddress}
+                    shareUrl={shareUrl}
+                    isInviteCodeElection={isInviteCodeElection}
+                    isAllowlistElection={isAllowlistElection}
+                    inviteCodeMeta={inviteCodeMeta}
+                    allowlistMeta={allowlistMeta}
+                    commitment={commitment}
+                    setCommitment={setCommitment}
+                    bulkCommitments={bulkCommitments}
+                    setBulkCommitments={setBulkCommitments}
+                    adminLoading={adminLoading}
+                    adminMsg={adminMsg}
+                    registerVoter={registerVoter}
+                    registerBulk={registerBulk}
+                    handleCloseSignup={handleCloseSignup}
+                    handleCloseVoting={handleCloseVoting}
+                    copyToClipboard={copyToClipboard}
+                    copied={copied}
+                    setCopied={setCopied}
+                />
             )}
 
             {/* Info footer */}
-            <div style={{ marginTop: 24, padding: "12px 0", borderTop: "1px solid var(--border)", textAlign: "center" }}>
-                <a href={`${EXPLORER_URL}/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                    Contract: {electionAddress.slice(0, 10)}...{electionAddress.slice(-8)}
-                </a>
-            </div>
+            {isAdvanced && (
+                <div style={{ marginTop: 24, padding: "12px 0", borderTop: "1px solid var(--border)", textAlign: "center" }}>
+                    <a href={`${EXPLORER_URL}/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
+                        Contract: {electionAddress.slice(0, 10)}...{electionAddress.slice(-8)}
+                    </a>
+                </div>
+            )}
         </>
     )
 }
