@@ -9,7 +9,7 @@ import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL } from "@/lib/contracts"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, explorerTxUrl, RelayError } from "@/lib/relayer"
 import { validateCode, getAdminCodes, codesToCsv, downloadCsv, validateIdentifier, getAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
@@ -75,12 +75,19 @@ async function fetchGroupMembers(groupId: bigint): Promise<bigint[]> {
     const provider = new JsonRpcProvider(RPC_URL)
     const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
     const currentBlock = await provider.getBlockNumber()
-    const fromBlock = Math.max(0, currentBlock - 49000)
 
-    const [singles, bulks] = await Promise.all([
-        sem.queryFilter(sem.filters.MemberAdded(groupId), fromBlock),
-        sem.queryFilter(sem.filters.MembersAdded(groupId), fromBlock),
-    ])
+    // Paginate for Base 10k block limit
+    const singles: any[] = []
+    const bulks: any[] = []
+    for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+        const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+        const [s, b] = await Promise.all([
+            sem.queryFilter(sem.filters.MemberAdded(groupId), from, to),
+            sem.queryFilter(sem.filters.MembersAdded(groupId), from, to),
+        ])
+        singles.push(...s)
+        bulks.push(...b)
+    }
 
     const members: { index: number; commitment: string }[] = []
     for (const e of singles) {
@@ -104,12 +111,18 @@ async function fetchOnChainMetadata(electionAddress: string): Promise<Record<str
         const provider = new JsonRpcProvider(RPC_URL)
         const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
         const currentBlock = await provider.getBlockNumber()
-        const fromBlock = Math.max(0, currentBlock - 49000)
 
-        const events = await factory.queryFilter(
-            factory.filters.ElectionDeployed(electionAddress),
-            fromBlock
-        )
+        // Paginate for Base 10k block limit
+        let events: any[] = []
+        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+            const chunk = await factory.queryFilter(
+                factory.filters.ElectionDeployed(electionAddress),
+                from, to
+            )
+            events.push(...chunk)
+            if (events.length > 0) break
+        }
 
         if (events.length === 0) return null
 
@@ -852,8 +865,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
-            const fromBlock = Math.max(0, currentBlock - 49000)
-            const events = await c.queryFilter(c.filters.VoteCast(), fromBlock)
+            // Paginate for Base 10k block limit
+            const events: any[] = []
+            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
+                events.push(...chunk)
+            }
 
             if (events.length === 0) {
                 setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
@@ -974,8 +992,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
-            const fromBlock = Math.max(0, currentBlock - 49000)
-            const events = await c.queryFilter(c.filters.VoteCast(), fromBlock)
+            // Paginate for Base 10k block limit
+            const events: any[] = []
+            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
+                events.push(...chunk)
+            }
 
             if (events.length === 0) {
                 setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
@@ -1167,8 +1190,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
-            const fromBlock = Math.max(0, currentBlock - 49000)
-            const events = await c.queryFilter(c.filters.CommitteeFinalized(), fromBlock)
+            // Paginate for Base 10k block limit
+            const events: any[] = []
+            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+                const chunk = await c.queryFilter(c.filters.CommitteeFinalized(), from, to)
+                events.push(...chunk)
+                if (events.length > 0) break
+            }
 
             if (events.length === 0) throw new Error("CommitteeFinalized event not found")
 
@@ -1241,19 +1270,24 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const electionPrivKey = reconstructElectionKey(validShares)
 
             setTallyMsg("Fetching votes from chain...")
-            const currentBlock = await provider.getBlockNumber()
-            const fromBlock = Math.max(0, currentBlock - 49000)
-            const events = await c.queryFilter(c.filters.VoteCast(), fromBlock)
+            const currentBlock3 = await provider.getBlockNumber()
+            // Paginate for Base 10k block limit
+            const voteEvents: any[] = []
+            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock3; from += MAX_LOG_RANGE) {
+                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock3)
+                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
+                voteEvents.push(...chunk)
+            }
 
-            if (events.length === 0) {
+            if (voteEvents.length === 0) {
                 setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
                 setTallyStep("done"); setTallyMsg(""); return
             }
 
-            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${events.length} vote(s)...`)
+            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${voteEvents.length} vote(s)...`)
 
             const decryptedVotes: DecryptedVote[] = []
-            for (const event of events) {
+            for (const event of voteEvents) {
                 const args = (event as any).args
                 const nullifierHash = args.nullifierHash.toString()
                 const voteCommitment = args.voteCommitment.toString()

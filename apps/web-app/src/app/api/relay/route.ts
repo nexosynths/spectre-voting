@@ -21,7 +21,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
-import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI } from "@/lib/contracts"
+import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 
 // ---------------------------------------------------------------------------
 // Rate limiting (in-memory, resets on cold start — fine for testnet)
@@ -80,11 +80,17 @@ async function getElectionMetadata(
     try {
         const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
         const currentBlock = await provider.getBlockNumber()
-        const fromBlock = Math.max(0, currentBlock - 49000)
-        const events = await factory.queryFilter(
-            factory.filters.ElectionDeployed(electionAddress),
-            fromBlock
-        )
+        // Paginate for Base 10k block limit
+        let events: any[] = []
+        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+            const chunk = await factory.queryFilter(
+                factory.filters.ElectionDeployed(electionAddress),
+                from, to
+            )
+            events.push(...chunk)
+            if (events.length > 0) break // found it, stop scanning
+        }
         if (events.length === 0) return null
         const args = (events[0] as any).args
         if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
@@ -107,9 +113,14 @@ async function getSignupCount(
     try {
         const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
         const currentBlock = await provider.getBlockNumber()
-        const fromBlock = Math.max(0, currentBlock - 49000)
-        const events = await election.queryFilter(election.filters.VoterSignedUp(), fromBlock)
-        return events.length
+        // Paginate for Base 10k block limit
+        let allEvents: any[] = []
+        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+            const chunk = await election.queryFilter(election.filters.VoterSignedUp(), from, to)
+            allEvents.push(...chunk)
+        }
+        return allEvents.length
     } catch {
         return 0
     }

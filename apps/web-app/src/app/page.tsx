@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from "react"
 import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, isAddress } from "ethers"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL } from "@/lib/contracts"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes, hashIdentifiers, storeAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
 
@@ -115,12 +115,16 @@ export default function HomePage() {
 
             const addresses = await factory.getElections(0, total)
 
-            // Batch-fetch metadata from ElectionDeployed events
+            // Batch-fetch metadata from ElectionDeployed events (paginated for Base 10k block limit)
             const metaByAddr = new Map<string, string>()
             try {
                 const currentBlock = await provider.getBlockNumber()
-                const fromBlock = Math.max(0, currentBlock - 49000)
-                const deployEvents = await factory.queryFilter(factory.filters.ElectionDeployed(), fromBlock)
+                const deployEvents: any[] = []
+                for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
+                    const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
+                    const chunk = await factory.queryFilter(factory.filters.ElectionDeployed(), from, to)
+                    deployEvents.push(...chunk)
+                }
                 for (const evt of deployEvents) {
                     const args = (evt as any).args
                     try {

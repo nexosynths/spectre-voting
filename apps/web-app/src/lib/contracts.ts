@@ -10,6 +10,11 @@ export const CHAIN_ID = 8453
 export const RPC_URL = "https://mainnet.base.org"
 export const EXPLORER_URL = "https://basescan.org"
 
+// Base RPC limits eth_getLogs to 10,000 blocks per call
+export const MAX_LOG_RANGE = 9500
+// Factory deployment block on Base mainnet (used as lower bound for event scans)
+export const FACTORY_DEPLOY_BLOCK = 42838670
+
 // SpectreVotingFactory ABI (v3: two verifiers, signup deadline, numOptions)
 export const FACTORY_ABI = [
     "function semaphore() view returns (address)",
