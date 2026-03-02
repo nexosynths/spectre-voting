@@ -84,6 +84,8 @@ export async function relaySignUp(
     voterAddress?: string,
     email?: string,
     emailToken?: string,
+    githubToken?: string,
+    githubId?: string,
 ): Promise<string> {
     const body: Record<string, any> = {
         action: "signUp",
@@ -95,6 +97,8 @@ export async function relaySignUp(
     if (voterAddress) body.voterAddress = voterAddress
     if (email) body.email = email.toLowerCase().trim()
     if (emailToken) body.emailToken = emailToken
+    if (githubToken) body.githubToken = githubToken
+    if (githubId) body.githubId = githubId
     return callRelay(body)
 }
 

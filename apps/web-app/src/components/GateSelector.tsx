@@ -3,7 +3,7 @@
 import { useMode } from "@/context/ModeContext"
 import TrustCallout from "./TrustCallout"
 
-export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain"
+export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain" | "github-org"
 
 interface GateSelectorProps {
     gateType: GateType
@@ -22,6 +22,8 @@ interface GateSelectorProps {
     tokenDecimals: number
     emailDomains: string
     setEmailDomains: (v: string) => void
+    githubOrg: string
+    setGithubOrg: (v: string) => void
     disabled?: boolean
 }
 
@@ -30,6 +32,7 @@ const SIMPLE_GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "allowlist", label: "People on a list", desc: "You specify who can participate" },
     { key: "invite-codes", label: "Invite codes", desc: "One code per voter" },
     { key: "email-domain", label: "Email domain", desc: "Must verify a company email" },
+    { key: "github-org", label: "GitHub org", desc: "Must be in a GitHub organization" },
     { key: "token-gate", label: "Token holders", desc: "Must hold a token or NFT" },
 ]
 
@@ -38,6 +41,7 @@ const ADVANCED_GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "invite-codes", label: "Invite Codes", desc: "One-time codes you distribute" },
     { key: "allowlist", label: "Allowlist", desc: "Only people on your list" },
     { key: "email-domain", label: "Email Domain", desc: "Verify email at specific domain(s)" },
+    { key: "github-org", label: "GitHub Org", desc: "Must be member of a GitHub organization" },
     { key: "token-gate", label: "Token Gate", desc: "ERC-20 balance or NFT ownership" },
     { key: "admin-only", label: "Admin Only", desc: "You register each voter" },
 ]
@@ -47,6 +51,7 @@ const TRUST_SIMPLE: Record<string, { text: string; variant: "info" | "caution" |
     "allowlist": { text: "Only people you list can vote. They enter their name or email to join.", variant: "info" },
     "invite-codes": { text: "Each code works once. Distribute codes privately to the people you want to vote.", variant: "info" },
     "email-domain": { text: "Voters verify their email at your domain(s). One vote per email address.", variant: "info" },
+    "github-org": { text: "Voters sign in with GitHub to prove org membership. One vote per GitHub account.", variant: "info" },
     "token-gate": { text: "Only people who hold the required token or NFT can vote. Voters must connect a wallet.", variant: "info" },
 }
 
@@ -55,6 +60,7 @@ const TRUST_ADVANCED: Record<string, { text: string; variant: "info" | "caution"
     "invite-codes": { text: "Application-layer enforcement via relay. Direct contract calls can bypass. Acceptable for gasless elections where relay is the only submission path.", variant: "info" },
     "allowlist": { text: "Relay validates identifiers against on-chain keccak256 hashes. Identifiers are not cryptographically bound to the person.", variant: "info" },
     "email-domain": { text: "Email verification via Resend. HMAC token proves email ownership. One signup per email per election. Email provider sees who verified.", variant: "info" },
+    "github-org": { text: "GitHub OAuth verifies org membership. HMAC token proves verification. One signup per GitHub user per election. GitHub sees who authenticated.", variant: "info" },
     "token-gate": { text: "On-chain balance check via balanceOf(). Voters must connect a wallet for eligibility verification. Sybil resistance depends on token distribution.", variant: "info" },
     "admin-only": { text: "Strongest control. Only admin can register voters on-chain.", variant: "info" },
 }
@@ -65,6 +71,7 @@ export default function GateSelector({
     tokenAddress, setTokenAddress, tokenType, setTokenType,
     tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
     emailDomains, setEmailDomains,
+    githubOrg, setGithubOrg,
     disabled,
 }: GateSelectorProps) {
     const { isSimple } = useMode()
@@ -168,6 +175,34 @@ export default function GateSelector({
                         {isSimple
                             ? "Voters verify their email to join. No wallet needed."
                             : "Voters receive a 6-digit code via email. One signup per email. Gasless by default."}
+                    </p>
+                </div>
+            )}
+
+            {/* GitHub org config */}
+            {gateType === "github-org" && (
+                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                        GitHub organization name
+                    </label>
+                    <input
+                        type="text"
+                        placeholder="my-org"
+                        value={githubOrg}
+                        onChange={e => setGithubOrg(e.target.value.replace(/[^a-zA-Z0-9-]/g, ""))}
+                        disabled={disabled}
+                        className="mono"
+                        style={{ width: "100%", fontSize: "0.85rem" }}
+                    />
+                    {githubOrg.trim() && (
+                        <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
+                            github.com/{githubOrg}
+                        </p>
+                    )}
+                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
+                        {isSimple
+                            ? "Voters sign in with GitHub to prove they're in this org. No wallet needed."
+                            : "Voters authenticate via GitHub OAuth. Org membership checked server-side. Gasless by default."}
                     </p>
                 </div>
             )}

@@ -48,6 +48,13 @@ interface SignupSectionProps {
     emailError: string
     handleEmailSendCode: () => void
     handleEmailVerifyCode: () => void
+    // GitHub org
+    isGithubOrgElection: boolean
+    githubOrgMeta: { org: string } | null
+    ghUser: string
+    ghToken: string
+    ghError: string
+    electionAddress: string
     // Recovery
     showRecoveryNudge: boolean
     recoveryCode: string
@@ -74,6 +81,8 @@ export default function SignupSection({
     emailSending, emailCodeSent, emailCode, setEmailCode,
     emailVerifying, emailVerified, emailError,
     handleEmailSendCode, handleEmailVerifyCode,
+    isGithubOrgElection, githubOrgMeta,
+    ghUser, ghToken, ghError, electionAddress,
     showRecoveryNudge, recoveryCode, dismissRecoveryNudge,
     showRecoveryImport, setShowRecoveryImport,
     recoveryImportValue, setRecoveryImportValue,
@@ -478,8 +487,53 @@ export default function SignupSection({
                         </>
                     )}
 
+                    {/* GITHUB ORG MODE */}
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isGithubOrgElection && (
+                        <>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                                {isSimple ? "GitHub Required" : "GitHub Organization Verification"}
+                            </h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                {isSimple
+                                    ? `You must be a member of github.com/${githubOrgMeta?.org || "the organization"} to vote.`
+                                    : `This election requires membership in the GitHub organization: ${githubOrgMeta?.org || "?"}. Sign in with GitHub to verify.`}
+                            </p>
+
+                            {ghError && (
+                                <p style={{ fontSize: "0.8rem", color: "var(--error)", marginBottom: 8 }}>{ghError}</p>
+                            )}
+
+                            {ghToken && ghUser ? (
+                                <>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                                        <span style={{ color: "var(--success)", fontSize: "1rem" }}>&#10003;</span>
+                                        <span style={{ fontSize: "0.85rem", color: "var(--success)", fontWeight: 600 }}>Verified as @{ghUser}</span>
+                                    </div>
+                                    <button
+                                        className="btn-primary"
+                                        onClick={handleSignUp}
+                                        disabled={signupLoading}
+                                    >
+                                        {signupLoading ? "Signing up..." : "Sign Up"}
+                                    </button>
+                                </>
+                            ) : (
+                                <button
+                                    className="btn-primary"
+                                    onClick={() => {
+                                        window.location.href = `/api/auth/github?election=${electionAddress}`
+                                    }}
+                                    disabled={signupLoading}
+                                    style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}
+                                >
+                                    Sign in with GitHub
+                                </button>
+                            )}
+                        </>
+                    )}
+
                     {/* OPEN MODE */}
-                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && !isTokenGateElection && !isEmailDomainElection && (
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && !isTokenGateElection && !isEmailDomainElection && !isGithubOrgElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>

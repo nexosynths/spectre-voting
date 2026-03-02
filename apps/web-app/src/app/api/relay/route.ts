@@ -493,6 +493,55 @@ async function handleSignUp(
         }
     }
 
+    // ── GitHub org validation ──
+    if (meta?.gateType === "github-org") {
+        const { githubToken, githubId } = body
+        if (!githubToken || !githubId) {
+            return NextResponse.json(
+                { success: false, error: "GitHub verification required for this election" },
+                { status: 400 }
+            )
+        }
+
+        const hmacSecret = process.env.GITHUB_HMAC_SECRET
+        if (!hmacSecret) {
+            return NextResponse.json(
+                { success: false, error: "GitHub verification not configured" },
+                { status: 503 }
+            )
+        }
+
+        const expectedToken = createHmac("sha256", hmacSecret)
+            .update(String(githubId) + "|" + electionAddress.toLowerCase())
+            .digest("hex")
+
+        if (githubToken !== expectedToken) {
+            return NextResponse.json(
+                { success: false, error: "Invalid GitHub verification token" },
+                { status: 400 }
+            )
+        }
+
+        // Track used GitHub IDs (reuse invite code tracking with keccak256(githubId))
+        const idHash = keccak256(toUtf8Bytes(String(githubId)))
+        if (isCodeUsed(electionAddress, idHash)) {
+            return NextResponse.json(
+                { success: false, error: "This GitHub account has already been used to sign up" },
+                { status: 400 }
+            )
+        }
+
+        markCodeUsed(electionAddress, idHash)
+
+        try {
+            const tx = await election.signUp(identityCommitment)
+            return NextResponse.json({ success: true, txHash: tx.hash })
+        } catch (err) {
+            unmarkCodeUsed(electionAddress, idHash)
+            throw err
+        }
+    }
+
     // Submit transaction (returns immediately, don't wait for confirmation)
     const tx = await election.signUp(identityCommitment)
     return NextResponse.json({ success: true, txHash: tx.hash })

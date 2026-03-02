@@ -378,6 +378,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 if (onChain.gateType === "invite-codes") setGaslessEnabled(true)
                 if (onChain.gateType === "allowlist") setGaslessEnabled(true)
                 if (onChain.gateType === "email-domain") setGaslessEnabled(true)
+                if (onChain.gateType === "github-org") setGaslessEnabled(true)
             }
             setMetaLoaded(true)
         })
@@ -490,6 +491,54 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [electionAddress, metaLoaded])
 
     const isEmailDomainElection = emailDomainMeta !== null
+
+    // GitHub org metadata detection
+    const githubOrgMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.gateType === "github-org" && stored.githubOrg?.org) {
+                return { org: stored.githubOrg.org as string }
+            }
+        } catch { /* ignore */ }
+        return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [electionAddress, metaLoaded])
+
+    const isGithubOrgElection = githubOrgMeta !== null
+
+    // GitHub OAuth state (read from URL params after OAuth callback redirect)
+    const [ghUser, setGhUser] = useState("")
+    const [ghToken, setGhToken] = useState("")
+    const [ghId, setGhId] = useState("")
+    const [ghError, setGhError] = useState("")
+
+    // Read GitHub OAuth params from URL on mount
+    useEffect(() => {
+        const token = searchParams.get("ghToken")
+        const user = searchParams.get("ghUser")
+        const id = searchParams.get("ghId")
+        const error = searchParams.get("ghError")
+        if (token && user && id) {
+            setGhToken(token)
+            setGhUser(user)
+            setGhId(id)
+        }
+        if (error) {
+            setGhError(error === "not-a-member"
+                ? `You're not a member of the required GitHub organization`
+                : error)
+        }
+        // Clean URL params after reading
+        if (token || error) {
+            const url = new URL(window.location.href)
+            url.searchParams.delete("ghToken")
+            url.searchParams.delete("ghUser")
+            url.searchParams.delete("ghId")
+            url.searchParams.delete("ghError")
+            window.history.replaceState({}, "", url.toString())
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
 
     // Email verification state
     const [voterEmail, setVoterEmail] = useState("")
@@ -845,17 +894,24 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog("Email verification required to sign up")
             return
         }
+        // GitHub org validation check
+        if (isGithubOrgElection && !ghToken) {
+            addLog("GitHub authentication required to sign up")
+            return
+        }
         const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
         const identifierToSend = isAllowlistElection ? allowlistId.trim() : undefined
         const voterAddressToSend = isTokenGateElection && address ? address : undefined
         const emailToSend = isEmailDomainElection ? voterEmail.trim() : undefined
         const emailTokenToSend = isEmailDomainElection ? emailToken : undefined
+        const githubTokenToSend = isGithubOrgElection ? ghToken : undefined
+        const githubIdToSend = isGithubOrgElection ? ghId : undefined
         // Gasless mode: relay signup (no wallet needed)
         if (gaslessEnabled || isTokenGateElection) {
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend)
+                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend, githubTokenToSend, githubIdToSend)
                 addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
                 await waitForRelayTx(txHash)
                 const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
@@ -881,7 +937,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken, isGithubOrgElection, ghToken, ghId])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -1663,6 +1719,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 setTab={setTab}
                 isEmailDomainElection={isEmailDomainElection}
                 emailDomainMeta={emailDomainMeta}
+                isGithubOrgElection={isGithubOrgElection}
+                githubOrgMeta={githubOrgMeta}
                 copyToClipboard={copyToClipboard}
                 copied={copied}
             />
@@ -1722,6 +1780,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         emailError={emailError}
                         handleEmailSendCode={handleEmailSendCode}
                         handleEmailVerifyCode={handleEmailVerifyCode}
+                        isGithubOrgElection={isGithubOrgElection}
+                        githubOrgMeta={githubOrgMeta}
+                        ghUser={ghUser}
+                        ghToken={ghToken}
+                        ghError={ghError}
+                        electionAddress={electionAddress}
                     />
 
                     <VotingSection

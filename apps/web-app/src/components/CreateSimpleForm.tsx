@@ -5,7 +5,7 @@ import GateSelector from "./GateSelector"
 import ContextualWarnings from "./ContextualWarning"
 import TrustSummary from "./TrustSummary"
 
-type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain"
+type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain" | "github-org"
 
 interface CreateSimpleFormProps {
     electionTitle: string
@@ -30,6 +30,8 @@ interface CreateSimpleFormProps {
     tokenDecimals: number
     emailDomains: string
     setEmailDomains: (v: string) => void
+    githubOrg: string
+    setGithubOrg: (v: string) => void
     creating: boolean
     onSubmit: () => void
     // Hidden field setters — Simple mode forces defaults
@@ -47,6 +49,7 @@ export default function CreateSimpleForm({
     tokenAddress, setTokenAddress, tokenType, setTokenType,
     tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
     emailDomains, setEmailDomains,
+    githubOrg, setGithubOrg,
     creating, onSubmit,
     setSignupHours, setVotingHours, setGaslessMode, setEncryptionMode,
 }: CreateSimpleFormProps) {
@@ -133,6 +136,8 @@ export default function CreateSimpleForm({
                     tokenDecimals={tokenDecimals}
                     emailDomains={emailDomains}
                     setEmailDomains={setEmailDomains}
+                    githubOrg={githubOrg}
+                    setGithubOrg={setGithubOrg}
                     disabled={creating}
                 />
 
