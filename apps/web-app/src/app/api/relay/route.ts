@@ -21,7 +21,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
-import { CONTRACTS, SEPOLIA_RPC, FACTORY_ABI, SPECTRE_VOTING_ABI } from "@/lib/contracts"
+import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI } from "@/lib/contracts"
 
 // ---------------------------------------------------------------------------
 // Rate limiting (in-memory, resets on cold start — fine for testnet)
@@ -158,7 +158,7 @@ export async function POST(request: NextRequest) {
         }
 
         // Setup provider + relayer wallet
-        const provider = new JsonRpcProvider(SEPOLIA_RPC)
+        const provider = new JsonRpcProvider(RPC_URL)
         const wallet = new Wallet(relayerKey, provider)
 
         // Verify election exists + check balance in parallel

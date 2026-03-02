@@ -5,7 +5,7 @@ import { useState, useEffect, useCallback } from "react"
 import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, isAddress } from "ethers"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import Link from "next/link"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes, hashIdentifiers, storeAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
 
@@ -102,7 +102,7 @@ export default function HomePage() {
     // Fetch all elections from factory
     const loadElections = useCallback(async () => {
         try {
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
             const count = await factory.electionCount()
             const total = Number(count)

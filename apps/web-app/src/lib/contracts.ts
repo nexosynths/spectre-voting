@@ -1,13 +1,14 @@
-// Deployed contract addresses (Sepolia testnet) — v4: on-chain threshold committee coordination
+// Deployed contract addresses (Base mainnet)
 export const CONTRACTS = {
-    FACTORY: "0xf548704Da5F00e709B28c8B1499E358A9984aefB",
-    SEMAPHORE: "0xb57FD6C1A5201cCc822416D86b281E0F0F7D2c3D",
-    VOTE_VERIFIER: "0xe4a2be410766bCB37Df956334869135fe80AF36d",
-    JOIN_VERIFIER: "0xdeE4c3F80332119f59940c363947865bbF7d0585",
+    FACTORY: "0x175Ac98818aF9F752FCb9a3462599e0fD45F37C3",
+    SEMAPHORE: "0x8A1fd199516489B0Fb7153EB5f075cDAC83c693D",
+    VOTE_VERIFIER: "0xfCDE99ac31eE5cb3Bd4DD2cD9E0D49f9c8240564",
+    JOIN_VERIFIER: "0xD11fF7e4739736769703f88501c1c4681675676d",
 } as const
 
-export const SEPOLIA_CHAIN_ID = 11155111
-export const SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com"
+export const CHAIN_ID = 8453
+export const RPC_URL = "https://mainnet.base.org"
+export const EXPLORER_URL = "https://basescan.org"
 
 // SpectreVotingFactory ABI (v3: two verifiers, signup deadline, numOptions)
 export const FACTORY_ABI = [

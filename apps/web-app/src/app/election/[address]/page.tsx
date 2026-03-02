@@ -9,7 +9,7 @@ import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, explorerTxUrl, RelayError } from "@/lib/relayer"
 import { validateCode, getAdminCodes, codesToCsv, downloadCsv, validateIdentifier, getAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
@@ -72,7 +72,7 @@ interface CommitteeState {
 
 /** Get members from a Semaphore group by querying events */
 async function fetchGroupMembers(groupId: bigint): Promise<bigint[]> {
-    const provider = new JsonRpcProvider(SEPOLIA_RPC)
+    const provider = new JsonRpcProvider(RPC_URL)
     const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
     const currentBlock = await provider.getBlockNumber()
     const fromBlock = Math.max(0, currentBlock - 49000)
@@ -101,7 +101,7 @@ async function fetchGroupMembers(groupId: bigint): Promise<bigint[]> {
 /** Fetch election metadata from the factory's ElectionDeployed event */
 async function fetchOnChainMetadata(electionAddress: string): Promise<Record<string, any> | null> {
     try {
-        const provider = new JsonRpcProvider(SEPOLIA_RPC)
+        const provider = new JsonRpcProvider(RPC_URL)
         const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
         const currentBlock = await provider.getBlockNumber()
         const fromBlock = Math.max(0, currentBlock - 49000)
@@ -460,7 +460,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // Load election state
     const refresh = useCallback(async () => {
         try {
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const [pid, sOpen, vOpen, vc, sgid, vgid, admin, pkX, pkY, sdl, vdl, numOpt, selfSignup] = await Promise.all([
                 c.proposalId(), c.signupOpen(), c.votingOpen(), c.voteCount(),
@@ -849,7 +849,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             setTallyStep("fetching"); setTallyMsg("Fetching votes from chain...")
 
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
             const fromBlock = Math.max(0, currentBlock - 49000)
@@ -971,7 +971,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const electionPrivKey = reconstructElectionKey(validShares)
 
             setTallyStep("fetching"); setTallyMsg("Fetching votes from chain...")
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
             const fromBlock = Math.max(0, currentBlock - 49000)
@@ -1111,7 +1111,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setCommitteeLoading(true); setCommitteeMsg(""); setCommitteeError("")
         try {
             // Read all registered public keys from chain
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
 
             const committee: CommitteeMember[] = []
@@ -1164,7 +1164,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             if (!privKeyHex) throw new Error("No committee private key found in this browser. Did you generate your key on a different device?")
 
             // Find our encrypted share from CommitteeFinalized event
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
             const currentBlock = await provider.getBlockNumber()
             const fromBlock = Math.max(0, currentBlock - 49000)
@@ -1216,7 +1216,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         try {
             setTallyStep("fetching"); setTallyMsg("Reading shares from chain...")
 
-            const provider = new JsonRpcProvider(SEPOLIA_RPC)
+            const provider = new JsonRpcProvider(RPC_URL)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
 
             // Read submitted shares
@@ -2047,8 +2047,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                                     {commitStep === "done" && commitTxHash && (
                                         <div style={{ marginBottom: 12, padding: 12, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                             <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>Tally committed!</p>
-                                            <a href={`https://sepolia.etherscan.io/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                                View on Etherscan
+                                            <a href={`${EXPLORER_URL}/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
+                                                View on Basescan
                                             </a>
                                         </div>
                                     )}
@@ -2487,7 +2487,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             {/* Info footer */}
             <div style={{ marginTop: 24, padding: "12px 0", borderTop: "1px solid var(--border)", textAlign: "center" }}>
-                <a href={`https://sepolia.etherscan.io/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
+                <a href={`${EXPLORER_URL}/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
                     Contract: {electionAddress.slice(0, 10)}...{electionAddress.slice(-8)}
                 </a>
             </div>

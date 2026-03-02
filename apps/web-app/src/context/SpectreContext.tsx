@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react"
 import { BrowserProvider, JsonRpcSigner } from "ethers"
-import { SEPOLIA_CHAIN_ID } from "@/lib/contracts"
+import { CHAIN_ID } from "@/lib/contracts"
 
 declare global {
     interface Window {
@@ -71,12 +71,29 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
             const accounts: string[] = await bp.send("eth_requestAccounts", [])
             const network = await bp.getNetwork()
 
-            if (Number(network.chainId) !== SEPOLIA_CHAIN_ID) {
-                addLog("Switching to Sepolia testnet...")
-                await window.ethereum.request({
-                    method: "wallet_switchEthereumChain",
-                    params: [{ chainId: "0x" + SEPOLIA_CHAIN_ID.toString(16) }],
-                })
+            if (Number(network.chainId) !== CHAIN_ID) {
+                addLog("Switching to Base...")
+                try {
+                    await window.ethereum.request({
+                        method: "wallet_switchEthereumChain",
+                        params: [{ chainId: "0x" + CHAIN_ID.toString(16) }],
+                    })
+                } catch (switchError: any) {
+                    if (switchError.code === 4902) {
+                        await window.ethereum.request({
+                            method: "wallet_addEthereumChain",
+                            params: [{
+                                chainId: "0x" + CHAIN_ID.toString(16),
+                                chainName: "Base",
+                                nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+                                rpcUrls: ["https://mainnet.base.org"],
+                                blockExplorerUrls: ["https://basescan.org"],
+                            }],
+                        })
+                    } else {
+                        throw switchError
+                    }
+                }
                 const bp2 = new BrowserProvider(window.ethereum)
                 setProvider(bp2)
                 setSigner(await bp2.getSigner())
@@ -102,7 +119,7 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
             if (accounts.length > 0) {
                 try {
                     const network = await bp.getNetwork()
-                    if (Number(network.chainId) === SEPOLIA_CHAIN_ID) {
+                    if (Number(network.chainId) === CHAIN_ID) {
                         setProvider(bp)
                         setSigner(await bp.getSigner())
                         setAddress(accounts[0])

@@ -21,7 +21,7 @@
  */
 
 import { JsonRpcProvider, Contract } from "ethers"
-import { SPECTRE_VOTING_ABI, SEPOLIA_RPC } from "@/lib/contracts"
+import { SPECTRE_VOTING_ABI, RPC_URL, EXPLORER_URL } from "@/lib/contracts"
 import type { SpectreProof } from "@/lib/proof"
 import type { AnonJoinProof } from "@/lib/anonJoinProof"
 
@@ -158,7 +158,7 @@ export async function waitForRelayTx(
     txHash: string,
     timeoutMs: number = 120_000
 ): Promise<number> {
-    const provider = new JsonRpcProvider(SEPOLIA_RPC)
+    const provider = new JsonRpcProvider(RPC_URL)
     const start = Date.now()
     const pollInterval = 3_000 // 3s between polls
 
@@ -174,7 +174,7 @@ export async function waitForRelayTx(
     }
 
     throw new RelayError(
-        `Transaction not confirmed after ${Math.round(timeoutMs / 1000)}s — check explorer: https://sepolia.etherscan.io/tx/${txHash}`,
+        `Transaction not confirmed after ${Math.round(timeoutMs / 1000)}s — check explorer: ${EXPLORER_URL}/tx/${txHash}`,
         408
     )
 }
@@ -202,7 +202,7 @@ export async function verifyVoteOnChain(
     txHash: string
 ): Promise<boolean> {
     try {
-        const provider = new JsonRpcProvider(SEPOLIA_RPC)
+        const provider = new JsonRpcProvider(RPC_URL)
         const receipt = await provider.getTransactionReceipt(txHash)
 
         if (!receipt || receipt.status === 0) {
@@ -252,7 +252,7 @@ export async function verifyJoinOnChain(
     txHash: string
 ): Promise<boolean> {
     try {
-        const provider = new JsonRpcProvider(SEPOLIA_RPC)
+        const provider = new JsonRpcProvider(RPC_URL)
         const receipt = await provider.getTransactionReceipt(txHash)
 
         if (!receipt || receipt.status === 0) {
@@ -301,7 +301,7 @@ export async function verifySignupOnChain(
     txHash: string
 ): Promise<boolean> {
     try {
-        const provider = new JsonRpcProvider(SEPOLIA_RPC)
+        const provider = new JsonRpcProvider(RPC_URL)
         const receipt = await provider.getTransactionReceipt(txHash)
 
         if (!receipt || receipt.status === 0) {
@@ -367,8 +367,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Sepolia block explorer link for a transaction hash.
+ * Block explorer link for a transaction hash.
  */
 export function explorerTxUrl(txHash: string): string {
-    return `https://sepolia.etherscan.io/tx/${txHash}`
+    return `${EXPLORER_URL}/tx/${txHash}`
 }

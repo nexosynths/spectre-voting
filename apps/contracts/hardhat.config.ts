@@ -20,6 +20,11 @@ const config: HardhatUserConfig = {
             url: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com",
             chainId: 11155111,
             accounts: process.env.ETHEREUM_PRIVATE_KEY ? [`0x${process.env.ETHEREUM_PRIVATE_KEY}`] : []
+        },
+        base: {
+            url: process.env.BASE_RPC_URL || "https://mainnet.base.org",
+            chainId: 8453,
+            accounts: process.env.ETHEREUM_PRIVATE_KEY ? [`0x${process.env.ETHEREUM_PRIVATE_KEY}`] : []
         }
     },
     gasReporter: {
