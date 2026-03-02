@@ -9,7 +9,7 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 **GitHub:** https://github.com/nexosynths/spectre-voting
 
 ## Tech Stack
-- **Smart Contracts:** Solidity 0.8.23, Hardhat, deployed on Sepolia
+- **Smart Contracts:** Solidity 0.8.23, Hardhat, deployed on Base mainnet (L2)
 - **ZK Proofs:** Circom 2.2.3 (Groth16), snarkjs, two circuits (AnonJoin: 14k constraints, SpectreVote: 10k constraints)
 - **Identity:** Semaphore V4 (anonymous group membership via Merkle trees)
 - **Encryption:** ECIES-secp256k1 (ECDH + HKDF-SHA256 + AES-256-GCM) via @noble/curves
@@ -107,7 +107,13 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 - **Identity scoping:** Semaphore identities stored per-wallet-address in localStorage (`spectre-identity-${address}`). Voting identities stored per-election-per-wallet (`spectre-voting-identity-${election}-${address}`).
 - **Election metadata:** Stored on-chain in `ElectionDeployed` event as opaque `bytes` (UTF-8 JSON). Frontend reads from event (async), caches in localStorage. Falls back to URL query params for old elections.
 
-## Deployed Contracts (Sepolia)
+## Deployed Contracts (Base Mainnet)
+- **SpectreVotingFactory:** `0x175Ac98818aF9F752FCb9a3462599e0fD45F37C3`
+- **SpectreVoteVerifier:** `0xfCDE99ac31eE5cb3Bd4DD2cD9E0D49f9c8240564`
+- **AnonJoinVerifier:** `0xD11fF7e4739736769703f88501c1c4681675676d`
+- **Semaphore V4 (official):** `0x8A1fd199516489B0Fb7153EB5f075cDAC83c693D`
+
+### Previous Deployment (Sepolia — deprecated)
 - **SpectreVotingFactory (v5):** `0xf548704Da5F00e709B28c8B1499E358A9984aefB`
 - **SpectreVoteVerifier:** `0xe4a2be410766bCB37Df956334869135fe80AF36d`
 - **AnonJoinVerifier:** `0xdeE4c3F80332119f59940c363947865bbF7d0585`
@@ -318,7 +324,7 @@ spectre-voting/
 - [x] Anonymous identity for walletless voters (UUID-scoped in localStorage)
 - [x] Anti-censorship: client independently verifies VoteCast event on-chain via public RPC
 - [x] IP-timing decorrelation: random delay between anonJoin and castVote in production
-- [x] Relayer wallet: `0x2f30dF147C922cFce314D47ecA240953eCFc622f` (Sepolia, funded)
+- [x] Relayer wallet: `0x38044De3F50dEf9BfBa7c1e98C449E271421E726` (Base mainnet, funded)
 
 Biggest UX unlock: voters generate ZK proofs in browser, a server-side funded wallet submits on-chain transactions. No wallet or gas needed for voters.
 
@@ -496,4 +502,4 @@ snarkjs zkey export solidityverifier build/AnonJoin_final.zkey ../contracts/cont
 - Closest existing protocols: MACI v3 (anonymous poll joining, unaudited) and aMACI (DoraHacks, optional re-key)
 - Core protocol, gasless relay, invite codes, and allowlist signup gates complete; next priority is remaining modular signup gates (email domain, OAuth, token gate)
 - Prioritize clean UX and iterate — the cryptographic foundation is solid
-- Relayer wallet: `0x2f30dF147C922cFce314D47ecA240953eCFc622f` (Sepolia, `RELAYER_PRIVATE_KEY` env var on Vercel)
+- Relayer wallet: `0x38044De3F50dEf9BfBa7c1e98C449E271421E726` (Base mainnet, `RELAYER_PRIVATE_KEY` env var on Vercel)
