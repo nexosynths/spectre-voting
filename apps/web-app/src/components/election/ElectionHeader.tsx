@@ -20,6 +20,8 @@ interface ElectionHeaderProps {
     tokenGateMeta: { tokenSymbol: string; tokenType: string } | null
     inviteCodeCount: number | null
     allowlistEntryCount: number | null
+    isEmailDomainElection: boolean
+    emailDomainMeta: { domains: string[] } | null
     isThresholdElection: boolean
     thresholdMeta: { threshold: number; totalShares: number } | null
     signupDeadline: number
@@ -37,6 +39,7 @@ export default function ElectionHeader({
     displayTitle, phase, phaseBadge, voteCount, numOptions,
     selfSignupAllowed, gaslessEnabled, isInviteCodeElection, isAllowlistElection,
     isTokenGateElection, tokenGateMeta,
+    isEmailDomainElection, emailDomainMeta,
     inviteCodeCount, allowlistEntryCount, isThresholdElection, thresholdMeta,
     signupDeadline, votingDeadline, shareUrl, isOnChainCommittee, isAdmin,
     tab, setTab, copyToClipboard, copied,
@@ -44,8 +47,8 @@ export default function ElectionHeader({
     const { isSimple, isAdvanced } = useMode()
 
     const gateLabel = isSimple
-        ? (isTokenGateElection ? `${tokenGateMeta?.tokenSymbol || "Token"} holders` : isAllowlistElection ? "Allowlist" : isInviteCodeElection ? "Invite-only" : selfSignupAllowed ? "Anyone can vote" : "Admin registers voters")
-        : (isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only")
+        ? (isEmailDomainElection ? `@${emailDomainMeta?.domains[0] || "email"} verified` : isTokenGateElection ? `${tokenGateMeta?.tokenSymbol || "Token"} holders` : isAllowlistElection ? "Allowlist" : isInviteCodeElection ? "Invite-only" : selfSignupAllowed ? "Anyone can vote" : "Admin registers voters")
+        : (isEmailDomainElection ? `Email domain (${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || "?"})` : isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only")
 
     return (
         <>
@@ -61,7 +64,7 @@ export default function ElectionHeader({
                 <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                     <span>{voteCount} vote{voteCount !== 1 ? "s" : ""}</span>
                     <span>{numOptions} options</span>
-                    <span style={{ color: isTokenGateElection || isInviteCodeElection || isAllowlistElection ? "var(--accent)" : selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
+                    <span style={{ color: isEmailDomainElection || isTokenGateElection || isInviteCodeElection || isAllowlistElection ? "var(--accent)" : selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
                         {gateLabel}
                     </span>
                     {gaslessEnabled && (

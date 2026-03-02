@@ -82,6 +82,8 @@ export async function relaySignUp(
     code?: string,
     identifier?: string,
     voterAddress?: string,
+    email?: string,
+    emailToken?: string,
 ): Promise<string> {
     const body: Record<string, any> = {
         action: "signUp",
@@ -91,6 +93,8 @@ export async function relaySignUp(
     if (code) body.code = code.toLowerCase().trim()
     if (identifier) body.identifier = identifier.trim()
     if (voterAddress) body.voterAddress = voterAddress
+    if (email) body.email = email.toLowerCase().trim()
+    if (emailToken) body.emailToken = emailToken
     return callRelay(body)
 }
 

@@ -21,6 +21,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
+import { createHmac } from "crypto"
 import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 
 // ---------------------------------------------------------------------------
@@ -428,6 +429,68 @@ async function handleSignUp(
 
         const tx = await election.signUp(identityCommitment)
         return NextResponse.json({ success: true, txHash: tx.hash })
+    }
+
+    // ── Email domain validation ──
+    if (meta?.gateType === "email-domain") {
+        const { emailToken, email } = body
+        if (!emailToken || !email) {
+            return NextResponse.json(
+                { success: false, error: "Email verification required for this election" },
+                { status: 400 }
+            )
+        }
+
+        const emailLower = email.toLowerCase().trim()
+
+        // Verify HMAC token
+        const hmacSecret = process.env.EMAIL_HMAC_SECRET
+        if (!hmacSecret) {
+            return NextResponse.json(
+                { success: false, error: "Email verification not configured" },
+                { status: 503 }
+            )
+        }
+
+        const expectedToken = createHmac("sha256", hmacSecret)
+            .update(emailLower + "|" + electionAddress.toLowerCase())
+            .digest("hex")
+
+        if (emailToken !== expectedToken) {
+            return NextResponse.json(
+                { success: false, error: "Invalid email verification token" },
+                { status: 400 }
+            )
+        }
+
+        // Verify email domain against metadata
+        const allowedDomains: string[] = (meta.emailDomain?.domains || []).map((d: string) => d.toLowerCase().trim())
+        const emailDomain = emailLower.split("@")[1]
+        if (!allowedDomains.includes(emailDomain)) {
+            return NextResponse.json(
+                { success: false, error: `Email domain @${emailDomain} is not allowed` },
+                { status: 400 }
+            )
+        }
+
+        // Track used emails (reuse invite code tracking with keccak256(email) as key)
+        const emailHash = keccak256(toUtf8Bytes(emailLower))
+        if (isCodeUsed(electionAddress, emailHash)) {
+            return NextResponse.json(
+                { success: false, error: "This email has already been used to sign up" },
+                { status: 400 }
+            )
+        }
+
+        markCodeUsed(electionAddress, emailHash)
+
+        try {
+            const tx = await election.signUp(identityCommitment)
+            return NextResponse.json({ success: true, txHash: tx.hash })
+        } catch (err) {
+            unmarkCodeUsed(electionAddress, emailHash)
+            throw err
+        }
     }
 
     // Submit transaction (returns immediately, don't wait for confirmation)

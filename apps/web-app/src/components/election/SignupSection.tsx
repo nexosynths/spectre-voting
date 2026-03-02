@@ -33,6 +33,21 @@ interface SignupSectionProps {
     handleSignUp: () => void
     copyToClipboard: (text: string, label: string) => void
     copied: string
+    // Email domain
+    isEmailDomainElection: boolean
+    emailDomainMeta: { domains: string[] } | null
+    voterEmail: string
+    setVoterEmail: (v: string) => void
+    emailDomainMatch: boolean
+    emailSending: boolean
+    emailCodeSent: boolean
+    emailCode: string
+    setEmailCode: (v: string) => void
+    emailVerifying: boolean
+    emailVerified: boolean
+    emailError: string
+    handleEmailSendCode: () => void
+    handleEmailVerifyCode: () => void
     // Recovery
     showRecoveryNudge: boolean
     recoveryCode: string
@@ -54,6 +69,11 @@ export default function SignupSection({
     inviteCode, setInviteCode, codeValid, codeError,
     allowlistId, setAllowlistId, idValid, idError,
     identityCommitment, handleSignUp, copyToClipboard, copied,
+    isEmailDomainElection, emailDomainMeta,
+    voterEmail, setVoterEmail, emailDomainMatch,
+    emailSending, emailCodeSent, emailCode, setEmailCode,
+    emailVerifying, emailVerified, emailError,
+    handleEmailSendCode, handleEmailVerifyCode,
     showRecoveryNudge, recoveryCode, dismissRecoveryNudge,
     showRecoveryImport, setShowRecoveryImport,
     recoveryImportValue, setRecoveryImportValue,
@@ -365,8 +385,101 @@ export default function SignupSection({
                         </>
                     )}
 
+                    {/* EMAIL DOMAIN MODE */}
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isEmailDomainElection && (
+                        <>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                                {isSimple ? "Verify Your Email" : "Email Domain Verification"}
+                            </h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                {isSimple
+                                    ? `Enter your ${emailDomainMeta?.domains.map(d => "@" + d).join(" or ") || ""} email to join this vote.`
+                                    : `This election requires a verified email at: ${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || ""}. One signup per email.`}
+                            </p>
+
+                            {/* Email verified badge */}
+                            {emailVerified ? (
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                                    <span style={{ color: "var(--success)", fontSize: "1rem" }}>&#10003;</span>
+                                    <span style={{ fontSize: "0.85rem", color: "var(--success)", fontWeight: 600 }}>Email verified</span>
+                                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>({voterEmail})</span>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* Email input */}
+                                    <input
+                                        type="email"
+                                        placeholder={`you@${emailDomainMeta?.domains[0] || "company.com"}`}
+                                        value={voterEmail}
+                                        onChange={e => setVoterEmail(e.target.value)}
+                                        disabled={signupLoading || emailCodeSent}
+                                        style={{ marginBottom: 6 }}
+                                    />
+                                    {voterEmail.includes("@") && (
+                                        <p style={{ fontSize: "0.8rem", marginBottom: 8, color: emailDomainMatch ? "var(--success)" : "var(--error)" }}>
+                                            {emailDomainMatch ? "Domain matches" : "Wrong domain"}
+                                        </p>
+                                    )}
+
+                                    {/* Send Code button */}
+                                    {!emailCodeSent && (
+                                        <button
+                                            className="btn-primary"
+                                            onClick={handleEmailSendCode}
+                                            disabled={emailSending || !emailDomainMatch || signupLoading}
+                                            style={{ marginBottom: 8 }}
+                                        >
+                                            {emailSending ? "Sending..." : "Send Code"}
+                                        </button>
+                                    )}
+
+                                    {/* Code input (after send) */}
+                                    {emailCodeSent && (
+                                        <>
+                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 6 }}>
+                                                Check your inbox for a 6-digit code.
+                                            </p>
+                                            <input
+                                                type="text"
+                                                placeholder="6-digit code"
+                                                value={emailCode}
+                                                onChange={e => setEmailCode(e.target.value.replace(/[^0-9]/g, ""))}
+                                                maxLength={6}
+                                                className="mono"
+                                                disabled={emailVerifying || signupLoading}
+                                                style={{ textAlign: "center", fontSize: "1.1rem", letterSpacing: "0.15em", marginBottom: 8 }}
+                                            />
+                                            <button
+                                                className="btn-primary"
+                                                onClick={handleEmailVerifyCode}
+                                                disabled={emailVerifying || emailCode.length !== 6 || signupLoading}
+                                                style={{ marginBottom: 8 }}
+                                            >
+                                                {emailVerifying ? "Verifying..." : "Verify Code"}
+                                            </button>
+                                        </>
+                                    )}
+                                </>
+                            )}
+
+                            {emailError && (
+                                <p style={{ fontSize: "0.8rem", color: "var(--error)", marginBottom: 8 }}>{emailError}</p>
+                            )}
+
+                            {emailVerified && (
+                                <button
+                                    className="btn-primary"
+                                    onClick={handleSignUp}
+                                    disabled={signupLoading}
+                                >
+                                    {signupLoading ? "Signing up..." : "Sign Up"}
+                                </button>
+                            )}
+                        </>
+                    )}
+
                     {/* OPEN MODE */}
-                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && !isTokenGateElection && (
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && !isTokenGateElection && !isEmailDomainElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>

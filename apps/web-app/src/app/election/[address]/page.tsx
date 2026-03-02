@@ -374,9 +374,10 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 })
                 // Read gasless mode from metadata
                 if (onChain.gaslessEnabled) setGaslessEnabled(true)
-                // Invite-code and allowlist elections force gasless
+                // Invite-code, allowlist, and email-domain elections force gasless
                 if (onChain.gateType === "invite-codes") setGaslessEnabled(true)
                 if (onChain.gateType === "allowlist") setGaslessEnabled(true)
+                if (onChain.gateType === "email-domain") setGaslessEnabled(true)
             }
             setMetaLoaded(true)
         })
@@ -475,6 +476,84 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [electionAddress, metaLoaded])
 
     const isTokenGateElection = tokenGateMeta !== null
+
+    // Email domain metadata detection
+    const emailDomainMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.gateType === "email-domain" && stored.emailDomain?.domains) {
+                return { domains: stored.emailDomain.domains as string[] }
+            }
+        } catch { /* ignore */ }
+        return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [electionAddress, metaLoaded])
+
+    const isEmailDomainElection = emailDomainMeta !== null
+
+    // Email verification state
+    const [voterEmail, setVoterEmail] = useState("")
+    const [emailDomainMatch, setEmailDomainMatch] = useState(false)
+    const [emailSending, setEmailSending] = useState(false)
+    const [emailCodeSent, setEmailCodeSent] = useState(false)
+    const [emailCode, setEmailCode] = useState("")
+    const [emailVerifying, setEmailVerifying] = useState(false)
+    const [emailVerified, setEmailVerified] = useState(false)
+    const [emailToken, setEmailToken] = useState("")
+    const [emailError, setEmailError] = useState("")
+
+    // Email domain validation (client-side instant check)
+    useEffect(() => {
+        if (!emailDomainMeta || !voterEmail.trim()) {
+            setEmailDomainMatch(false)
+            return
+        }
+        const domain = voterEmail.toLowerCase().trim().split("@")[1]
+        if (!domain) { setEmailDomainMatch(false); return }
+        const allowed = emailDomainMeta.domains.map((d: string) => d.toLowerCase().trim())
+        setEmailDomainMatch(allowed.includes(domain))
+    }, [voterEmail, emailDomainMeta])
+
+    // Send verification code
+    const handleEmailSendCode = useCallback(async () => {
+        if (!voterEmail.trim() || !emailDomainMatch) return
+        setEmailSending(true)
+        setEmailError("")
+        try {
+            const res = await fetch("/api/verify-email", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "send", email: voterEmail.trim(), electionAddress }),
+            })
+            const data = await res.json()
+            if (!data.success) throw new Error(data.error || "Failed to send code")
+            setEmailCodeSent(true)
+            addLog("Verification code sent to your email")
+        } catch (err: any) {
+            setEmailError(err.message)
+        } finally { setEmailSending(false) }
+    }, [voterEmail, emailDomainMatch, electionAddress, addLog])
+
+    // Verify code
+    const handleEmailVerifyCode = useCallback(async () => {
+        if (!emailCode.trim()) return
+        setEmailVerifying(true)
+        setEmailError("")
+        try {
+            const res = await fetch("/api/verify-email", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "verify", email: voterEmail.trim(), code: emailCode.trim(), electionAddress }),
+            })
+            const data = await res.json()
+            if (!data.success) throw new Error(data.error || "Verification failed")
+            setEmailVerified(true)
+            setEmailToken(data.token)
+            addLog("Email verified!")
+        } catch (err: any) {
+            setEmailError(err.message)
+        } finally { setEmailVerifying(false) }
+    }, [emailCode, voterEmail, electionAddress, addLog])
 
     // Token balance check
     const [tokenBalance, setTokenBalance] = useState<string | null>(null)
@@ -761,15 +840,22 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog("Insufficient token balance to sign up")
             return
         }
+        // Email domain validation check
+        if (isEmailDomainElection && !emailVerified) {
+            addLog("Email verification required to sign up")
+            return
+        }
         const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
         const identifierToSend = isAllowlistElection ? allowlistId.trim() : undefined
         const voterAddressToSend = isTokenGateElection && address ? address : undefined
+        const emailToSend = isEmailDomainElection ? voterEmail.trim() : undefined
+        const emailTokenToSend = isEmailDomainElection ? emailToken : undefined
         // Gasless mode: relay signup (no wallet needed)
         if (gaslessEnabled || isTokenGateElection) {
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend)
+                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend)
                 addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
                 await waitForRelayTx(txHash)
                 const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
@@ -795,7 +881,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -1575,6 +1661,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 isAdmin={!!isAdmin}
                 tab={tab}
                 setTab={setTab}
+                isEmailDomainElection={isEmailDomainElection}
+                emailDomainMeta={emailDomainMeta}
                 copyToClipboard={copyToClipboard}
                 copied={copied}
             />
@@ -1620,6 +1708,20 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         setRecoveryImportValue={setRecoveryImportValue}
                         recoveryError={recoveryError}
                         handleRecoveryImport={handleRecoveryImport}
+                        isEmailDomainElection={isEmailDomainElection}
+                        emailDomainMeta={emailDomainMeta}
+                        voterEmail={voterEmail}
+                        setVoterEmail={setVoterEmail}
+                        emailDomainMatch={emailDomainMatch}
+                        emailSending={emailSending}
+                        emailCodeSent={emailCodeSent}
+                        emailCode={emailCode}
+                        setEmailCode={setEmailCode}
+                        emailVerifying={emailVerifying}
+                        emailVerified={emailVerified}
+                        emailError={emailError}
+                        handleEmailSendCode={handleEmailSendCode}
+                        handleEmailVerifyCode={handleEmailVerifyCode}
                     />
 
                     <VotingSection

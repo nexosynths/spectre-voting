@@ -25,5 +25,8 @@
   "packageManager": "yarn@4.1.0",
   "devDependencies": {
     "prettier": "^3.2.5"
+  },
+  "dependencies": {
+    "resend": "^6.9.3"
   }
 }

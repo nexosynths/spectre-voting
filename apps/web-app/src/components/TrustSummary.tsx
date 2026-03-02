@@ -2,7 +2,7 @@
 
 import { useMode } from "@/context/ModeContext"
 
-type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate"
+type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain"
 
 interface TrustSummaryProps {
     gateType: GateType
@@ -28,6 +28,7 @@ function getIndicators(props: TrustSummaryProps, isSimple: boolean): Indicator[]
         "allowlist": { value: "Strong", color: "var(--success)" },
         "admin-only": { value: "Full", color: "var(--success)" },
         "token-gate": { value: "Medium", color: "var(--accent)" },
+        "email-domain": { value: "Medium", color: "var(--accent)" },
     }
     const sybil = sybilMap[props.gateType]
     indicators.push({ label: "Sybil resistance", value: sybil.value, color: sybil.color })

@@ -45,7 +45,7 @@ export default function HomePage() {
     const [signupHours, setSignupHours] = useState("24")
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
-    const [gateType, setGateType] = useState<"open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate">("open")
+    const [gateType, setGateType] = useState<"open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain">("open")
     const [codeCount, setCodeCount] = useState("20")
     const [generatedCodes, setGeneratedCodes] = useState<string[]>([])
     const [showCodesModal, setShowCodesModal] = useState(false)
@@ -57,6 +57,7 @@ export default function HomePage() {
     const [tokenMinBalance, setTokenMinBalance] = useState("1")
     const [tokenSymbol, setTokenSymbol] = useState("")
     const [tokenDecimals, setTokenDecimals] = useState(18)
+    const [emailDomains, setEmailDomains] = useState("")
     const [gaslessMode, setGaslessMode] = useState(false)
 
     // Derive selfSignup from gateType
@@ -264,7 +265,7 @@ export default function HomePage() {
 
             // Build metadata JSON for on-chain storage
             const metaObj: Record<string, any> = { title: electionTitle.trim(), labels }
-            if (gaslessMode || gateType === "invite-codes" || gateType === "allowlist") metaObj.gaslessEnabled = true
+            if (gaslessMode || gateType === "invite-codes" || gateType === "allowlist" || gateType === "email-domain") metaObj.gaslessEnabled = true
             // Token gate: wallet required for balance check, but signup tx can still be relayed
             if (gateType === "token-gate") metaObj.gaslessEnabled = false
             // Invite code gate: generate codes, hash them, add to metadata
@@ -284,6 +285,13 @@ export default function HomePage() {
                 const allowlistHashes = hashIdentifiers(parsedAllowlist)
                 metaObj.gateType = "allowlist"
                 metaObj.allowlist = { totalEntries: parsedAllowlist.length, identifierHashes: allowlistHashes }
+            }
+            // Email domain gate: store allowed domains in metadata
+            if (gateType === "email-domain") {
+                const domains = emailDomains.split(",").map(d => d.trim().toLowerCase()).filter(Boolean)
+                if (domains.length === 0) throw new Error("At least one email domain required")
+                metaObj.gateType = "email-domain"
+                metaObj.emailDomain = { domains }
             }
             // Token gate: store token contract info in metadata
             if (gateType === "token-gate") {
@@ -373,6 +381,7 @@ export default function HomePage() {
             setTokenMinBalance("1")
             setTokenSymbol("")
             setTokenDecimals(18)
+            setEmailDomains("")
             await loadElections()
 
             // Show codes/allowlist modal after everything else is done
@@ -387,7 +396,7 @@ export default function HomePage() {
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput, tokenAddress, tokenType, tokenMinBalance, tokenSymbol, tokenDecimals])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput, tokenAddress, tokenType, tokenMinBalance, tokenSymbol, tokenDecimals, emailDomains])
 
     // Handle "+ New" click — in Simple mode, connect wallet first if needed
     const handleNewClick = () => {
@@ -451,6 +460,8 @@ export default function HomePage() {
                         setTokenMinBalance={setTokenMinBalance}
                         tokenSymbol={tokenSymbol}
                         tokenDecimals={tokenDecimals}
+                        emailDomains={emailDomains}
+                        setEmailDomains={setEmailDomains}
                         creating={creating}
                         onSubmit={createElection}
                         setSignupHours={setSignupHours}
@@ -555,6 +566,8 @@ export default function HomePage() {
                                 setTokenMinBalance={setTokenMinBalance}
                                 tokenSymbol={tokenSymbol}
                                 tokenDecimals={tokenDecimals}
+                                emailDomains={emailDomains}
+                                setEmailDomains={setEmailDomains}
                                 disabled={creating}
                             />
 

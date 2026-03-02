@@ -3,7 +3,7 @@
 import { useMode } from "@/context/ModeContext"
 import TrustCallout from "./TrustCallout"
 
-export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate"
+export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain"
 
 interface GateSelectorProps {
     gateType: GateType
@@ -20,6 +20,8 @@ interface GateSelectorProps {
     setTokenMinBalance: (v: string) => void
     tokenSymbol: string
     tokenDecimals: number
+    emailDomains: string
+    setEmailDomains: (v: string) => void
     disabled?: boolean
 }
 
@@ -27,6 +29,7 @@ const SIMPLE_GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "open", label: "Anyone", desc: "Anyone with the link can vote" },
     { key: "allowlist", label: "People on a list", desc: "You specify who can participate" },
     { key: "invite-codes", label: "Invite codes", desc: "One code per voter" },
+    { key: "email-domain", label: "Email domain", desc: "Must verify a company email" },
     { key: "token-gate", label: "Token holders", desc: "Must hold a token or NFT" },
 ]
 
@@ -34,6 +37,7 @@ const ADVANCED_GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "open", label: "Open", desc: "Anyone with the link can vote" },
     { key: "invite-codes", label: "Invite Codes", desc: "One-time codes you distribute" },
     { key: "allowlist", label: "Allowlist", desc: "Only people on your list" },
+    { key: "email-domain", label: "Email Domain", desc: "Verify email at specific domain(s)" },
     { key: "token-gate", label: "Token Gate", desc: "ERC-20 balance or NFT ownership" },
     { key: "admin-only", label: "Admin Only", desc: "You register each voter" },
 ]
@@ -42,6 +46,7 @@ const TRUST_SIMPLE: Record<string, { text: string; variant: "info" | "caution" |
     "open": { text: "Anyone with the link can vote. If this link leaks, unwanted people can join. Use invite codes or an allowlist for controlled access.", variant: "caution" },
     "allowlist": { text: "Only people you list can vote. They enter their name or email to join.", variant: "info" },
     "invite-codes": { text: "Each code works once. Distribute codes privately to the people you want to vote.", variant: "info" },
+    "email-domain": { text: "Voters verify their email at your domain(s). One vote per email address.", variant: "info" },
     "token-gate": { text: "Only people who hold the required token or NFT can vote. Voters must connect a wallet.", variant: "info" },
 }
 
@@ -49,6 +54,7 @@ const TRUST_ADVANCED: Record<string, { text: string; variant: "info" | "caution"
     "open": { text: "No eligibility restriction. Sybil resistance: none.", variant: "caution" },
     "invite-codes": { text: "Application-layer enforcement via relay. Direct contract calls can bypass. Acceptable for gasless elections where relay is the only submission path.", variant: "info" },
     "allowlist": { text: "Relay validates identifiers against on-chain keccak256 hashes. Identifiers are not cryptographically bound to the person.", variant: "info" },
+    "email-domain": { text: "Email verification via Resend. HMAC token proves email ownership. One signup per email per election. Email provider sees who verified.", variant: "info" },
     "token-gate": { text: "On-chain balance check via balanceOf(). Voters must connect a wallet for eligibility verification. Sybil resistance depends on token distribution.", variant: "info" },
     "admin-only": { text: "Strongest control. Only admin can register voters on-chain.", variant: "info" },
 }
@@ -58,6 +64,7 @@ export default function GateSelector({
     allowlistInput, setAllowlistInput,
     tokenAddress, setTokenAddress, tokenType, setTokenType,
     tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
+    emailDomains, setEmailDomains,
     disabled,
 }: GateSelectorProps) {
     const { isSimple } = useMode()
@@ -131,6 +138,36 @@ export default function GateSelector({
                             const count = [...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length
                             return `${count} identifier${count !== 1 ? "s" : ""}`
                         })()} — Voters enter their identifier to sign up
+                    </p>
+                </div>
+            )}
+
+            {/* Email domain config */}
+            {gateType === "email-domain" && (
+                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                        {isSimple ? "Allowed email domain(s)" : "Allowed domains (comma-separated)"}
+                    </label>
+                    <input
+                        type="text"
+                        placeholder="company.com, subsidiary.org"
+                        value={emailDomains}
+                        onChange={e => setEmailDomains(e.target.value)}
+                        disabled={disabled}
+                        style={{ width: "100%", fontSize: "0.85rem" }}
+                    />
+                    {(() => {
+                        const domains = emailDomains.split(",").map(d => d.trim().toLowerCase()).filter(Boolean)
+                        return domains.length > 0 ? (
+                            <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
+                                {domains.length} domain{domains.length !== 1 ? "s" : ""}: {domains.map(d => "@" + d).join(", ")}
+                            </p>
+                        ) : null
+                    })()}
+                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
+                        {isSimple
+                            ? "Voters verify their email to join. No wallet needed."
+                            : "Voters receive a 6-digit code via email. One signup per email. Gasless by default."}
                     </p>
                 </div>
             )}
