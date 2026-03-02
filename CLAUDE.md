@@ -426,9 +426,59 @@ The election creation form becomes a decision tree:
 - Gate validation happens server-side (API route) or on-chain (token gate)
 - On successful validation → identity commitment registered in signup group (same as today)
 
-### Later
-- [ ] **L2 deployment** — Base or Arbitrum for cheap gas + fast confirms (~2s blocks, ~$0.01 per vote)
-- [ ] **Mainnet deployment**
+### Next Up — Identity & Security
+
+**1. Seed Backup Prompt (v8.0 — NEXT)**
+- After signup, prompt voter to save their seed phrase (like wallet creation flows)
+- Show seed, require confirmation (re-enter or checkbox "I saved this")
+- Without the seed, voter loses their identity if browser data is cleared
+- Currently seeds are silently saved to localStorage with no user awareness
+
+**2. Seed Import / Recovery (v8.1)**
+- Allow voter to input an existing seed to recover their identity
+- "I have a seed" option on the election page alongside signup
+- Enables voting from a different browser/device
+
+**3. Hardware Wallet / Custom Seed (v8.2)**
+- Connect hardware wallet (Ledger, Trezor) to derive identity deterministically
+- Or input a custom seed for advanced users
+- Hardware-grade security for high-stakes elections
+
+### Next Up — Business Infrastructure
+
+**1. Relay Admin Actions (v9.0)**
+- Relay closeSignup, closeVoting, commitTallyResult so admins don't need wallets either
+- Admin experience becomes fully wallet-free
+- Prerequisite for Stripe payments (admin can't have a wallet requirement)
+
+**2. Email Auth + Stripe Payments (v9.1)**
+- Email signup for admins (Supabase/NextAuth)
+- Stripe checkout: admin pays per election ($2-5)
+- No crypto needed for anyone — blockchain invisible
+- This is when Spectre becomes a real business
+
+**3. Free Tier + Paid Tiers (v9.2)**
+- Free: 1 election, 10 voters (demos)
+- Paid: per-election or $29/mo unlimited
+- Enterprise: white-label, custom domain, API access
+
+### Later — Signup Gates (continued)
+
+**Email Domain Gate (v7.2)**
+- Prove you have an @company.com email (verification code sent to email)
+- Requires email sending service (SendGrid, Resend, etc.)
+
+**OAuth Group Gate (v7.3)**
+- Must be in a Google Workspace org, GitHub team, or Slack channel
+
+**Token/NFT Gate (v7.4)**
+- Must hold specific ERC-20 balance or NFT — on-chain check only
+
+**ZK Credential Proofs (v7.5 — long-term)**
+- ZK proof of external credential (Zupass, ZK Passport, EAS attestation)
+
+### Done — Infrastructure
+- [x] **Base mainnet deployment** — ~$0.001/tx, 2s blocks, production-ready
 
 ## Development
 
