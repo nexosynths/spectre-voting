@@ -11,13 +11,13 @@ export default function ModeToggle() {
                 className={mode === "simple" ? "mode-toggle-btn active" : "mode-toggle-btn"}
                 onClick={() => setMode("simple")}
             >
-                Standard
+                Simple
             </button>
             <button
                 className={mode === "advanced" ? "mode-toggle-btn active" : "mode-toggle-btn"}
                 onClick={() => setMode("advanced")}
             >
-                Expert
+                Advanced
             </button>
         </div>
     )
