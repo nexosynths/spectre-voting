@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import GateSelector from "./GateSelector"
 import ContextualWarnings from "./ContextualWarning"
+import TrustSummary from "./TrustSummary"
 
 type GateType = "open" | "invite-codes" | "allowlist" | "admin-only"
 
@@ -48,7 +49,10 @@ export default function CreateSimpleForm({
 
     return (
         <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-            <h4 style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: 12 }}>Create a Vote</h4>
+            <h4 style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: 4 }}>Create a Vote</h4>
+            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                Votes are anonymous and encrypted. No one — not even you — can see who voted for what.
+            </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
                 {/* Title */}
                 <input
@@ -120,10 +124,17 @@ export default function CreateSimpleForm({
                 }} />
             </div>
 
-            {/* Summary + Create */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {/* Trust summary strip */}
+            <TrustSummary
+                gateType={gateType}
+                gaslessMode={true}
+                encryptionMode="single"
+            />
+
+            {/* Create */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
                 <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                    Registration: 24h · Voting: 72h · No wallet needed
+                    Registration: 24h · Voting: 72h
                 </p>
                 <button
                     className="btn-primary"

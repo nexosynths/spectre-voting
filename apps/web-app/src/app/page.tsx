@@ -11,9 +11,11 @@ import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes, has
 import CreateSimpleForm from "@/components/CreateSimpleForm"
 import GateSelector from "@/components/GateSelector"
 import ContextualWarnings from "@/components/ContextualWarning"
+import TrustCallout from "@/components/TrustCallout"
 import CodesModal from "@/components/CodesModal"
 import AllowlistModal from "@/components/AllowlistModal"
 import ElectionList from "@/components/ElectionList"
+import TrustSummary from "@/components/TrustSummary"
 
 interface ElectionInfo {
     address: string
@@ -525,6 +527,12 @@ export default function HomePage() {
                                     </p>
                                 </div>
                             </div>
+                            {gaslessMode && (
+                                <TrustCallout
+                                    text="Server-side relayer submits transactions on behalf of voters. Trust assumptions: liveness (relayer will submit), timeliness (relayer submits promptly), transport privacy (relayer won't correlate IPs with proofs). Voters independently verify their vote landed on-chain."
+                                    variant="info"
+                                />
+                            )}
 
                             {/* Encryption mode */}
                             <div>
@@ -555,6 +563,12 @@ export default function HomePage() {
                                         <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>Multiple members must agree to reveal results</p>
                                     </div>
                                 </div>
+                                <TrustCallout
+                                    text={encryptionMode === "single"
+                                        ? "Election key stored in this browser\u2019s localStorage. You alone control when results are revealed. If you clear browser data, the key is lost."
+                                        : `Key split via Shamir secret sharing. ${threshold}-of-${committeMembers.length} members must cooperate to decrypt results. No single member can reveal votes alone.`}
+                                    variant={encryptionMode === "single" ? "info" : "info"}
+                                />
                             </div>
 
                             {/* Committee setup (threshold mode) */}
@@ -631,9 +645,18 @@ export default function HomePage() {
                                 totalMembers: encryptionMode === "threshold" ? committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length : undefined,
                             }} />
                         </div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        {/* Trust summary strip */}
+                        <TrustSummary
+                            gateType={gateType}
+                            gaslessMode={gaslessMode || gateType === "invite-codes" || gateType === "allowlist"}
+                            encryptionMode={encryptionMode}
+                            threshold={encryptionMode === "threshold" ? threshold : undefined}
+                            totalMembers={encryptionMode === "threshold" ? committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length : undefined}
+                        />
+
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
                             <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                                Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : gateType === "allowlist" ? `${[...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length} entries` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" || gateType === "allowlist" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
+                                Signup: {signupHours}h · Voting: {votingHours}h · Share link auto-copied
                             </p>
                             <button
                                 className="btn-primary"
