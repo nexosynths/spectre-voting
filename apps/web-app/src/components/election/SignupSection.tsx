@@ -16,6 +16,11 @@ interface SignupSectionProps {
     selfSignupAllowed: boolean
     isInviteCodeElection: boolean
     isAllowlistElection: boolean
+    isTokenGateElection: boolean
+    tokenGateMeta: { tokenAddress: string; tokenType: "erc20" | "erc721"; minBalance: string; tokenSymbol: string; tokenDecimals: number } | null
+    tokenBalance: string | null
+    tokenEligible: boolean
+    tokenChecking: boolean
     inviteCode: string
     setInviteCode: (v: string) => void
     codeValid: boolean
@@ -45,6 +50,7 @@ export default function SignupSection({
     connectWallet, createIdentity,
     signupStatus, signupLoading, selfSignupAllowed,
     isInviteCodeElection, isAllowlistElection,
+    isTokenGateElection, tokenGateMeta, tokenBalance, tokenEligible, tokenChecking,
     inviteCode, setInviteCode, codeValid, codeError,
     allowlistId, setAllowlistId, idValid, idError,
     identityCommitment, handleSignUp, copyToClipboard, copied,
@@ -322,8 +328,45 @@ export default function SignupSection({
                         </>
                     )}
 
+                    {/* TOKEN GATE MODE */}
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isTokenGateElection && (
+                        <>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                                {isSimple ? "Token Required" : "Token Gate"}
+                            </h4>
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                {isSimple
+                                    ? `You need to hold ${tokenGateMeta?.tokenType === "erc721" ? "the required NFT" : `${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} to vote.`
+                                    : `This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}...`}
+                            </p>
+                            {!address ? (
+                                <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
+                                    Connect your wallet to verify eligibility.
+                                </p>
+                            ) : tokenChecking ? (
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                    <div className="spinner" style={{ width: 16, height: 16 }} />
+                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>Checking balance...</p>
+                                </div>
+                            ) : tokenBalance !== null ? (
+                                <p style={{ fontSize: "0.8rem", marginBottom: 8, color: tokenEligible ? "var(--success)" : "var(--error)" }}>
+                                    {tokenEligible
+                                        ? `Eligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"}`
+                                        : `Ineligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} (need ${tokenGateMeta?.minBalance || "1"})`}
+                                </p>
+                            ) : null}
+                            <button
+                                className="btn-primary"
+                                onClick={handleSignUp}
+                                disabled={signupLoading || !tokenEligible || !address}
+                            >
+                                {signupLoading ? "Signing up..." : "Sign Up"}
+                            </button>
+                        </>
+                    )}
+
                     {/* OPEN MODE */}
-                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && (
+                    {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && !isInviteCodeElection && !isAllowlistElection && !isTokenGateElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>

@@ -16,6 +16,8 @@ interface ElectionHeaderProps {
     gaslessEnabled: boolean
     isInviteCodeElection: boolean
     isAllowlistElection: boolean
+    isTokenGateElection: boolean
+    tokenGateMeta: { tokenSymbol: string; tokenType: string } | null
     inviteCodeCount: number | null
     allowlistEntryCount: number | null
     isThresholdElection: boolean
@@ -34,6 +36,7 @@ interface ElectionHeaderProps {
 export default function ElectionHeader({
     displayTitle, phase, phaseBadge, voteCount, numOptions,
     selfSignupAllowed, gaslessEnabled, isInviteCodeElection, isAllowlistElection,
+    isTokenGateElection, tokenGateMeta,
     inviteCodeCount, allowlistEntryCount, isThresholdElection, thresholdMeta,
     signupDeadline, votingDeadline, shareUrl, isOnChainCommittee, isAdmin,
     tab, setTab, copyToClipboard, copied,
@@ -41,8 +44,8 @@ export default function ElectionHeader({
     const { isSimple, isAdvanced } = useMode()
 
     const gateLabel = isSimple
-        ? (isAllowlistElection ? "Allowlist" : isInviteCodeElection ? "Invite-only" : selfSignupAllowed ? "Anyone can vote" : "Admin registers voters")
-        : (isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only")
+        ? (isTokenGateElection ? `${tokenGateMeta?.tokenSymbol || "Token"} holders` : isAllowlistElection ? "Allowlist" : isInviteCodeElection ? "Invite-only" : selfSignupAllowed ? "Anyone can vote" : "Admin registers voters")
+        : (isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only")
 
     return (
         <>
@@ -58,7 +61,7 @@ export default function ElectionHeader({
                 <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                     <span>{voteCount} vote{voteCount !== 1 ? "s" : ""}</span>
                     <span>{numOptions} options</span>
-                    <span style={{ color: isInviteCodeElection || isAllowlistElection ? "var(--accent)" : selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
+                    <span style={{ color: isTokenGateElection || isInviteCodeElection || isAllowlistElection ? "var(--accent)" : selfSignupAllowed ? "var(--accent)" : "var(--warning)", fontSize: "0.75rem" }}>
                         {gateLabel}
                     </span>
                     {gaslessEnabled && (

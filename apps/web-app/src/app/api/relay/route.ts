@@ -377,6 +377,59 @@ async function handleSignUp(
         }
     }
 
+    // ── Token gate validation ──
+    if (meta?.gateType === "token-gate") {
+        const { voterAddress } = body
+        if (!voterAddress || !/^0x[0-9a-fA-F]{40}$/i.test(voterAddress)) {
+            return NextResponse.json(
+                { success: false, error: "Wallet address required for token-gated election" },
+                { status: 400 }
+            )
+        }
+
+        const tokenGate = meta.tokenGate
+        if (!tokenGate?.tokenAddress) {
+            return NextResponse.json(
+                { success: false, error: "Invalid token gate configuration" },
+                { status: 400 }
+            )
+        }
+
+        try {
+            const erc20Abi = ["function balanceOf(address) view returns (uint256)"]
+            const tokenContract = new Contract(tokenGate.tokenAddress, erc20Abi, provider)
+            const balance = await tokenContract.balanceOf(voterAddress)
+
+            if (tokenGate.tokenType === "erc721") {
+                // For NFTs, any balance > 0 means they hold at least one
+                if (balance === 0n) {
+                    return NextResponse.json(
+                        { success: false, error: "You do not hold the required NFT" },
+                        { status: 400 }
+                    )
+                }
+            } else {
+                // ERC-20: check against minimum balance (in token decimals)
+                const decimals = tokenGate.tokenDecimals || 18
+                const minRaw = BigInt(Math.floor(Number(tokenGate.minBalance || "1") * (10 ** decimals)))
+                if (balance < minRaw) {
+                    return NextResponse.json(
+                        { success: false, error: `Insufficient token balance. Required: ${tokenGate.minBalance} ${tokenGate.tokenSymbol || "tokens"}` },
+                        { status: 400 }
+                    )
+                }
+            }
+        } catch {
+            return NextResponse.json(
+                { success: false, error: "Failed to verify token balance" },
+                { status: 500 }
+            )
+        }
+
+        const tx = await election.signUp(identityCommitment)
+        return NextResponse.json({ success: true, txHash: tx.hash })
+    }
+
     // Submit transaction (returns immediately, don't wait for confirmation)
     const tx = await election.signUp(identityCommitment)
     return NextResponse.json({ success: true, txHash: tx.hash })

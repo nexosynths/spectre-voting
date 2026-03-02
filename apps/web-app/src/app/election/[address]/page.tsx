@@ -456,6 +456,67 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     const isAllowlistElection = allowlistMeta !== null
 
+    // Token gate metadata detection
+    const tokenGateMeta = useMemo(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
+            if (stored.gateType === "token-gate" && stored.tokenGate) {
+                return stored.tokenGate as {
+                    tokenAddress: string
+                    tokenType: "erc20" | "erc721"
+                    minBalance: string
+                    tokenSymbol: string
+                    tokenDecimals: number
+                }
+            }
+        } catch { /* ignore */ }
+        return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [electionAddress, metaLoaded])
+
+    const isTokenGateElection = tokenGateMeta !== null
+
+    // Token balance check
+    const [tokenBalance, setTokenBalance] = useState<string | null>(null)
+    const [tokenEligible, setTokenEligible] = useState(false)
+    const [tokenChecking, setTokenChecking] = useState(false)
+
+    useEffect(() => {
+        if (!isTokenGateElection || !tokenGateMeta || !address) {
+            setTokenBalance(null)
+            setTokenEligible(false)
+            return
+        }
+        let cancelled = false
+        setTokenChecking(true)
+        ;(async () => {
+            try {
+                const provider = new JsonRpcProvider(RPC_URL)
+                const erc20Abi = ["function balanceOf(address) view returns (uint256)"]
+                const tokenContract = new Contract(tokenGateMeta.tokenAddress, erc20Abi, provider)
+                const rawBalance = await tokenContract.balanceOf(address)
+                if (cancelled) return
+
+                if (tokenGateMeta.tokenType === "erc721") {
+                    const bal = Number(rawBalance)
+                    setTokenBalance(String(bal))
+                    setTokenEligible(bal > 0)
+                } else {
+                    const decimals = tokenGateMeta.tokenDecimals || 18
+                    const formatted = Number(rawBalance) / (10 ** decimals)
+                    setTokenBalance(formatted.toString())
+                    const minRequired = Number(tokenGateMeta.minBalance || "1")
+                    setTokenEligible(formatted >= minRequired)
+                }
+            } catch {
+                if (!cancelled) { setTokenBalance(null); setTokenEligible(false) }
+            } finally {
+                if (!cancelled) setTokenChecking(false)
+            }
+        })()
+        return () => { cancelled = true }
+    }, [isTokenGateElection, tokenGateMeta, address])
+
     // Validate allowlist identifier client-side
     useEffect(() => {
         if (!allowlistMeta || !allowlistId.trim()) {
@@ -695,14 +756,20 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog("Valid identifier required to sign up")
             return
         }
+        // Token gate validation check
+        if (isTokenGateElection && !tokenEligible) {
+            addLog("Insufficient token balance to sign up")
+            return
+        }
         const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
         const identifierToSend = isAllowlistElection ? allowlistId.trim() : undefined
+        const voterAddressToSend = isTokenGateElection && address ? address : undefined
         // Gasless mode: relay signup (no wallet needed)
-        if (gaslessEnabled) {
+        if (gaslessEnabled || isTokenGateElection) {
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend)
+                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend)
                 addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
                 await waitForRelayTx(txHash)
                 const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
@@ -728,7 +795,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -1495,6 +1562,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 gaslessEnabled={gaslessEnabled}
                 isInviteCodeElection={isInviteCodeElection}
                 isAllowlistElection={isAllowlistElection}
+                isTokenGateElection={isTokenGateElection}
+                tokenGateMeta={tokenGateMeta ? { tokenSymbol: tokenGateMeta.tokenSymbol, tokenType: tokenGateMeta.tokenType } : null}
                 inviteCodeCount={inviteCodeMeta?.totalCodes ?? null}
                 allowlistEntryCount={allowlistMeta?.totalEntries ?? null}
                 isThresholdElection={isThresholdElection}
@@ -1525,6 +1594,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         selfSignupAllowed={state.selfSignupAllowed}
                         isInviteCodeElection={isInviteCodeElection}
                         isAllowlistElection={isAllowlistElection}
+                        isTokenGateElection={isTokenGateElection}
+                        tokenGateMeta={tokenGateMeta}
+                        tokenBalance={tokenBalance}
+                        tokenEligible={tokenEligible}
+                        tokenChecking={tokenChecking}
                         inviteCode={inviteCode}
                         setInviteCode={setInviteCode}
                         codeValid={codeValid}

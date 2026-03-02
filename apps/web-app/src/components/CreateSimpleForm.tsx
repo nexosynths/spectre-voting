@@ -5,7 +5,7 @@ import GateSelector from "./GateSelector"
 import ContextualWarnings from "./ContextualWarning"
 import TrustSummary from "./TrustSummary"
 
-type GateType = "open" | "invite-codes" | "allowlist" | "admin-only"
+type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate"
 
 interface CreateSimpleFormProps {
     electionTitle: string
@@ -20,6 +20,14 @@ interface CreateSimpleFormProps {
     setCodeCount: (v: string) => void
     allowlistInput: string
     setAllowlistInput: (v: string) => void
+    tokenAddress: string
+    setTokenAddress: (v: string) => void
+    tokenType: "erc20" | "erc721"
+    setTokenType: (v: "erc20" | "erc721") => void
+    tokenMinBalance: string
+    setTokenMinBalance: (v: string) => void
+    tokenSymbol: string
+    tokenDecimals: number
     creating: boolean
     onSubmit: () => void
     // Hidden field setters — Simple mode forces defaults
@@ -34,6 +42,8 @@ export default function CreateSimpleForm({
     optionLabels, addOption, removeOption, updateOption,
     gateType, setGateType, codeCount, setCodeCount,
     allowlistInput, setAllowlistInput,
+    tokenAddress, setTokenAddress, tokenType, setTokenType,
+    tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
     creating, onSubmit,
     setSignupHours, setVotingHours, setGaslessMode, setEncryptionMode,
 }: CreateSimpleFormProps) {
@@ -110,6 +120,14 @@ export default function CreateSimpleForm({
                     setCodeCount={setCodeCount}
                     allowlistInput={allowlistInput}
                     setAllowlistInput={setAllowlistInput}
+                    tokenAddress={tokenAddress}
+                    setTokenAddress={setTokenAddress}
+                    tokenType={tokenType}
+                    setTokenType={setTokenType}
+                    tokenMinBalance={tokenMinBalance}
+                    setTokenMinBalance={setTokenMinBalance}
+                    tokenSymbol={tokenSymbol}
+                    tokenDecimals={tokenDecimals}
                     disabled={creating}
                 />
 

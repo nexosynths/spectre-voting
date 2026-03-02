@@ -45,13 +45,18 @@ export default function HomePage() {
     const [signupHours, setSignupHours] = useState("24")
     const [votingHours, setVotingHours] = useState("72")
     const [creating, setCreating] = useState(false)
-    const [gateType, setGateType] = useState<"open" | "invite-codes" | "allowlist" | "admin-only">("open")
+    const [gateType, setGateType] = useState<"open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate">("open")
     const [codeCount, setCodeCount] = useState("20")
     const [generatedCodes, setGeneratedCodes] = useState<string[]>([])
     const [showCodesModal, setShowCodesModal] = useState(false)
     const [allowlistInput, setAllowlistInput] = useState("")
     const [allowlistIdentifiers, setAllowlistIdentifiers] = useState<string[]>([])
     const [showAllowlistModal, setShowAllowlistModal] = useState(false)
+    const [tokenAddress, setTokenAddress] = useState("")
+    const [tokenType, setTokenType] = useState<"erc20" | "erc721">("erc20")
+    const [tokenMinBalance, setTokenMinBalance] = useState("1")
+    const [tokenSymbol, setTokenSymbol] = useState("")
+    const [tokenDecimals, setTokenDecimals] = useState(18)
     const [gaslessMode, setGaslessMode] = useState(false)
 
     // Derive selfSignup from gateType
@@ -65,6 +70,30 @@ export default function HomePage() {
         { name: "", address: "" },
     ])
     const [threshold, setThreshold] = useState(2)
+
+    // Auto-fetch token symbol/decimals when token address changes
+    useEffect(() => {
+        if (gateType !== "token-gate" || !/^0x[0-9a-fA-F]{40}$/.test(tokenAddress)) {
+            setTokenSymbol("")
+            return
+        }
+        let cancelled = false
+        ;(async () => {
+            try {
+                const provider = new JsonRpcProvider(RPC_URL)
+                const erc20Abi = ["function symbol() view returns (string)", "function decimals() view returns (uint8)", "function name() view returns (string)"]
+                const c = new Contract(tokenAddress, erc20Abi, provider)
+                const [sym, dec] = await Promise.all([c.symbol().catch(() => ""), c.decimals().catch(() => 0)])
+                if (!cancelled) {
+                    setTokenSymbol(sym || "")
+                    setTokenDecimals(Number(dec) || 0)
+                }
+            } catch {
+                if (!cancelled) { setTokenSymbol(""); setTokenDecimals(0) }
+            }
+        })()
+        return () => { cancelled = true }
+    }, [tokenAddress, gateType])
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text)
@@ -236,6 +265,8 @@ export default function HomePage() {
             // Build metadata JSON for on-chain storage
             const metaObj: Record<string, any> = { title: electionTitle.trim(), labels }
             if (gaslessMode || gateType === "invite-codes" || gateType === "allowlist") metaObj.gaslessEnabled = true
+            // Token gate: wallet required for balance check, but signup tx can still be relayed
+            if (gateType === "token-gate") metaObj.gaslessEnabled = false
             // Invite code gate: generate codes, hash them, add to metadata
             let inviteCodes: string[] = []
             if (gateType === "invite-codes") {
@@ -253,6 +284,18 @@ export default function HomePage() {
                 const allowlistHashes = hashIdentifiers(parsedAllowlist)
                 metaObj.gateType = "allowlist"
                 metaObj.allowlist = { totalEntries: parsedAllowlist.length, identifierHashes: allowlistHashes }
+            }
+            // Token gate: store token contract info in metadata
+            if (gateType === "token-gate") {
+                if (!tokenAddress || !/^0x[0-9a-fA-F]{40}$/.test(tokenAddress)) throw new Error("Invalid token contract address")
+                metaObj.gateType = "token-gate"
+                metaObj.tokenGate = {
+                    tokenAddress: tokenAddress.toLowerCase(),
+                    tokenType,
+                    minBalance: tokenMinBalance || "1",
+                    tokenSymbol: tokenSymbol || "",
+                    tokenDecimals,
+                }
             }
             if (encryptionMode === "threshold") {
                 metaObj.mode = "threshold"
@@ -325,6 +368,11 @@ export default function HomePage() {
             setGateType("open")
             setCodeCount("20")
             setAllowlistInput("")
+            setTokenAddress("")
+            setTokenType("erc20")
+            setTokenMinBalance("1")
+            setTokenSymbol("")
+            setTokenDecimals(18)
             await loadElections()
 
             // Show codes/allowlist modal after everything else is done
@@ -339,7 +387,7 @@ export default function HomePage() {
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput, tokenAddress, tokenType, tokenMinBalance, tokenSymbol, tokenDecimals])
 
     // Handle "+ New" click — in Simple mode, connect wallet first if needed
     const handleNewClick = () => {
@@ -395,6 +443,14 @@ export default function HomePage() {
                         setCodeCount={setCodeCount}
                         allowlistInput={allowlistInput}
                         setAllowlistInput={setAllowlistInput}
+                        tokenAddress={tokenAddress}
+                        setTokenAddress={setTokenAddress}
+                        tokenType={tokenType}
+                        setTokenType={setTokenType}
+                        tokenMinBalance={tokenMinBalance}
+                        setTokenMinBalance={setTokenMinBalance}
+                        tokenSymbol={tokenSymbol}
+                        tokenDecimals={tokenDecimals}
                         creating={creating}
                         onSubmit={createElection}
                         setSignupHours={setSignupHours}
@@ -491,6 +547,14 @@ export default function HomePage() {
                                 setCodeCount={setCodeCount}
                                 allowlistInput={allowlistInput}
                                 setAllowlistInput={setAllowlistInput}
+                                tokenAddress={tokenAddress}
+                                setTokenAddress={setTokenAddress}
+                                tokenType={tokenType}
+                                setTokenType={setTokenType}
+                                tokenMinBalance={tokenMinBalance}
+                                setTokenMinBalance={setTokenMinBalance}
+                                tokenSymbol={tokenSymbol}
+                                tokenDecimals={tokenDecimals}
                                 disabled={creating}
                             />
 
