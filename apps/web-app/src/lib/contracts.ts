@@ -7,7 +7,7 @@ export const CONTRACTS = {
 } as const
 
 export const CHAIN_ID = 8453
-export const RPC_URL = "https://mainnet.base.org"
+export const RPC_URL = "https://base.publicnode.com"
 export const EXPLORER_URL = "https://basescan.org"
 
 // Base RPC limits eth_getLogs to 10,000 blocks per call
