@@ -1,4 +1,4 @@
-import { poseidon2 } from "poseidon-lite"
+import { poseidon2, poseidon3 } from "poseidon-lite"
 import { combine, type Share } from "./shamir.js"
 import { eciesDecrypt } from "./ecies.js"
 import { decodeVotePayload } from "./voter.js"
@@ -19,6 +19,7 @@ export interface SubmittedVote {
 export interface DecryptedVote {
     nullifierHash: string
     vote: bigint
+    weight: bigint
     voteRandomness: bigint
     commitmentValid: boolean
 }
@@ -72,7 +73,7 @@ function decryptAndVerifyVote(
     electionPrivKey: Uint8Array,
     submitted: SubmittedVote
 ): DecryptedVote {
-    let payload: { vote: bigint; voteRandomness: bigint }
+    let payload: { vote: bigint; weight: bigint; voteRandomness: bigint }
     try {
         const decrypted = eciesDecrypt(electionPrivKey, submitted.encryptedBlob)
         payload = decodeVotePayload(decrypted)
@@ -81,18 +82,20 @@ function decryptAndVerifyVote(
         return {
             nullifierHash: submitted.nullifierHash,
             vote: -1n,
+            weight: 0n,
             voteRandomness: 0n,
             commitmentValid: false
         }
     }
 
-    // Verify: Poseidon(vote, randomness) == on-chain voteCommitment
-    const recomputed = poseidon2([payload.vote, payload.voteRandomness])
+    // Verify: Poseidon(vote, weight, randomness) == on-chain voteCommitment
+    const recomputed = poseidon3([payload.vote, payload.weight, payload.voteRandomness])
     const commitmentValid = recomputed.toString() === submitted.voteCommitment
 
     return {
         nullifierHash: submitted.nullifierHash,
         vote: payload.vote,
+        weight: payload.weight,
         voteRandomness: payload.voteRandomness,
         commitmentValid
     }
@@ -140,7 +143,7 @@ export function computeTally(shares: Share[], submittedVotes: SubmittedVote[], n
         if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= numOptions) {
             totalInvalid++
         } else {
-            optionCounts[Number(dv.vote)]++
+            optionCounts[Number(dv.vote)] += Number(dv.weight)
         }
     }
 

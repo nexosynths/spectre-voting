@@ -6,6 +6,7 @@
  */
 
 import { Identity, Group } from "@semaphore-protocol/core"
+import { poseidon2 } from "poseidon-lite"
 
 const MAX_DEPTH = 20
 const WASM_URL = "/circuits/SpectreVote.wasm"
@@ -34,7 +35,8 @@ export async function generateProofInBrowser(
     proposalId: bigint,
     vote: bigint,
     voteRandomness: bigint,
-    numOptions: bigint
+    numOptions: bigint,
+    weight: bigint = 1n
 ): Promise<SpectreProof> {
     if (vote < 0n || vote >= numOptions) {
         throw new Error(`Vote must be between 0 and ${numOptions - 1n}`)
@@ -43,8 +45,9 @@ export async function generateProofInBrowser(
     // Dynamic import — snarkjs is heavy and only needed client-side
     const snarkjs = await import("snarkjs")
 
-    // Build Merkle proof from group
-    const leafIndex = group.indexOf(identity.commitment)
+    // Build Merkle proof from group (leaves are weighted: Poseidon(commitment, weight))
+    const weightedLeaf = poseidon2([identity.commitment, weight])
+    const leafIndex = group.indexOf(weightedLeaf)
     if (leafIndex === -1) {
         throw new Error("Your identity is not registered in this election's voting group")
     }
@@ -59,6 +62,7 @@ export async function generateProofInBrowser(
     // Circuit inputs
     const input = {
         secret: identity.secretScalar.toString(),
+        weight: weight.toString(),
         merkleProofLength: merkleProof.siblings.length,
         merkleProofIndex: merkleProof.index,
         merkleProofSiblings: siblings,

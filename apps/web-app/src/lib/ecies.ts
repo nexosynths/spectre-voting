@@ -50,21 +50,22 @@ export function eciesEncrypt(
 
 /**
  * Encode a vote payload into bytes for ECIES encryption.
- * Format: vote (1 byte) || randomness (32 bytes big-endian)
- * Total: 33 bytes
+ * Format: vote (1 byte) || weight (1 byte) || randomness (32 bytes big-endian)
+ * Total: 34 bytes
  *
  * Note: nullifier is NOT included — it's already a public signal in the proof
  * and emitted on-chain in the VoteCast event. Including it in the encrypted
  * blob would be redundant and reduce privacy.
  */
-export function encodeVotePayload(vote: bigint, randomness: bigint): Uint8Array {
-    const buf = new Uint8Array(33)
+export function encodeVotePayload(vote: bigint, weight: bigint, randomness: bigint): Uint8Array {
+    const buf = new Uint8Array(34)
     buf[0] = Number(vote)
+    buf[1] = Number(weight)
 
     // randomness as 32-byte big-endian
     const rHex = randomness.toString(16).padStart(64, "0")
     for (let i = 0; i < 32; i++) {
-        buf[1 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
+        buf[2 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
     }
 
     return buf
@@ -98,16 +99,17 @@ export function eciesDecrypt(
 
 /**
  * Decode a vote payload from bytes.
- * Expects 33 bytes: vote (1 byte) || randomness (32 bytes big-endian)
+ * Expects 34 bytes: vote (1 byte) || weight (1 byte) || randomness (32 bytes big-endian)
  */
-export function decodeVotePayload(buf: Uint8Array): { vote: bigint; voteRandomness: bigint } {
+export function decodeVotePayload(buf: Uint8Array): { vote: bigint; weight: bigint; voteRandomness: bigint } {
     const vote = BigInt(buf[0])
+    const weight = BigInt(buf[1])
 
     let rHex = ""
-    for (let i = 0; i < 32; i++) rHex += buf[1 + i].toString(16).padStart(2, "0")
+    for (let i = 0; i < 32; i++) rHex += buf[2 + i].toString(16).padStart(2, "0")
     const voteRandomness = BigInt("0x" + rHex)
 
-    return { vote, voteRandomness }
+    return { vote, weight, voteRandomness }
 }
 
 /**

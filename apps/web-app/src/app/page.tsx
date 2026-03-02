@@ -57,6 +57,8 @@ export default function HomePage() {
     const [tokenMinBalance, setTokenMinBalance] = useState("1")
     const [tokenSymbol, setTokenSymbol] = useState("")
     const [tokenDecimals, setTokenDecimals] = useState(18)
+    const [weightedVoting, setWeightedVoting] = useState(false)
+    const [voteThreshold, setVoteThreshold] = useState("")
     const [emailDomains, setEmailDomains] = useState("")
     const [githubOrg, setGithubOrg] = useState("")
     const [gaslessMode, setGaslessMode] = useState(false)
@@ -311,6 +313,8 @@ export default function HomePage() {
                     minBalance: tokenMinBalance || "1",
                     tokenSymbol: tokenSymbol || "",
                     tokenDecimals,
+                    weighted: weightedVoting,
+                    ...(weightedVoting && tokenType === "erc20" && voteThreshold ? { voteThreshold } : {}),
                 }
             }
             if (encryptionMode === "threshold") {
@@ -405,7 +409,7 @@ export default function HomePage() {
         } finally {
             setCreating(false)
         }
-    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput, tokenAddress, tokenType, tokenMinBalance, tokenSymbol, tokenDecimals, emailDomains, githubOrg])
+    }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput, tokenAddress, tokenType, tokenMinBalance, tokenSymbol, tokenDecimals, weightedVoting, voteThreshold, emailDomains, githubOrg])
 
     // Handle "+ New" click — in Simple mode, connect wallet first if needed
     const handleNewClick = () => {
@@ -469,6 +473,10 @@ export default function HomePage() {
                         setTokenMinBalance={setTokenMinBalance}
                         tokenSymbol={tokenSymbol}
                         tokenDecimals={tokenDecimals}
+                        weightedVoting={weightedVoting}
+                        setWeightedVoting={setWeightedVoting}
+                        voteThreshold={voteThreshold}
+                        setVoteThreshold={setVoteThreshold}
                         emailDomains={emailDomains}
                         setEmailDomains={setEmailDomains}
                         githubOrg={githubOrg}
@@ -577,6 +585,10 @@ export default function HomePage() {
                                 setTokenMinBalance={setTokenMinBalance}
                                 tokenSymbol={tokenSymbol}
                                 tokenDecimals={tokenDecimals}
+                                weightedVoting={weightedVoting}
+                                setWeightedVoting={setWeightedVoting}
+                                voteThreshold={voteThreshold}
+                                setVoteThreshold={setVoteThreshold}
                                 emailDomains={emailDomains}
                                 setEmailDomains={setEmailDomains}
                                 githubOrg={githubOrg}

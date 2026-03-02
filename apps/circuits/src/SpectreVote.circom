@@ -6,20 +6,23 @@ include "circomlib/circuits/comparators.circom";
 include "circomlib/circuits/bitify.circom";
 include "@zk-kit/circuits/circom/binary-merkle-root.circom";
 
-// SpectreVote — extends Semaphore V4 with vote commitment + multi-option range check
+// SpectreVote — extends Semaphore V4 with weighted vote commitment + multi-option range check
 //
 // Proves:
 //   1. Identity: secret → BabyJubJub pubkey → Poseidon commitment (Merkle leaf)
-//   2. Membership: identity commitment is in the group Merkle tree
-//   3. Nullifier: Poseidon(proposalId, secret) — deterministic, public in v1
-//   4. Vote commitment: Poseidon(vote, voteRandomness) — binds encrypted vote to proof
-//   5. Vote validity: 0 <= vote < numOptions (supports multi-option elections)
+//   2. Weighted leaf: Poseidon(identityCommitment, weight) — binds weight to identity
+//   3. Membership: weighted leaf is in the group Merkle tree
+//   4. Nullifier: Poseidon(proposalId, secret) — deterministic, public in v1
+//   5. Vote commitment: Poseidon(vote, weight, voteRandomness) — binds encrypted vote + weight to proof
+//   6. Vote validity: 0 <= vote < numOptions (supports multi-option elections)
+//   7. Weight validity: 1 <= weight < 256
 //
 // v1: nullifier is public (no coercion resistance). On-chain dedup by nullifier.
 // v2: nullifier will be committed (hidden) for coercion resistance.
 template SpectreVote(MAX_DEPTH) {
     // === Private inputs ===
     signal input secret;                                      // EdDSA secret scalar
+    signal input weight;                                      // voting weight (1-255)
     signal input merkleProofLength;                           // actual tree depth
     signal input merkleProofIndex;                            // leaf position
     signal input merkleProofSiblings[MAX_DEPTH];              // Merkle proof path
@@ -31,7 +34,7 @@ template SpectreVote(MAX_DEPTH) {
     // === Public outputs ===
     signal output merkleRoot;                                 // group Merkle root
     signal output nullifierHash;                              // identity × proposalId (public in v1)
-    signal output voteCommitment;                             // Poseidon(vote, randomness)
+    signal output voteCommitment;                             // Poseidon(vote, weight, randomness)
 
     // --- 1. Identity ---
     // Secret scalar must be in the BabyJubJub prime subgroup order
@@ -48,7 +51,20 @@ template SpectreVote(MAX_DEPTH) {
     // Identity commitment = Poseidon(pubkey.x, pubkey.y)
     var identityCommitment = Poseidon(2)([Ax, Ay]);
 
-    // --- 2. Membership ---
+    // --- 2. Weight range check: 1 <= weight < 256 ---
+    component weightUpperBound = LessThan(8);
+    weightUpperBound.in[0] <== weight;
+    weightUpperBound.in[1] <== 256;
+    weightUpperBound.out === 1;
+
+    component weightNonZero = IsZero();
+    weightNonZero.in <== weight;
+    weightNonZero.out === 0;   // weight must not be zero
+
+    // --- 3. Weighted leaf: Poseidon(identityCommitment, weight) ---
+    var weightedLeaf = Poseidon(2)([identityCommitment, weight]);
+
+    // --- 4. Membership ---
     // Decompose leaf index into bits for BinaryMerkleRoot
     signal merkleProofIndices[MAX_DEPTH];
     component indexBits = Num2Bits(MAX_DEPTH);
@@ -57,25 +73,25 @@ template SpectreVote(MAX_DEPTH) {
         merkleProofIndices[i] <== indexBits.out[i];
     }
 
-    // Verify identity commitment is a leaf in the group Merkle tree
+    // Verify weighted leaf is in the group Merkle tree
     merkleRoot <== BinaryMerkleRoot(MAX_DEPTH)(
-        identityCommitment,
+        weightedLeaf,
         merkleProofLength,
         merkleProofIndices,
         merkleProofSiblings
     );
 
-    // --- 3. Nullifier ---
+    // --- 5. Nullifier ---
     // Deterministic per (proposalId, identity). Prevents double-voting in v1.
     nullifierHash <== Poseidon(2)([proposalId, secret]);
 
-    // --- 4. Vote commitment ---
-    // Binds the voter's choice to the proof. The encrypted blob (sent as calldata)
-    // contains (vote, voteRandomness). The committee verifies:
-    //   Poseidon(decrypted_vote, decrypted_randomness) == on-chain voteCommitment
-    voteCommitment <== Poseidon(2)([vote, voteRandomness]);
+    // --- 6. Vote commitment ---
+    // Binds the voter's choice AND weight to the proof. The encrypted blob (sent as calldata)
+    // contains (vote, weight, voteRandomness). The committee verifies:
+    //   Poseidon(decrypted_vote, decrypted_weight, decrypted_randomness) == on-chain voteCommitment
+    voteCommitment <== Poseidon(3)([vote, weight, voteRandomness]);
 
-    // --- 5. Vote validity ---
+    // --- 7. Vote validity ---
     // vote must be in range [0, numOptions): 0 <= vote < numOptions
     // LessThan(8) supports up to 2^8 = 256 options
     component voteRange = LessThan(8);

@@ -32,7 +32,13 @@ import type { AnonJoinProof } from "@/lib/anonJoinProof"
 interface RelayResponse {
     success: boolean
     txHash?: string
+    weight?: string
     error?: string
+}
+
+export interface SignupResult {
+    txHash: string
+    weight: bigint
 }
 
 export class RelayError extends Error {
@@ -86,7 +92,7 @@ export async function relaySignUp(
     emailToken?: string,
     githubToken?: string,
     githubId?: string,
-): Promise<string> {
+): Promise<SignupResult> {
     const body: Record<string, any> = {
         action: "signUp",
         electionAddress,
@@ -99,7 +105,20 @@ export async function relaySignUp(
     if (emailToken) body.emailToken = emailToken
     if (githubToken) body.githubToken = githubToken
     if (githubId) body.githubId = githubId
-    return callRelay(body)
+
+    const res = await fetch("/api/relay", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    })
+    const data: RelayResponse = await res.json()
+    if (!data.success || !data.txHash) {
+        throw new RelayError(data.error || "Relay request failed", res.status)
+    }
+    return {
+        txHash: data.txHash,
+        weight: data.weight ? BigInt(data.weight) : 1n,
+    }
 }
 
 /**

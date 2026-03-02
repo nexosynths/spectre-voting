@@ -20,6 +20,10 @@ interface GateSelectorProps {
     setTokenMinBalance: (v: string) => void
     tokenSymbol: string
     tokenDecimals: number
+    weightedVoting: boolean
+    setWeightedVoting: (v: boolean) => void
+    voteThreshold: string
+    setVoteThreshold: (v: string) => void
     emailDomains: string
     setEmailDomains: (v: string) => void
     githubOrg: string
@@ -70,6 +74,7 @@ export default function GateSelector({
     allowlistInput, setAllowlistInput,
     tokenAddress, setTokenAddress, tokenType, setTokenType,
     tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
+    weightedVoting, setWeightedVoting, voteThreshold, setVoteThreshold,
     emailDomains, setEmailDomains,
     githubOrg, setGithubOrg,
     disabled,
@@ -268,6 +273,51 @@ export default function GateSelector({
                             Verifying token contract...
                         </p>
                     )}
+
+                    {/* Weighted voting toggle */}
+                    <div style={{ marginTop: 10, padding: "8px 12px", background: "var(--bg-card)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: disabled ? "not-allowed" : "pointer" }}>
+                            <input
+                                type="checkbox"
+                                checked={weightedVoting}
+                                onChange={e => !disabled && setWeightedVoting(e.target.checked)}
+                                disabled={disabled}
+                            />
+                            <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                                {isSimple ? "More tokens = more votes" : "Weighted voting (balance-based)"}
+                            </span>
+                        </label>
+                        {weightedVoting && (
+                            <div style={{ marginTop: 6 }}>
+                                <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginBottom: 4 }}>
+                                    {tokenType === "erc721"
+                                        ? (isSimple ? "Each NFT held = 1 vote (max 255)" : "Weight = number of NFTs held (capped at 255)")
+                                        : (isSimple ? "Set how many tokens = 1 vote" : "Weight = floor(balance / threshold), capped at 255")}
+                                </p>
+                                {tokenType === "erc20" && (
+                                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                        <input
+                                            type="text"
+                                            placeholder="100"
+                                            value={voteThreshold}
+                                            onChange={e => setVoteThreshold(e.target.value.replace(/[^0-9.]/g, ""))}
+                                            disabled={disabled}
+                                            style={{ width: 120, fontSize: "0.85rem" }}
+                                        />
+                                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                                            {tokenSymbol || "tokens"} per vote
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {!weightedVoting && (
+                            <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
+                                {isSimple ? "Every eligible voter gets 1 vote regardless of balance" : "Eligibility only — 1 vote per holder"}
+                            </p>
+                        )}
+                    </div>
+
                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
                         {isSimple
                             ? "Voters must connect a wallet to prove they hold the token."

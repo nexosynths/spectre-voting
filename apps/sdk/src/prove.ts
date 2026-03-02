@@ -1,5 +1,5 @@
 import { Identity, Group } from "@semaphore-protocol/core"
-import { poseidon2 } from "poseidon-lite"
+import { poseidon2, poseidon3 } from "poseidon-lite"
 // @ts-ignore — snarkjs has no types
 import { groth16 } from "snarkjs"
 import * as path from "path"
@@ -30,10 +30,10 @@ export interface ProofArtifacts {
 }
 
 /**
- * Compute the vote commitment: Poseidon(vote, randomness)
+ * Compute the vote commitment: Poseidon(vote, weight, randomness)
  */
-export function computeVoteCommitment(vote: bigint, randomness: bigint): bigint {
-    return poseidon2([vote, randomness])
+export function computeVoteCommitment(vote: bigint, weight: bigint, randomness: bigint): bigint {
+    return poseidon3([vote, weight, randomness])
 }
 
 /**
@@ -54,6 +54,7 @@ export function computeNullifier(proposalId: bigint, secretScalar: bigint): bigi
  * @param vote — vote option index (0 to numOptions-1)
  * @param voteRandomness — blinding factor for vote commitment
  * @param numOptions — total number of vote options (default 2 for backwards compat)
+ * @param weight — voting weight (default 1 for non-weighted elections)
  * @param artifacts — optional custom paths to wasm/zkey
  */
 export async function generateSpectreProof(
@@ -63,6 +64,7 @@ export async function generateSpectreProof(
     vote: bigint,
     voteRandomness: bigint,
     numOptions: bigint = 2n,
+    weight: bigint = 1n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<SpectreProof> {
     if (vote < 0n || vote >= numOptions) {
@@ -72,8 +74,9 @@ export async function generateSpectreProof(
     const wasmPath = artifacts?.wasmPath ?? DEFAULT_WASM
     const zkeyPath = artifacts?.zkeyPath ?? DEFAULT_ZKEY
 
-    // Merkle proof from group
-    const leafIndex = group.indexOf(identity.commitment)
+    // Merkle proof from group (leaves are weighted: Poseidon(commitment, weight))
+    const weightedLeaf = poseidon2([identity.commitment, weight])
+    const leafIndex = group.indexOf(weightedLeaf)
     if (leafIndex === -1) {
         throw new Error("Identity not found in group")
     }
@@ -88,6 +91,7 @@ export async function generateSpectreProof(
     // Circuit inputs
     const input = {
         secret: identity.secretScalar.toString(),
+        weight: weight.toString(),
         merkleProofLength: merkleProof.siblings.length,
         merkleProofIndex: merkleProof.index,
         merkleProofSiblings: siblings,

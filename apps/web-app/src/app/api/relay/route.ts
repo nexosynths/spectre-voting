@@ -23,6 +23,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
 import { createHmac } from "crypto"
 import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
+import { poseidon2 } from "poseidon-lite"
 
 // ---------------------------------------------------------------------------
 // Rate limiting (in-memory, resets on cold start — fine for testnet)
@@ -313,8 +314,9 @@ async function handleSignUp(
         markCodeUsed(electionAddress, codeHash)
 
         try {
-            const tx = await election.signUp(identityCommitment)
-            return NextResponse.json({ success: true, txHash: tx.hash })
+            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
+            const tx = await election.signUp(weightedLeaf)
+            return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             // On tx failure: un-mark code to allow retry
             unmarkCodeUsed(electionAddress, codeHash)
@@ -370,8 +372,9 @@ async function handleSignUp(
         markCodeUsed(electionAddress, idHash)
 
         try {
-            const tx = await election.signUp(identityCommitment)
-            return NextResponse.json({ success: true, txHash: tx.hash })
+            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
+            const tx = await election.signUp(weightedLeaf)
+            return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, idHash)
             throw err
@@ -396,6 +399,7 @@ async function handleSignUp(
             )
         }
 
+        let weight = 1n
         try {
             const erc20Abi = ["function balanceOf(address) view returns (uint256)"]
             const tokenContract = new Contract(tokenGate.tokenAddress, erc20Abi, provider)
@@ -409,6 +413,10 @@ async function handleSignUp(
                         { status: 400 }
                     )
                 }
+                // Weighted: each NFT = 1 vote (capped at 255)
+                if (tokenGate.weighted) {
+                    weight = balance > 255n ? 255n : balance
+                }
             } else {
                 // ERC-20: check against minimum balance (in token decimals)
                 const decimals = tokenGate.tokenDecimals || 18
@@ -419,6 +427,15 @@ async function handleSignUp(
                         { status: 400 }
                     )
                 }
+                // Weighted: weight = floor(balance / voteThreshold), capped at 255
+                if (tokenGate.weighted && tokenGate.voteThreshold) {
+                    const thresholdRaw = BigInt(Math.floor(Number(tokenGate.voteThreshold) * (10 ** decimals)))
+                    if (thresholdRaw > 0n) {
+                        weight = balance / thresholdRaw
+                        if (weight > 255n) weight = 255n
+                        if (weight < 1n) weight = 1n
+                    }
+                }
             }
         } catch {
             return NextResponse.json(
@@ -427,8 +444,9 @@ async function handleSignUp(
             )
         }
 
-        const tx = await election.signUp(identityCommitment)
-        return NextResponse.json({ success: true, txHash: tx.hash })
+        const weightedLeaf = poseidon2([BigInt(identityCommitment), weight])
+        const tx = await election.signUp(weightedLeaf)
+        return NextResponse.json({ success: true, txHash: tx.hash, weight: weight.toString() })
     }
 
     // ── Email domain validation ──
@@ -485,8 +503,9 @@ async function handleSignUp(
         markCodeUsed(electionAddress, emailHash)
 
         try {
-            const tx = await election.signUp(identityCommitment)
-            return NextResponse.json({ success: true, txHash: tx.hash })
+            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
+            const tx = await election.signUp(weightedLeaf)
+            return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, emailHash)
             throw err
@@ -534,8 +553,9 @@ async function handleSignUp(
         markCodeUsed(electionAddress, idHash)
 
         try {
-            const tx = await election.signUp(identityCommitment)
-            return NextResponse.json({ success: true, txHash: tx.hash })
+            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
+            const tx = await election.signUp(weightedLeaf)
+            return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, idHash)
             throw err
@@ -543,8 +563,9 @@ async function handleSignUp(
     }
 
     // Submit transaction (returns immediately, don't wait for confirmation)
-    const tx = await election.signUp(identityCommitment)
-    return NextResponse.json({ success: true, txHash: tx.hash })
+    const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
+    const tx = await election.signUp(weightedLeaf)
+    return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
 }
 
 async function handleAnonJoin(

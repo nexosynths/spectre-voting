@@ -14,7 +14,7 @@ import { friendlyError } from "@/lib/errors"
 import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, RelayError } from "@/lib/relayer"
 import { validateCode, validateIdentifier } from "@/lib/inviteCodes"
 import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, encryptedShareToHex, generateCommitteeKeypair, deserializeShareFromHex, type Share, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
-import { poseidon2 } from "poseidon-lite"
+import { poseidon2, poseidon3 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useMode } from "@/context/ModeContext"
@@ -32,6 +32,7 @@ type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
 interface DecryptedVote {
     nullifierHash: string
     vote: bigint
+    weight: bigint
     voteRandomness: bigint
     commitmentValid: boolean
 }
@@ -150,6 +151,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // ── Per-election identity (scoped to election + wallet/anonymous session) ──
     const [identity, setIdentity] = useState<Identity | null>(null)
+    const [voterWeight, setVoterWeight] = useState<bigint>(1n) // voting weight (default 1 for non-weighted)
 
     // Gasless relay state (hoisted — used in identity loading effect)
     const [gaslessEnabled, setGaslessEnabled] = useState(false)
@@ -165,6 +167,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const identityStorageKey = useMemo(() => {
         const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
         return scope ? `spectre-identity-${electionAddress}-${scope}` : ""
+    }, [electionAddress, address, anonymousId])
+
+    // Weight storage key (same scoping as identity)
+    const weightStorageKey = useMemo(() => {
+        const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
+        return scope ? `spectre-weight-${electionAddress}-${scope}` : ""
     }, [electionAddress, address, anonymousId])
 
     // Derive deterministic identity from wallet signature
@@ -203,6 +211,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
         }
         setIdentity(null)
     }, [identityStorageKey, gaslessEnabled, addLog, electionAddress])
+
+    // Load voter weight from localStorage
+    useEffect(() => {
+        if (!weightStorageKey) return
+        const saved = localStorage.getItem(weightStorageKey)
+        if (saved) setVoterWeight(BigInt(saved))
+        else setVoterWeight(1n) // default weight for non-weighted elections
+    }, [weightStorageKey])
 
     const createIdentity = useCallback(async () => {
         if (!identityStorageKey) { addLog("Connect your wallet first"); return }
@@ -840,13 +856,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setSignupStatus("checking")
         try {
             const members = await fetchGroupMembers(BigInt(state.signupGroupId))
-            const found = members.some(m => m.toString() === identity.commitment.toString())
+            const weightedLeaf = poseidon2([identity.commitment, voterWeight])
+            const found = members.some(m => m.toString() === weightedLeaf.toString())
             setSignupStatus(found ? "signed-up" : "not-signed-up")
         } catch (err: any) {
             addLog(`Signup check failed: ${err.message}`)
             setSignupStatus("unknown")
         }
-    }, [identity, state, addLog])
+    }, [identity, state, addLog, voterWeight])
 
     useEffect(() => {
         if (identity && state && phase === "signup") checkSignup()
@@ -860,12 +877,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setJoinStatus("checking")
         try {
             const members = await fetchGroupMembers(BigInt(state.votingGroupId))
-            const found = members.some(m => m.toString() === votingId.commitment.toString())
+            const weightedLeaf = poseidon2([votingId.commitment, voterWeight])
+            const found = members.some(m => m.toString() === weightedLeaf.toString())
             setJoinStatus(found ? "joined" : "not-joined")
         } catch {
             setJoinStatus("unknown")
         }
-    }, [state, getVotingIdentity])
+    }, [state, getVotingIdentity, voterWeight])
 
     useEffect(() => {
         if (state && phase === "voting") checkJoinStatus()
@@ -911,12 +929,17 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setSignupLoading(true)
             try {
                 addLog("Relaying signup...")
-                const txHash = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend, githubTokenToSend, githubIdToSend)
-                addLog(`Signup relayed — tx: ${txHash.slice(0, 10)}...`)
-                await waitForRelayTx(txHash)
-                const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), txHash)
+                const result = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend, githubTokenToSend, githubIdToSend)
+                addLog(`Signup relayed — tx: ${result.txHash.slice(0, 10)}...`)
+                await waitForRelayTx(result.txHash)
+                // Store weight from relay response
+                const assignedWeight = result.weight
+                setVoterWeight(assignedWeight)
+                if (weightStorageKey) localStorage.setItem(weightStorageKey, assignedWeight.toString())
+                const weightedLeaf = poseidon2([identity.commitment, assignedWeight])
+                const verified = await verifySignupOnChain(electionAddress, weightedLeaf.toString(), result.txHash)
                 if (!verified) addLog("Warning: signup event not found on-chain")
-                addLog("Signed up for election!")
+                addLog(assignedWeight > 1n ? `Signed up with weight ${assignedWeight}!` : "Signed up for election!")
                 setSignupStatus("signed-up")
                 await refresh()
             } catch (err: any) {
@@ -924,20 +947,23 @@ export default function ElectionPage({ params }: { params: { address: string } }
             } finally { setSignupLoading(false) }
             return
         }
-        // Wallet mode: direct tx
+        // Wallet mode: direct tx (weight = 1 for non-relay elections)
         if (!signer) return
         setSignupLoading(true)
         try {
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const tx = await c.signUp(identity.commitment)
+            const weightedLeaf = poseidon2([identity.commitment, 1n])
+            const tx = await c.signUp(weightedLeaf)
             await tx.wait()
+            setVoterWeight(1n)
+            if (weightStorageKey) localStorage.setItem(weightStorageKey, "1")
             addLog("Signed up for election!")
             setSignupStatus("signed-up")
             await refresh()
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken, isGithubOrgElection, ghToken, ghId])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken, isGithubOrgElection, ghToken, ghId, weightStorageKey])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
     const handleJoinAndVote = useCallback(async () => {
@@ -963,13 +989,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 for (const m of signupMembers) signupGroup.addMember(m)
                 addLog(`Checking registration (${signupMembers.length} registered)`)
 
-                if (signupGroup.indexOf(identity.commitment) === -1) {
+                const weightedSignupLeaf = poseidon2([identity.commitment, voterWeight])
+                if (signupGroup.indexOf(weightedSignupLeaf) === -1) {
                     throw new Error("You're not registered for this election. You need to sign up during the registration phase.")
                 }
 
                 setVoteStep("generating-join-proof"); setStepMsg("Generating anonymous join proof (10-30s)...")
                 addLog("Generating anonymous proof...")
-                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId))
+                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId), voterWeight)
                 addLog("Proof ready")
 
                 if (gaslessEnabled) {
@@ -1013,7 +1040,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
             for (const m of votingMembers) votingGroup.addMember(m)
             addLog(`Verified voters: ${votingMembers.length}`)
 
-            if (votingGroup.indexOf(votingId!.commitment) === -1) {
+            const weightedVotingLeaf = poseidon2([votingId!.commitment, voterWeight])
+            if (votingGroup.indexOf(weightedVotingLeaf) === -1) {
                 throw new Error("Your anonymous registration hasn't been confirmed yet. Try refreshing the page.")
             }
 
@@ -1026,13 +1054,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             const proof = await generateProofInBrowser(
                 votingId!, votingGroup, BigInt(state.proposalId),
-                BigInt(selectedVote), voteRand, BigInt(state.numOptions)
+                BigInt(selectedVote), voteRand, BigInt(state.numOptions), voterWeight
             )
             addLog("Proof ready")
 
             setVoteStep("encrypting"); setStepMsg("Encrypting vote...")
             const pubKey = compressPublicKey(BigInt(state.electionPubKeyX), BigInt(state.electionPubKeyY))
-            const payload = encodeVotePayload(BigInt(selectedVote), voteRand)
+            const payload = encodeVotePayload(BigInt(selectedVote), voterWeight, voteRand)
             const blob = eciesEncrypt(pubKey, payload)
 
             if (gaslessEnabled) {
@@ -1074,7 +1102,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setError(msg); setVoteStep("error"); setStepMsg("")
             addLog(`Error: ${msg}`)
         }
-    }, [identity, signer, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, gaslessEnabled])
+    }, [identity, signer, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, gaslessEnabled, voterWeight])
 
     // ── ADMIN LOGIC ──
     const registerVoter = useCallback(async () => {
@@ -1181,12 +1209,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                 try {
                     const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon2([vote, voteRandomness])
+                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
+                    const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1208,7 +1236,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
                     totalInvalid++
                 } else {
-                    optionCounts[Number(dv.vote)]++
+                    optionCounts[Number(dv.vote)] += Number(dv.weight)
                 }
             }
 
@@ -1305,12 +1333,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                 try {
                     const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon2([vote, voteRandomness])
+                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
+                    const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1331,7 +1359,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
                     totalInvalid++
                 } else {
-                    optionCounts[Number(dv.vote)]++
+                    optionCounts[Number(dv.vote)] += Number(dv.weight)
                 }
             }
             const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
@@ -1584,12 +1612,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                 try {
                     const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon2([vote, voteRandomness])
+                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
+                    const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1609,7 +1637,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
                     totalInvalid++
                 } else {
-                    optionCounts[Number(dv.vote)]++
+                    optionCounts[Number(dv.vote)] += Number(dv.weight)
                 }
             }
             const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)

@@ -28,6 +28,10 @@ interface CreateSimpleFormProps {
     setTokenMinBalance: (v: string) => void
     tokenSymbol: string
     tokenDecimals: number
+    weightedVoting: boolean
+    setWeightedVoting: (v: boolean) => void
+    voteThreshold: string
+    setVoteThreshold: (v: string) => void
     emailDomains: string
     setEmailDomains: (v: string) => void
     githubOrg: string
@@ -48,6 +52,7 @@ export default function CreateSimpleForm({
     allowlistInput, setAllowlistInput,
     tokenAddress, setTokenAddress, tokenType, setTokenType,
     tokenMinBalance, setTokenMinBalance, tokenSymbol, tokenDecimals,
+    weightedVoting, setWeightedVoting, voteThreshold, setVoteThreshold,
     emailDomains, setEmailDomains,
     githubOrg, setGithubOrg,
     creating, onSubmit,
@@ -134,6 +139,10 @@ export default function CreateSimpleForm({
                     setTokenMinBalance={setTokenMinBalance}
                     tokenSymbol={tokenSymbol}
                     tokenDecimals={tokenDecimals}
+                    weightedVoting={weightedVoting}
+                    setWeightedVoting={setWeightedVoting}
+                    voteThreshold={voteThreshold}
+                    setVoteThreshold={setVoteThreshold}
                     emailDomains={emailDomains}
                     setEmailDomains={setEmailDomains}
                     githubOrg={githubOrg}

@@ -9,6 +9,7 @@ type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
 interface DecryptedVote {
     nullifierHash: string
     vote: bigint
+    weight: bigint
     voteRandomness: bigint
     commitmentValid: boolean
 }

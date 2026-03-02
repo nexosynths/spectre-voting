@@ -16,6 +16,7 @@ const SPECTRE_VOTING_ABI = [
 
 export interface VotePayload {
     vote: bigint
+    weight: bigint
     voteRandomness: bigint
 }
 
@@ -27,21 +28,22 @@ export interface PreparedVote {
 
 /**
  * Encode a vote payload into bytes for ECIES encryption.
- * Format: vote (1 byte) || randomness (32 bytes big-endian)
- * Total: 33 bytes
+ * Format: vote (1 byte) || weight (1 byte) || randomness (32 bytes big-endian)
+ * Total: 34 bytes
  *
  * Note: nullifier is NOT included — it's already a public signal in the ZK proof
  * and emitted on-chain in the VoteCast event. Including it in the encrypted
  * blob would be redundant and reduce privacy.
  */
-function encodeVotePayload(vote: bigint, randomness: bigint): Uint8Array {
-    const buf = new Uint8Array(33)
+function encodeVotePayload(vote: bigint, weight: bigint, randomness: bigint): Uint8Array {
+    const buf = new Uint8Array(34)
     buf[0] = Number(vote)
+    buf[1] = Number(weight)
 
     // randomness as 32-byte big-endian
     const rHex = randomness.toString(16).padStart(64, "0")
     for (let i = 0; i < 32; i++) {
-        buf[1 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
+        buf[2 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
     }
 
     return buf
@@ -49,16 +51,17 @@ function encodeVotePayload(vote: bigint, randomness: bigint): Uint8Array {
 
 /**
  * Decode a vote payload from bytes.
- * Expects 33 bytes: vote (1 byte) || randomness (32 bytes big-endian)
+ * Expects 34 bytes: vote (1 byte) || weight (1 byte) || randomness (32 bytes big-endian)
  */
 export function decodeVotePayload(buf: Uint8Array): VotePayload {
     const vote = BigInt(buf[0])
+    const weight = BigInt(buf[1])
 
     let rHex = ""
-    for (let i = 0; i < 32; i++) rHex += buf[1 + i].toString(16).padStart(2, "0")
+    for (let i = 0; i < 32; i++) rHex += buf[2 + i].toString(16).padStart(2, "0")
     const voteRandomness = BigInt("0x" + rHex)
 
-    return { vote, voteRandomness }
+    return { vote, weight, voteRandomness }
 }
 
 /**
@@ -71,6 +74,7 @@ export function decodeVotePayload(buf: Uint8Array): VotePayload {
  * @param vote — vote option index (0 to numOptions-1)
  * @param electionPubKey — 33-byte compressed secp256k1 public key
  * @param numOptions — total number of vote options (default 2 for backwards compat)
+ * @param weight — voting weight (default 1 for non-weighted elections)
  * @param artifacts — optional custom circuit artifact paths
  */
 export async function prepareVote(
@@ -80,6 +84,7 @@ export async function prepareVote(
     vote: bigint,
     electionPubKey: Uint8Array,
     numOptions: bigint = 2n,
+    weight: bigint = 1n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<PreparedVote> {
     // Generate random blinding factor
@@ -97,17 +102,18 @@ export async function prepareVote(
         vote,
         voteRandomness,
         numOptions,
+        weight,
         artifacts
     )
 
     // Encode and encrypt vote payload
-    const plaintext = encodeVotePayload(vote, voteRandomness)
+    const plaintext = encodeVotePayload(vote, weight, voteRandomness)
     const encryptedBlob = eciesEncrypt(electionPubKey, plaintext)
 
     return {
         proof,
         encryptedBlob,
-        payload: { vote, voteRandomness }
+        payload: { vote, weight, voteRandomness }
     }
 }
 

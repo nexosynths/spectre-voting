@@ -9,6 +9,7 @@
  */
 
 import { Identity, Group } from "@semaphore-protocol/core"
+import { poseidon2 } from "poseidon-lite"
 
 const MAX_DEPTH = 20
 const WASM_URL = "/circuits/AnonJoin.wasm"
@@ -34,18 +35,21 @@ export interface AnonJoinProof {
  * @param votingIdentity — the voter's NEW voting-phase identity (will be added to voting group)
  * @param signupGroup — the signup group (mirrors on-chain signup Merkle tree)
  * @param electionId — proposalId of the election (scopes the join nullifier)
+ * @param weight — voting weight (default 1 for non-weighted elections)
  */
 export async function generateAnonJoinProof(
     signupIdentity: Identity,
     votingIdentity: Identity,
     signupGroup: Group,
-    electionId: bigint
+    electionId: bigint,
+    weight: bigint = 1n
 ): Promise<AnonJoinProof> {
     // Dynamic import — snarkjs is heavy and only needed client-side
     const snarkjs = await import("snarkjs")
 
-    // Build Merkle proof from signup group
-    const leafIndex = signupGroup.indexOf(signupIdentity.commitment)
+    // Build Merkle proof from signup group (leaves are weighted: Poseidon(commitment, weight))
+    const weightedLeaf = poseidon2([signupIdentity.commitment, weight])
+    const leafIndex = signupGroup.indexOf(weightedLeaf)
     if (leafIndex === -1) {
         throw new Error("Your signup identity is not registered in this election's signup group")
     }
@@ -61,6 +65,7 @@ export async function generateAnonJoinProof(
     const input = {
         secret: signupIdentity.secretScalar.toString(),
         newSecret: votingIdentity.secretScalar.toString(),
+        weight: weight.toString(),
         merkleProofLength: merkleProof.siblings.length,
         merkleProofIndex: merkleProof.index,
         merkleProofSiblings: siblings,
