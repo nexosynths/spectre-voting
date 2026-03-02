@@ -1,13 +1,19 @@
 "use client"
 
 import { useSpectre } from "@/context/SpectreContext"
+import { useMode } from "@/context/ModeContext"
 import { useState, useEffect, useCallback } from "react"
 import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, isAddress } from "ethers"
 import { secp256k1 } from "@noble/curves/secp256k1"
-import Link from "next/link"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { generateCodes, hashCodes, codesToCsv, downloadCsv, storeAdminCodes, hashIdentifiers, storeAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
+import CreateSimpleForm from "@/components/CreateSimpleForm"
+import GateSelector from "@/components/GateSelector"
+import ContextualWarnings from "@/components/ContextualWarning"
+import CodesModal from "@/components/CodesModal"
+import AllowlistModal from "@/components/AllowlistModal"
+import ElectionList from "@/components/ElectionList"
 
 interface ElectionInfo {
     address: string
@@ -24,6 +30,7 @@ export default function HomePage() {
     const {
         address, signer, connectWallet, addLog,
     } = useSpectre()
+    const { isSimple } = useMode()
 
     const [copied, setCopied] = useState("")
     const [elections, setElections] = useState<ElectionInfo[]>([])
@@ -199,13 +206,11 @@ export default function HomePage() {
                 : []
 
             if (encryptionMode === "threshold") {
-                // ── THRESHOLD MODE: pubkey set to (0,0), committee configured after creation ──
                 if (validMembers.length < 2) throw new Error("Need at least 2 committee members with valid addresses")
                 if (threshold < 2 || threshold > validMembers.length) throw new Error("Invalid threshold")
                 pkX = "0"
                 pkY = "0"
             } else {
-                // ── SINGLE KEY MODE (existing flow) ──
                 const privKey = secp256k1.utils.randomPrivateKey()
                 const pubKey = secp256k1.ProjectivePoint.fromPrivateKey(privKey)
                 pkX = pubKey.x.toString()
@@ -291,7 +296,6 @@ export default function HomePage() {
             if (encryptionMode === "threshold") {
                 addLog(`Election created. Setting up ${threshold}-of-${validMembers.length} committee...`)
 
-                // Second transaction: call setupCommittee on the election contract
                 const election = new Contract(electionAddr, SPECTRE_VOTING_ABI, signer)
                 const memberAddresses = validMembers.map(m => m.address.trim())
                 const tx2 = await election.setupCommittee(threshold, memberAddresses)
@@ -300,7 +304,6 @@ export default function HomePage() {
 
                 addLog(`Committee configured! Members must register keys on the election page.`)
             } else {
-                // Store single-key election private key
                 if (privKeyHex) {
                     localStorage.setItem(`spectre-election-key-${electionAddr}`, privKeyHex)
                 }
@@ -336,6 +339,15 @@ export default function HomePage() {
         }
     }, [signer, electionTitle, optionLabels, signupHours, votingHours, selfSignup, gaslessMode, encryptionMode, committeMembers, threshold, addLog, loadElections, gateType, codeCount, allowlistInput])
 
+    // Handle "+ New" click — in Simple mode, connect wallet first if needed
+    const handleNewClick = () => {
+        if (!address) {
+            connectWallet()
+            return
+        }
+        setShowCreate(!showCreate)
+    }
+
     return (
         <>
             {/* Elections header */}
@@ -345,403 +357,318 @@ export default function HomePage() {
                     <button className="btn-secondary" onClick={loadElections} style={{ width: "auto", padding: "6px 14px", fontSize: "0.75rem" }}>
                         Refresh
                     </button>
-                    {address && (
-                        <button className="btn-primary" onClick={() => setShowCreate(!showCreate)} style={{ width: "auto", padding: "6px 14px", fontSize: "0.75rem" }}>
+                    {(address || isSimple) && (
+                        <button className="btn-primary" onClick={handleNewClick} style={{ width: "auto", padding: "6px 14px", fontSize: "0.75rem" }}>
                             + New
                         </button>
                     )}
                 </div>
             </div>
 
-            {/* Create election form */}
-            {showCreate && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                    <h4 style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: 12 }}>Create Election</h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
-                        <input
-                            type="text"
-                            placeholder="What are you voting on? (e.g. &quot;Approve Q1 Budget&quot;)"
-                            value={electionTitle}
-                            onChange={e => setElectionTitle(e.target.value)}
-                            disabled={creating}
-                        />
+            {/* Simple mode: wallet prompt when creating without connection */}
+            {isSimple && !address && showCreate && (
+                <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
+                    <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 8 }}>
+                        Connect your wallet to create elections. Your voters won&apos;t need one.
+                    </p>
+                    <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>
+                        Connect Wallet
+                    </button>
+                </div>
+            )}
 
-                        {/* Vote options */}
-                        <div>
-                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-                                Vote Options ({optionLabels.length})
-                            </label>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                {optionLabels.map((label, i) => (
-                                    <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", width: 20, textAlign: "center" }}>{i}</span>
-                                        <input
-                                            type="text"
-                                            placeholder={`Option ${i} label`}
-                                            value={label}
-                                            onChange={e => updateOption(i, e.target.value)}
-                                            disabled={creating}
-                                            style={{ flex: 1 }}
-                                        />
-                                        {optionLabels.length > 2 && (
-                                            <button
-                                                onClick={() => removeOption(i)}
-                                                disabled={creating}
-                                                style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 6px" }}
-                                            >
-                                                ×
-                                            </button>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                            {optionLabels.length < 10 && (
-                                <button
-                                    onClick={addOption}
-                                    disabled={creating}
-                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: "6px 0", marginTop: 4 }}
-                                >
-                                    + Add option
-                                </button>
-                            )}
-                        </div>
+            {/* Create election form — conditional on mode */}
+            {showCreate && address && (
+                isSimple ? (
+                    <CreateSimpleForm
+                        electionTitle={electionTitle}
+                        setElectionTitle={setElectionTitle}
+                        optionLabels={optionLabels}
+                        addOption={addOption}
+                        removeOption={removeOption}
+                        updateOption={updateOption}
+                        gateType={gateType}
+                        setGateType={setGateType}
+                        codeCount={codeCount}
+                        setCodeCount={setCodeCount}
+                        allowlistInput={allowlistInput}
+                        setAllowlistInput={setAllowlistInput}
+                        creating={creating}
+                        onSubmit={createElection}
+                        setSignupHours={setSignupHours}
+                        setVotingHours={setVotingHours}
+                        setGaslessMode={setGaslessMode}
+                        setEncryptionMode={setEncryptionMode}
+                    />
+                ) : (
+                    /* Advanced mode: full creation form */
+                    <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
+                        <h4 style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: 12 }}>Create Election</h4>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+                            <input
+                                type="text"
+                                placeholder="What are you voting on? (e.g. &quot;Approve Q1 Budget&quot;)"
+                                value={electionTitle}
+                                onChange={e => setElectionTitle(e.target.value)}
+                                disabled={creating}
+                            />
 
-                        {/* Deadlines */}
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                                    Signup duration (hours)
-                                </label>
-                                <input
-                                    type="number"
-                                    placeholder="24"
-                                    value={signupHours}
-                                    onChange={e => setSignupHours(e.target.value)}
-                                    disabled={creating}
-                                />
-                            </div>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                                    Voting duration (hours)
-                                </label>
-                                <input
-                                    type="number"
-                                    placeholder="72"
-                                    value={votingHours}
-                                    onChange={e => setVotingHours(e.target.value)}
-                                    disabled={creating}
-                                />
-                            </div>
-                        </div>
-                        {/* Signup gate selector */}
-                        <div>
-                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-                                Who can join?
-                            </label>
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                {([
-                                    { key: "open" as const, label: "Open", desc: "Anyone with the link can vote" },
-                                    { key: "invite-codes" as const, label: "Invite Codes", desc: "One-time codes you distribute" },
-                                    { key: "allowlist" as const, label: "Allowlist", desc: "Only people on your list" },
-                                    { key: "admin-only" as const, label: "Admin Only", desc: "You register each voter" },
-                                ]).map(g => (
-                                    <div
-                                        key={g.key}
-                                        onClick={() => !creating && setGateType(g.key)}
-                                        style={{
-                                            flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
-                                            border: `1px solid ${gateType === g.key ? "var(--accent)" : "var(--border)"}`,
-                                            background: gateType === g.key ? "var(--accent-bg)" : "var(--bg)",
-                                            minWidth: "calc(50% - 4px)",
-                                        }}
-                                    >
-                                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{g.label}</span>
-                                        <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>{g.desc}</p>
-                                    </div>
-                                ))}
-                            </div>
-                            {gateType === "invite-codes" && (
-                                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                                        Number of invite codes (2–250)
-                                    </label>
-                                    <input
-                                        type="number"
-                                        min={2}
-                                        max={250}
-                                        value={codeCount}
-                                        onChange={e => setCodeCount(e.target.value)}
-                                        disabled={creating}
-                                        style={{ width: 100, fontSize: "0.85rem" }}
-                                    />
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
-                                        Each code lets one voter sign up. Codes are shown after election creation.
-                                    </p>
-                                </div>
-                            )}
-                            {gateType === "allowlist" && (
-                                <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                                        One identifier per line (email, name, ID...)
-                                    </label>
-                                    <textarea
-                                        placeholder={"alice@example.com\nbob@example.com\ncharlie smith"}
-                                        value={allowlistInput}
-                                        onChange={e => setAllowlistInput(e.target.value)}
-                                        disabled={creating}
-                                        rows={5}
-                                        style={{ width: "100%", background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", padding: "10px 14px", fontFamily: "inherit", fontSize: "0.85rem", resize: "vertical", outline: "none", marginBottom: 4 }}
-                                    />
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)" }}>
-                                        {(() => {
-                                            const count = [...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length
-                                            return `${count} identifier${count !== 1 ? "s" : ""}`
-                                        })()} — Voters enter their identifier to sign up
-                                    </p>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Voter access mode toggle */}
-                        <div
-                            onClick={() => !creating && setGaslessMode(!gaslessMode)}
-                            role="button"
-                            style={{
-                                display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                                background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)",
-                                cursor: creating ? "not-allowed" : "pointer", userSelect: "none",
-                            }}
-                        >
-                            <div style={{
-                                width: 36, height: 20, borderRadius: 10,
-                                background: gaslessMode ? "var(--success)" : "var(--border)",
-                                position: "relative", transition: "background 0.2s", flexShrink: 0,
-                            }}>
-                                <div style={{
-                                    width: 16, height: 16, borderRadius: "50%", background: "white",
-                                    position: "absolute", top: 2,
-                                    left: gaslessMode ? 18 : 2,
-                                    transition: "left 0.2s",
-                                }} />
-                            </div>
+                            {/* Vote options */}
                             <div>
-                                <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                    {gaslessMode ? "No wallet needed" : "Wallet required"}
-                                </span>
-                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
-                                    {gaslessMode
-                                        ? "No wallet needed \u2014 votes are submitted automatically"
-                                        : "Voters need a crypto wallet with ETH to submit votes"}
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* Encryption mode */}
-                        <div>
-                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
-                                Results security
-                            </label>
-                            <div style={{ display: "flex", gap: 8 }}>
-                                <div
-                                    onClick={() => !creating && setEncryptionMode("single")}
-                                    style={{
-                                        flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
-                                        border: `1px solid ${encryptionMode === "single" ? "var(--accent)" : "var(--border)"}`,
-                                        background: encryptionMode === "single" ? "var(--accent-bg)" : "var(--bg)",
-                                    }}
-                                >
-                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Only you</span>
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>You control when results are revealed</p>
-                                </div>
-                                <div
-                                    onClick={() => !creating && setEncryptionMode("threshold")}
-                                    style={{
-                                        flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
-                                        border: `1px solid ${encryptionMode === "threshold" ? "var(--accent)" : "var(--border)"}`,
-                                        background: encryptionMode === "threshold" ? "var(--accent-bg)" : "var(--bg)",
-                                    }}
-                                >
-                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Committee</span>
-                                    <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>Multiple members must agree to reveal results</p>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Committee setup (threshold mode) */}
-                        {encryptionMode === "threshold" && (
-                            <div style={{ padding: "12px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                                        Committee ({committeMembers.length} members)
-                                    </label>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                        <label style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Threshold:</label>
-                                        <select
-                                            value={threshold}
-                                            onChange={e => setThreshold(Number(e.target.value))}
-                                            disabled={creating}
-                                            style={{ padding: "4px 8px", fontSize: "0.8rem", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
-                                        >
-                                            {Array.from({ length: committeMembers.length - 1 }, (_, i) => i + 2).map(t => (
-                                                <option key={t} value={t}>{t} of {committeMembers.length}</option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                </div>
-                                <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.4 }}>
-                                    Each member generates their own key on the election page. No private keys are shared.
-                                </p>
-                                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                    {committeMembers.map((m, i) => (
-                                        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 10px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                                <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", width: 16 }}>{i + 1}</span>
-                                                <input
-                                                    type="text" placeholder="Name"
-                                                    value={m.name} onChange={e => updateCommitteeMember(i, "name", e.target.value)}
-                                                    disabled={creating} style={{ flex: 1, padding: "6px 10px", fontSize: "0.8rem" }}
-                                                />
-                                                {committeMembers.length > 2 && (
-                                                    <button onClick={() => removeCommitteeMember(i)} disabled={creating}
-                                                        style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 4px" }}>×</button>
-                                                )}
-                                            </div>
-                                            <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22 }}>
-                                                <input
-                                                    type="text" placeholder="Wallet address (0x...)"
-                                                    value={m.address} onChange={e => updateCommitteeMember(i, "address", e.target.value)}
-                                                    disabled={creating} className="mono"
-                                                    style={{ flex: 1, padding: "6px 10px", fontSize: "0.75rem", minWidth: 0 }}
-                                                />
-                                            </div>
-                                            {m.address && !isAddress(m.address.trim()) && (
-                                                <p style={{ marginLeft: 22, fontSize: "0.65rem", color: "var(--error)" }}>Invalid Ethereum address</p>
+                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
+                                    Vote Options ({optionLabels.length})
+                                </label>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                    {optionLabels.map((label, i) => (
+                                        <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                            <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", width: 20, textAlign: "center" }}>{i}</span>
+                                            <input
+                                                type="text"
+                                                placeholder={`Option ${i} label`}
+                                                value={label}
+                                                onChange={e => updateOption(i, e.target.value)}
+                                                disabled={creating}
+                                                style={{ flex: 1 }}
+                                            />
+                                            {optionLabels.length > 2 && (
+                                                <button
+                                                    onClick={() => removeOption(i)}
+                                                    disabled={creating}
+                                                    style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 6px" }}
+                                                >
+                                                    ×
+                                                </button>
                                             )}
                                         </div>
                                     ))}
                                 </div>
-                                {committeMembers.length < 10 && (
-                                    <button onClick={addCommitteeMember} disabled={creating}
-                                        style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.75rem", cursor: "pointer", padding: "6px 0", marginTop: 4 }}>
-                                        + Add member
+                                {optionLabels.length < 10 && (
+                                    <button
+                                        onClick={addOption}
+                                        disabled={creating}
+                                        style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", padding: "6px 0", marginTop: 4 }}
+                                    >
+                                        + Add option
                                     </button>
                                 )}
                             </div>
-                        )}
+
+                            {/* Deadlines */}
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <div style={{ flex: 1 }}>
+                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                        Signup duration (hours)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        placeholder="24"
+                                        value={signupHours}
+                                        onChange={e => setSignupHours(e.target.value)}
+                                        disabled={creating}
+                                    />
+                                </div>
+                                <div style={{ flex: 1 }}>
+                                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                                        Voting duration (hours)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        placeholder="72"
+                                        value={votingHours}
+                                        onChange={e => setVotingHours(e.target.value)}
+                                        disabled={creating}
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Signup gate selector — using extracted component */}
+                            <GateSelector
+                                gateType={gateType}
+                                setGateType={setGateType}
+                                codeCount={codeCount}
+                                setCodeCount={setCodeCount}
+                                allowlistInput={allowlistInput}
+                                setAllowlistInput={setAllowlistInput}
+                                disabled={creating}
+                            />
+
+                            {/* Voter access mode toggle */}
+                            <div
+                                onClick={() => !creating && setGaslessMode(!gaslessMode)}
+                                role="button"
+                                style={{
+                                    display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                                    background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)",
+                                    cursor: creating ? "not-allowed" : "pointer", userSelect: "none",
+                                }}
+                            >
+                                <div style={{
+                                    width: 36, height: 20, borderRadius: 10,
+                                    background: gaslessMode ? "var(--success)" : "var(--border)",
+                                    position: "relative", transition: "background 0.2s", flexShrink: 0,
+                                }}>
+                                    <div style={{
+                                        width: 16, height: 16, borderRadius: "50%", background: "white",
+                                        position: "absolute", top: 2,
+                                        left: gaslessMode ? 18 : 2,
+                                        transition: "left 0.2s",
+                                    }} />
+                                </div>
+                                <div>
+                                    <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
+                                        {gaslessMode ? "No wallet needed" : "Wallet required"}
+                                    </span>
+                                    <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 }}>
+                                        {gaslessMode
+                                            ? "No wallet needed \u2014 votes are submitted automatically"
+                                            : "Voters need a crypto wallet with ETH to submit votes"}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Encryption mode */}
+                            <div>
+                                <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 6 }}>
+                                    Results security
+                                </label>
+                                <div style={{ display: "flex", gap: 8 }}>
+                                    <div
+                                        onClick={() => !creating && setEncryptionMode("single")}
+                                        style={{
+                                            flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
+                                            border: `1px solid ${encryptionMode === "single" ? "var(--accent)" : "var(--border)"}`,
+                                            background: encryptionMode === "single" ? "var(--accent-bg)" : "var(--bg)",
+                                        }}
+                                    >
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Only you</span>
+                                        <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>You control when results are revealed</p>
+                                    </div>
+                                    <div
+                                        onClick={() => !creating && setEncryptionMode("threshold")}
+                                        style={{
+                                            flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: creating ? "not-allowed" : "pointer",
+                                            border: `1px solid ${encryptionMode === "threshold" ? "var(--accent)" : "var(--border)"}`,
+                                            background: encryptionMode === "threshold" ? "var(--accent-bg)" : "var(--bg)",
+                                        }}
+                                    >
+                                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Committee</span>
+                                        <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>Multiple members must agree to reveal results</p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Committee setup (threshold mode) */}
+                            {encryptionMode === "threshold" && (
+                                <div style={{ padding: "12px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                                        <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                                            Committee ({committeMembers.length} members)
+                                        </label>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                            <label style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Threshold:</label>
+                                            <select
+                                                value={threshold}
+                                                onChange={e => setThreshold(Number(e.target.value))}
+                                                disabled={creating}
+                                                style={{ padding: "4px 8px", fontSize: "0.8rem", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)" }}
+                                            >
+                                                {Array.from({ length: committeMembers.length - 1 }, (_, i) => i + 2).map(t => (
+                                                    <option key={t} value={t}>{t} of {committeMembers.length}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.4 }}>
+                                        Each member generates their own key on the election page. No private keys are shared.
+                                    </p>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                        {committeMembers.map((m, i) => (
+                                            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "8px 10px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                                    <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", width: 16 }}>{i + 1}</span>
+                                                    <input
+                                                        type="text" placeholder="Name"
+                                                        value={m.name} onChange={e => updateCommitteeMember(i, "name", e.target.value)}
+                                                        disabled={creating} style={{ flex: 1, padding: "6px 10px", fontSize: "0.8rem" }}
+                                                    />
+                                                    {committeMembers.length > 2 && (
+                                                        <button onClick={() => removeCommitteeMember(i)} disabled={creating}
+                                                            style={{ background: "none", border: "none", color: "var(--error)", fontSize: "1rem", cursor: "pointer", padding: "0 4px" }}>×</button>
+                                                    )}
+                                                </div>
+                                                <div style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 22 }}>
+                                                    <input
+                                                        type="text" placeholder="Wallet address (0x...)"
+                                                        value={m.address} onChange={e => updateCommitteeMember(i, "address", e.target.value)}
+                                                        disabled={creating} className="mono"
+                                                        style={{ flex: 1, padding: "6px 10px", fontSize: "0.75rem", minWidth: 0 }}
+                                                    />
+                                                </div>
+                                                {m.address && !isAddress(m.address.trim()) && (
+                                                    <p style={{ marginLeft: 22, fontSize: "0.65rem", color: "var(--error)" }}>Invalid Ethereum address</p>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {committeMembers.length < 10 && (
+                                        <button onClick={addCommitteeMember} disabled={creating}
+                                            style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.75rem", cursor: "pointer", padding: "6px 0", marginTop: 4 }}>
+                                            + Add member
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Contextual warnings (Advanced mode) */}
+                            <ContextualWarnings config={{
+                                gateType,
+                                gaslessMode: gaslessMode || gateType === "invite-codes" || gateType === "allowlist",
+                                encryptionMode,
+                                signupHours: Number(signupHours) || 24,
+                                votingHours: Number(votingHours) || 72,
+                                numOptions: optionLabels.length,
+                                threshold: encryptionMode === "threshold" ? threshold : undefined,
+                                totalMembers: encryptionMode === "threshold" ? committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length : undefined,
+                            }} />
+                        </div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
+                                Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : gateType === "allowlist" ? `${[...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length} entries` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" || gateType === "allowlist" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
+                            </p>
+                            <button
+                                className="btn-primary"
+                                onClick={createElection}
+                                disabled={creating || !electionTitle.trim() || (encryptionMode === "threshold" && committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length < 2)}
+                                style={{ width: "auto", padding: "12px 20px" }}
+                            >
+                                {creating ? "Creating..." : "Create"}
+                            </button>
+                        </div>
                     </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                            Signup: {signupHours}h → Voting: {votingHours}h · {gateType === "open" ? "Open" : gateType === "invite-codes" ? `${codeCount} codes` : gateType === "allowlist" ? `${[...new Set(allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))].length} entries` : "Admin-only"} · {gaslessMode || gateType === "invite-codes" || gateType === "allowlist" ? "Gasless" : "Wallet"} · {encryptionMode === "threshold" ? `${threshold}-of-${committeMembers.filter(m => m.name && isAddress(m.address.trim())).length} committee` : "Single key"} · Share link auto-copied
-                        </p>
-                        <button
-                            className="btn-primary"
-                            onClick={createElection}
-                            disabled={creating || !electionTitle.trim() || (encryptionMode === "threshold" && committeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())).length < 2)}
-                            style={{ width: "auto", padding: "12px 20px" }}
-                        >
-                            {creating ? "Creating..." : "Create"}
-                        </button>
-                    </div>
-                </div>
+                )
             )}
 
-            {/* Invite codes modal */}
+            {/* Post-creation modals */}
             {showCodesModal && generatedCodes.length > 0 && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700 }}>Invite Codes ({generatedCodes.length})</h4>
-                        <button
-                            onClick={() => setShowCodesModal(false)}
-                            style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "1.1rem", cursor: "pointer", padding: "0 4px" }}
-                        >×</button>
-                    </div>
-                    <div style={{ padding: "8px 12px", background: "var(--error-bg)", borderRadius: "var(--radius)", border: "1px solid var(--error-border)", marginBottom: 12 }}>
-                        <p style={{ fontSize: "0.8rem", color: "var(--error)", fontWeight: 600 }}>
-                            Save these codes now — they cannot be recovered later
-                        </p>
-                    </div>
-                    <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                        {generatedCodes.map((code, i) => (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < generatedCodes.length - 1 ? "1px solid var(--border)" : "none" }}>
-                                <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
-                                <button
-                                    onClick={() => copyToClipboard(code, `code-${i}`)}
-                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
-                                >{copied === `code-${i}` ? "Copied!" : "Copy"}</button>
-                            </div>
-                        ))}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                        <button
-                            className="btn-primary"
-                            onClick={() => {
-                                navigator.clipboard.writeText(generatedCodes.join("\n"))
-                                setCopied("all-codes")
-                                setTimeout(() => setCopied(""), 2000)
-                            }}
-                            style={{ flex: 1, fontSize: "0.8rem" }}
-                        >{copied === "all-codes" ? "Copied!" : "Copy All"}</button>
-                        <button
-                            className="btn-secondary"
-                            onClick={() => {
-                                const csv = codesToCsv(generatedCodes, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
-                                downloadCsv(csv, `invite-codes-${new Date().toISOString().slice(0, 10)}.csv`)
-                            }}
-                            style={{ flex: 1, fontSize: "0.8rem" }}
-                        >Download CSV</button>
-                    </div>
-                </div>
+                <CodesModal
+                    codes={generatedCodes}
+                    onClose={() => setShowCodesModal(false)}
+                    copied={copied}
+                    onCopy={copyToClipboard}
+                />
             )}
 
-            {/* Allowlist modal */}
             {showAllowlistModal && allowlistIdentifiers.length > 0 && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700 }}>Allowlist ({allowlistIdentifiers.length} entries)</h4>
-                        <button
-                            onClick={() => setShowAllowlistModal(false)}
-                            style={{ background: "none", border: "none", color: "var(--text-muted)", fontSize: "1.1rem", cursor: "pointer", padding: "0 4px" }}
-                        >×</button>
-                    </div>
-                    <div style={{ padding: "8px 12px", background: "var(--success-bg)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)", marginBottom: 12 }}>
-                        <p style={{ fontSize: "0.8rem", color: "var(--success)", fontWeight: 600 }}>
-                            Allowlist saved. Share links with voters or let them enter their identifier manually.
-                        </p>
-                    </div>
-                    <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
-                        {allowlistIdentifiers.map((id, i) => (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < allowlistIdentifiers.length - 1 ? "1px solid var(--border)" : "none" }}>
-                                <span style={{ fontSize: "0.8rem" }}>{id}</span>
-                                <button
-                                    onClick={() => copyToClipboard(id, `allowlist-${i}`)}
-                                    style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
-                                >{copied === `allowlist-${i}` ? "Copied!" : "Copy"}</button>
-                            </div>
-                        ))}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                        <button
-                            className="btn-primary"
-                            onClick={() => {
-                                navigator.clipboard.writeText(allowlistIdentifiers.join("\n"))
-                                setCopied("all-allowlist")
-                                setTimeout(() => setCopied(""), 2000)
-                            }}
-                            style={{ flex: 1, fontSize: "0.8rem" }}
-                        >{copied === "all-allowlist" ? "Copied!" : "Copy All"}</button>
-                        <button
-                            className="btn-secondary"
-                            onClick={() => {
-                                const csv = allowlistToCsv(allowlistIdentifiers, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
-                                downloadCsv(csv, `allowlist-${new Date().toISOString().slice(0, 10)}.csv`)
-                            }}
-                            style={{ flex: 1, fontSize: "0.8rem" }}
-                        >Download CSV</button>
-                    </div>
-                </div>
+                <AllowlistModal
+                    identifiers={allowlistIdentifiers}
+                    onClose={() => setShowAllowlistModal(false)}
+                    copied={copied}
+                    onCopy={copyToClipboard}
+                />
             )}
 
-            {!address && (
+            {/* Connect wallet prompt (Advanced mode only — Simple mode handles it contextually) */}
+            {!isSimple && !address && (
                 <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
                     <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 12 }}>
                         Connect your wallet to create elections or vote
@@ -753,42 +680,7 @@ export default function HomePage() {
             )}
 
             {/* Election list */}
-            {loadingElections ? (
-                <div className="card" style={{ textAlign: "center", padding: 32 }}>
-                    <div className="spinner" style={{ margin: "0 auto 12px" }} />
-                    <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>Loading elections...</p>
-                </div>
-            ) : elections.length === 0 ? (
-                <div className="card" style={{ textAlign: "center", padding: 32 }}>
-                    <p style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>
-                        No elections yet. Create the first one!
-                    </p>
-                </div>
-            ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {elections.map(e => (
-                        <Link
-                            key={e.address}
-                            href={`/election/${e.address}`}
-                            style={{ textDecoration: "none", color: "inherit" }}
-                        >
-                            <div className="card" style={{ cursor: "pointer", transition: "border-color 0.15s" }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                                    <span style={{ fontWeight: 700, fontSize: "0.9rem" }}>
-                                        {e.title}
-                                    </span>
-                                    <span className={`status-badge ${e.phase === "closed" ? "status-closed" : "status-open"}`}>
-                                        {e.phase === "signup" ? "REGISTRATION" : e.phase === "voting" ? "VOTING" : "ENDED"}
-                                    </span>
-                                </div>
-                                <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                    <span>{e.voteCount} vote{e.voteCount !== 1 ? "s" : ""}</span>
-                                </div>
-                            </div>
-                        </Link>
-                    ))}
-                </div>
-            )}
+            <ElectionList elections={elections} loading={loadingElections} />
         </>
     )
 }

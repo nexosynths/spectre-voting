@@ -185,6 +185,56 @@ input:focus, select:focus { border-color: var(--accent); }
     border: 1px solid var(--border);
 }
 
+/* ─── Mode Toggle ─────────────────────────────────────────────────────────── */
+.mode-toggle {
+    display: flex;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+.mode-toggle-btn {
+    padding: 5px 12px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    letter-spacing: 0.02em;
+}
+.mode-toggle-btn:hover { color: var(--text); background: var(--bg-hover); }
+.mode-toggle-btn.active {
+    color: white;
+    background: var(--accent);
+}
+
+/* ─── Trust Callouts ──────────────────────────────────────────────────────── */
+.trust-callout {
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    margin-top: 8px;
+    border-left: 3px solid;
+}
+.trust-callout-info {
+    background: var(--accent-bg);
+    border-left-color: var(--accent);
+    color: var(--text);
+}
+.trust-callout-caution {
+    background: var(--warning-bg);
+    border-left-color: var(--warning);
+    color: var(--text);
+}
+.trust-callout-warning {
+    background: var(--error-bg);
+    border-left-color: var(--error);
+    color: var(--text);
+}
+
 /* ─── Mobile Responsive (phones, 375px+) ─────────────────────────────────── */
 @media (max-width: 600px) {
     .container { padding: 16px 14px; }
