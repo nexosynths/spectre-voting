@@ -34,8 +34,6 @@ const GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "open", label: "Anyone", desc: "Anyone with the link can vote" },
     { key: "allowlist", label: "Allowlist", desc: "You specify who can participate" },
     { key: "invite-codes", label: "Invite codes", desc: "One code per voter" },
-    { key: "email-domain", label: "Email domain", desc: "Must verify a company email" },
-    { key: "github-org", label: "GitHub org", desc: "Must be in a GitHub organization" },
     { key: "token-gate", label: "Token holders", desc: "Must hold a token or NFT" },
     { key: "admin-only", label: "Admin only", desc: "You register each voter" },
 ]

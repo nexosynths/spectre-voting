@@ -140,9 +140,12 @@ export default function SignupSection({
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.5 }}>
                         Your identity is stored in this browser. If you clear your data or switch devices, paste this code to restore your identity.
                     </p>
+                    <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 10, lineHeight: 1.5, fontWeight: 600 }}>
+                        If you lose this code and clear your browser data, you won&apos;t be able to vote in this election.
+                    </p>
                     <code className="mono" style={{
                         display: "block", background: "var(--bg)", padding: "10px 12px", borderRadius: 8,
-                        border: "1px solid var(--border)", fontSize: "0.65rem", wordBreak: "break-all",
+                        border: "1px solid var(--border)", fontSize: "0.8rem", wordBreak: "break-all",
                         marginBottom: 10, lineHeight: 1.6
                     }}>
                         {recoveryCode}
@@ -160,7 +163,7 @@ export default function SignupSection({
                             onClick={dismissRecoveryNudge}
                             style={{ flex: 1, fontSize: "0.8rem" }}
                         >
-                            Dismiss
+                            I&apos;ve saved my code
                         </button>
                     </div>
                 </div>

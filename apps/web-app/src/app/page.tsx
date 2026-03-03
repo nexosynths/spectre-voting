@@ -329,14 +329,15 @@ export default function HomePage() {
                     Private voting,<br />verified results
                 </h2>
                 <p style={{ fontSize: "1.1rem", color: "var(--text-muted)", lineHeight: 1.5, maxWidth: 400, margin: "0 auto 32px" }}>
-                    Anonymous elections powered by zero-knowledge proofs. No one sees how you voted — not even the admin.
+                    Run elections where no one can see how you voted — not even the admin. Results are mathematically verified.
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
                     {[
-                        { icon: "\u{1F6E1}", title: "Anonymous", desc: "ZK proofs break the link between your identity and your vote" },
-                        { icon: "\u{1F512}", title: "Encrypted", desc: "Votes stay sealed until results are revealed" },
-                        { icon: "\u2705", title: "Verifiable", desc: "Anyone can independently confirm the tally on-chain" },
+                        { icon: "\u{1F6E1}", title: "Anonymous", desc: "Your identity is cryptographically separated from your vote — nobody can connect the two" },
+                        { icon: "\u{1F512}", title: "Encrypted", desc: "Votes stay sealed until the election ends — no early peeking" },
+                        { icon: "\u2705", title: "Verifiable", desc: "Anyone can independently confirm the results are correct" },
+                        { icon: "\u26A1", title: "No wallet needed", desc: "Voters just open a link and vote — no crypto, no downloads, works in any browser" },
                     ].map(g => (
                         <div key={g.title} style={{
                             display: "flex", alignItems: "center", gap: 16,
@@ -354,9 +355,6 @@ export default function HomePage() {
                     ))}
                 </div>
 
-                <p style={{ fontSize: "0.9rem", color: "var(--text-muted)", marginTop: 24 }}>
-                    No wallet needed for voters &middot; Works in any browser
-                </p>
             </div>
 
             {/* Elections header */}

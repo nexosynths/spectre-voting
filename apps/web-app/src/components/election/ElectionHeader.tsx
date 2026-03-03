@@ -1,5 +1,6 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import Link from "next/link"
 
 type Tab = "vote" | "results" | "manage" | "committee"
@@ -48,6 +49,24 @@ export default function ElectionHeader({
 }: ElectionHeaderProps) {
     const gateLabel = isGithubOrgElection ? `GitHub Org (${githubOrgMeta?.org || "?"})` : isEmailDomainElection ? `Email domain (${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || "?"})` : isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only"
 
+    // Live countdown timer (re-renders every 60s)
+    const [, setTick] = useState(0)
+    useEffect(() => {
+        const id = setInterval(() => setTick(t => t + 1), 60_000)
+        return () => clearInterval(id)
+    }, [])
+
+    function formatCountdown(deadlineUnix: number): string {
+        const diff = deadlineUnix - Math.floor(Date.now() / 1000)
+        if (diff <= 0) return ""
+        const days = Math.floor(diff / 86400)
+        const hours = Math.floor((diff % 86400) / 3600)
+        const minutes = Math.floor((diff % 3600) / 60)
+        if (days > 0) return `${days}d ${hours}h`
+        if (hours > 0) return `${hours}h ${minutes}m`
+        return `${minutes}m`
+    }
+
     return (
         <>
             <div style={{ marginBottom: 12, fontSize: "0.8rem" }}>
@@ -79,14 +98,14 @@ export default function ElectionHeader({
                         <span>
                             {Date.now() / 1000 > signupDeadline
                                 ? "Signup deadline passed"
-                                : `Signup closes ${new Date(signupDeadline * 1000).toLocaleString()}`}
+                                : <>Signup closes in <strong>{formatCountdown(signupDeadline)}</strong> ({new Date(signupDeadline * 1000).toLocaleString()})</>}
                         </span>
                     )}
                     {(phase === "voting" || phase === "closed") && votingDeadline > 0 && (
                         <span>
                             {Date.now() / 1000 > votingDeadline
                                 ? "Voting deadline passed"
-                                : `Voting closes ${new Date(votingDeadline * 1000).toLocaleString()}`}
+                                : <>Voting closes in <strong>{formatCountdown(votingDeadline)}</strong> ({new Date(votingDeadline * 1000).toLocaleString()})</>}
                         </span>
                     )}
                     <button
