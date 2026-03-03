@@ -17,6 +17,7 @@ const MAX_DEPTH = 20
 const ELECTION_PUBKEY_X = 111n
 const ELECTION_PUBKEY_Y = 222n
 const DEFAULT_NUM_OPTIONS = 2n
+const CREATION_FEE = ethers.parseEther("0.001")
 
 // Helper: generate a SpectreVote proof (updated for numOptions)
 async function generateSpectreProof(
@@ -158,7 +159,8 @@ describe("SpectreVotingFactory", () => {
             votingDeadline,
             numOptions,
             selfSignupAllowed,
-            metadata
+            metadata,
+            { value: CREATION_FEE }
         )
 
         const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
@@ -189,6 +191,104 @@ describe("SpectreVotingFactory", () => {
             expect(await factory.joinVerifier()).to.equal(joinVerifierAddress)
             expect(await factory.electionCount()).to.equal(0)
         })
+
+        it("Should set deployer as owner and default creation fee", async () => {
+            const { factory, deployer } = await loadFixture(deployFixture)
+
+            expect(await factory.owner()).to.equal(deployer.address)
+            expect(await factory.creationFee()).to.equal(CREATION_FEE)
+        })
+    })
+
+    describe("# creation fee", () => {
+        it("Should create election with correct fee", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await factory.connect(alice).createElection(
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x",
+                { value: CREATION_FEE }
+            )
+
+            expect(await factory.electionCount()).to.equal(1)
+            expect(await ethers.provider.getBalance(await factory.getAddress())).to.equal(CREATION_FEE)
+        })
+
+        it("Should revert with insufficient fee", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await expect(
+                factory.connect(alice).createElection(
+                    PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                    0, 0, DEFAULT_NUM_OPTIONS, true, "0x",
+                    { value: 0 }
+                )
+            ).to.be.revertedWith("Insufficient fee")
+        })
+
+        it("Should refund overpayment", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const overpay = ethers.parseEther("0.01")
+
+            const balBefore = await ethers.provider.getBalance(alice.address)
+            const tx = await factory.connect(alice).createElection(
+                PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x",
+                { value: overpay }
+            )
+            const receipt = await tx.wait()
+            const gasCost = receipt!.gasUsed * receipt!.gasPrice
+            const balAfter = await ethers.provider.getBalance(alice.address)
+
+            // Factory should only hold the creation fee, not the overpayment
+            expect(await ethers.provider.getBalance(await factory.getAddress())).to.equal(CREATION_FEE)
+            // Alice should have paid exactly fee + gas
+            expect(balBefore - balAfter).to.equal(CREATION_FEE + gasCost)
+        })
+
+        it("Should allow owner to withdraw", async () => {
+            const { factory, deployer, alice } = await loadFixture(deployFixture)
+
+            // Create two elections to accumulate fees
+            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true, "0x", { value: CREATION_FEE })
+            await factory.connect(alice).createElection(2n, 0n, 0n, 0, 0, 2n, true, "0x", { value: CREATION_FEE })
+
+            const factoryAddr = await factory.getAddress()
+            expect(await ethers.provider.getBalance(factoryAddr)).to.equal(CREATION_FEE * 2n)
+
+            const balBefore = await ethers.provider.getBalance(deployer.address)
+            const tx = await factory.connect(deployer).withdraw()
+            const receipt = await tx.wait()
+            const gasCost = receipt!.gasUsed * receipt!.gasPrice
+            const balAfter = await ethers.provider.getBalance(deployer.address)
+
+            expect(await ethers.provider.getBalance(factoryAddr)).to.equal(0n)
+            expect(balAfter - balBefore).to.equal(CREATION_FEE * 2n - gasCost)
+        })
+
+        it("Should allow owner to update creation fee", async () => {
+            const { factory, deployer } = await loadFixture(deployFixture)
+            const newFee = ethers.parseEther("0.005")
+
+            await factory.connect(deployer).setCreationFee(newFee)
+            expect(await factory.creationFee()).to.equal(newFee)
+        })
+
+        it("Should reject withdraw from non-owner", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await expect(
+                factory.connect(alice).withdraw()
+            ).to.be.revertedWith("Not owner")
+        })
+
+        it("Should reject setCreationFee from non-owner", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+
+            await expect(
+                factory.connect(alice).setCreationFee(0)
+            ).to.be.revertedWith("Not owner")
+        })
     })
 
     describe("# createElection", () => {
@@ -197,7 +297,8 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, DEFAULT_NUM_OPTIONS, true, "0x"
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x",
+                { value: CREATION_FEE }
             )
 
             expect(await factory.electionCount()).to.equal(1)
@@ -232,7 +333,8 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 factory.connect(alice).createElection(
                     PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                    0, 0, 1, true, "0x" // only 1 option — invalid
+                    0, 0, 1, true, "0x",
+                    { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(
                 await ethers.getContractFactory("SpectreVoting").then(f => f.deploy(
@@ -245,7 +347,8 @@ describe("SpectreVotingFactory", () => {
                 await expect(
                     factory.connect(alice).createElection(
                         PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                        0, 0, 1, true, "0x"
+                        0, 0, 1, true, "0x",
+                        { value: CREATION_FEE }
                     )
                 ).to.be.reverted
             })
@@ -254,9 +357,9 @@ describe("SpectreVotingFactory", () => {
         it("Should allow multiple elections from different admins", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
 
-            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true, "0x")
-            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n, true, "0x")
-            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n, true, "0x")
+            await factory.connect(alice).createElection(1n, 0n, 0n, 0, 0, 2n, true, "0x", { value: CREATION_FEE })
+            await factory.connect(bob).createElection(2n, 0n, 0n, 0, 0, 4n, true, "0x", { value: CREATION_FEE })
+            await factory.connect(alice).createElection(3n, 0n, 0n, 0, 0, 3n, true, "0x", { value: CREATION_FEE })
 
             expect(await factory.electionCount()).to.equal(3)
 
@@ -281,7 +384,7 @@ describe("SpectreVotingFactory", () => {
             const { factory, alice } = await loadFixture(deployFixture)
 
             for (let i = 0; i < 5; i++) {
-                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n, true, "0x")
+                await factory.connect(alice).createElection(BigInt(i + 1), 0n, 0n, 0, 0, 2n, true, "0x", { value: CREATION_FEE })
             }
 
             const all = await factory.getElections(0, 100)
@@ -844,7 +947,8 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, DEFAULT_NUM_OPTIONS, true, metadataBytes
+                0, 0, DEFAULT_NUM_OPTIONS, true, metadataBytes,
+                { value: CREATION_FEE }
             )
 
             const receipt = await tx.wait()
@@ -867,7 +971,8 @@ describe("SpectreVotingFactory", () => {
 
             await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, DEFAULT_NUM_OPTIONS, true, "0x"
+                0, 0, DEFAULT_NUM_OPTIONS, true, "0x",
+                { value: CREATION_FEE }
             )
 
             expect(await factory.electionCount()).to.equal(1)
@@ -896,7 +1001,8 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await factory.connect(alice).createElection(
                 PROPOSAL_ID, ELECTION_PUBKEY_X, ELECTION_PUBKEY_Y,
-                0, 0, 3n, true, metadataBytes
+                0, 0, 3n, true, metadataBytes,
+                { value: CREATION_FEE }
             )
             const receipt = await tx.wait()
             expect(receipt!.status).to.equal(1)

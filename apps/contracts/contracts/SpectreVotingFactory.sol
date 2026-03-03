@@ -11,6 +11,9 @@ contract SpectreVotingFactory {
     address public immutable voteVerifier;
     address public immutable joinVerifier;
 
+    uint256 public creationFee;
+    address public owner;
+
     // Registry of all deployed elections
     address[] public elections;
     mapping(address => bool) public isElection;
@@ -32,6 +35,8 @@ contract SpectreVotingFactory {
         semaphore = _semaphore;
         voteVerifier = _voteVerifier;
         joinVerifier = _joinVerifier;
+        creationFee = 0.001 ether;
+        owner = msg.sender;
     }
 
     /// @notice Deploy a new SpectreVoting election
@@ -53,7 +58,12 @@ contract SpectreVotingFactory {
         uint256 _numOptions,
         bool _selfSignupAllowed,
         bytes calldata _metadata
-    ) external returns (address election) {
+    ) external payable returns (address election) {
+        require(msg.value >= creationFee, "Insufficient fee");
+        if (msg.value > creationFee) {
+            (bool sent, ) = msg.sender.call{value: msg.value - creationFee}("");
+            require(sent, "Refund failed");
+        }
         // Pass msg.sender as _admin so the caller (not the factory) is admin
         SpectreVoting sv = new SpectreVoting(
             semaphore,
@@ -90,6 +100,19 @@ contract SpectreVotingFactory {
     /// @notice Get the total number of elections created
     function electionCount() external view returns (uint256) {
         return elections.length;
+    }
+
+    /// @notice Withdraw collected fees to the owner
+    function withdraw() external {
+        require(msg.sender == owner, "Not owner");
+        (bool sent, ) = owner.call{value: address(this).balance}("");
+        require(sent, "Withdraw failed");
+    }
+
+    /// @notice Update the election creation fee
+    function setCreationFee(uint256 _fee) external {
+        require(msg.sender == owner, "Not owner");
+        creationFee = _fee;
     }
 
     /// @notice Get a page of election addresses

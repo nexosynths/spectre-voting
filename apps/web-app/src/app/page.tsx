@@ -240,7 +240,8 @@ export default function HomePage() {
 
             addLog("Creating election via factory...")
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, signer)
-            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions, selfSignup, metadataBytes)
+            const fee = await factory.creationFee()
+            const tx = await factory.createElection(proposalId, pkX, pkY, signupDeadline, votingDeadline, numOptions, selfSignup, metadataBytes, { value: fee })
             addLog(`Tx sent: ${tx.hash.slice(0, 16)}...`)
 
             const receipt = await tx.wait()

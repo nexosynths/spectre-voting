@@ -20,6 +20,8 @@ export const FACTORY_ABI = [
     "function semaphore() view returns (address)",
     "function voteVerifier() view returns (address)",
     "function joinVerifier() view returns (address)",
+    "function creationFee() view returns (uint256)",
+    "function owner() view returns (address)",
     "function electionCount() view returns (uint256)",
     "function elections(uint256) view returns (address)",
     "function isElection(address) view returns (bool)",
