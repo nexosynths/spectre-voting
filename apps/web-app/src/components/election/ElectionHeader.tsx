@@ -1,6 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
 import Link from "next/link"
 
 type Tab = "vote" | "results" | "manage" | "committee"
@@ -47,11 +46,7 @@ export default function ElectionHeader({
     signupDeadline, votingDeadline, shareUrl, isOnChainCommittee, isAdmin,
     tab, setTab, copyToClipboard, copied,
 }: ElectionHeaderProps) {
-    const { isSimple, isAdvanced } = useMode()
-
-    const gateLabel = isSimple
-        ? (isGithubOrgElection ? `GitHub: ${githubOrgMeta?.org || "org"}` : isEmailDomainElection ? `@${emailDomainMeta?.domains[0] || "email"} verified` : isTokenGateElection ? `${tokenGateMeta?.tokenSymbol || "Token"} holders` : isAllowlistElection ? "Allowlist" : isInviteCodeElection ? "Invite-only" : selfSignupAllowed ? "Anyone can vote" : "Admin registers voters")
-        : (isGithubOrgElection ? `GitHub Org (${githubOrgMeta?.org || "?"})` : isEmailDomainElection ? `Email domain (${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || "?"})` : isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only")
+    const gateLabel = isGithubOrgElection ? `GitHub Org (${githubOrgMeta?.org || "?"})` : isEmailDomainElection ? `Email domain (${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || "?"})` : isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only"
 
     return (
         <>
@@ -75,7 +70,7 @@ export default function ElectionHeader({
                             &#9889; No wallet needed
                         </span>
                     )}
-                    {isAdvanced && isThresholdElection && thresholdMeta && (
+                    {isThresholdElection && thresholdMeta && (
                         <span style={{ color: "var(--purple)", fontSize: "0.75rem" }}>
                             {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} committee
                         </span>
@@ -109,7 +104,7 @@ export default function ElectionHeader({
                     {phase === "signup" ? "Sign Up" : "Vote"}
                 </button>
                 <button onClick={() => setTab("results")} className={tab === "results" ? "active" : ""}>Results</button>
-                {isAdvanced && isOnChainCommittee && (
+                {isOnChainCommittee && (
                     <button onClick={() => setTab("committee")} className={tab === "committee" ? "active" : ""}>Committee</button>
                 )}
                 {isAdmin && (

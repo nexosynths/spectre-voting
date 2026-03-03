@@ -477,6 +477,182 @@ The election creation form becomes a decision tree:
 **ZK Credential Proofs (v7.5 — long-term)**
 - ZK proof of external credential (Zupass, ZK Passport, EAS attestation)
 
+---
+
+### Long Term — Platform Evolution
+
+Spectre evolves from a ZK voting protocol into a **private verifiable action protocol**. Voting is the flagship use case, but the same ZK primitives support any application where users prove a credential and perform an action without revealing identity.
+
+#### Core ZK Primitives
+
+The protocol is built on four reusable cryptographic operations:
+
+1. **Set membership** — Merkle tree inclusion proof. User proves their credential key exists as a leaf in a tree of eligible participants without revealing which leaf.
+2. **Action binding** — ZK circuit binds the membership proof to a specific payload (vote choice, report content hash, endorsement metadata). Proof and action cannot be separated.
+3. **Nullifier generation** — Deterministic nullifier from `hash(private_key + scope_id)`. Prevents double-actions within a scope without revealing identity. Scope can be a proposal ID, report hash, market epoch, etc.
+4. **Coercion resistance** — Decoy proof generation. Produces valid-looking but invalid proofs indistinguishable from real proofs. Critical for whistleblowing and high-stakes voting.
+
+#### 90-Day Build Priorities
+
+1. **Homepage UX cleanup** — Simplify the current voting app interface
+2. **Core engine extraction** — Refactor voting-specific circuit logic into parametric modules. Separate credential engine, action circuit, nullifier engine from the voting application layer
+3. **Intent API** — Thin wrapper over core engine. Current UI should call this API instead of circuits directly
+4. **Spectre Report MVP** — Anonymous enterprise whistleblowing product:
+   - One OAuth credential bridge (Okta or Google Workspace)
+   - Web-based report submission with client-side proof generation (WASM)
+   - Simple relayer for on-chain submission (Paymaster-funded, gasless)
+   - Anonymous mailbox for follow-up (nullifier-derived mailbox IDs)
+   - Minimal admin interface for aggregate statistics
+
+#### Core Architecture: Modular Separation
+
+Four independent layers:
+
+1. **Infrastructure Layer** — EVM settlement (Ethereum L1, Base L2), off-chain storage (IPFS/Arweave), sealed-sender relays, credential registry bridges (oracles to external identity sources)
+2. **Core Engine** — Reusable ZK primitives:
+   - Credential Engine — Merkle tree construction, set membership proofs, key management. Static snapshots (DAO governance) + dynamic accumulators (employee directories). 100% reusable
+   - Action Circuit — Parametric ZK circuit binding proof-of-membership to arbitrary payload with configurable nullifier logic. ~90% reusable
+   - Nullifier Engine — Deterministic nullifier generation from private key + scope identifier. ~95% reusable
+   - Coercion Resistance Layer — Decoy proof generation (valid-looking but invalid proofs under duress). 100% reusable
+3. **Intent & Agent Layer** — Programmatic interface for AI agents and developers:
+   - Intent API — REST/gRPC translating `{ scope, action, credential }` into full ZK action flows (proof + submission). Single integration point for web, mobile, agents, CLI
+   - Delegated Auth — EIP-712 typed intent signatures. User pre-signs specific action; agent can only submit that exact action
+   - x402 Payment Bridge — Proof computation costs and gas fees via Coinbase x402 machine-to-machine payment protocol
+4. **Application Layer** — Each use case is a parameter config on the shared core:
+   - Governance Voting (live) — Vote choice payload, one-vote-per-proposal nullifier, on-chain submission, static credential tree
+   - Anonymous Whistleblowing (proposed) — Content hash payload, per-report-hash nullifier, sealed-sender encrypted delivery, dynamic credential tree with revocation, anonymous mailbox
+   - Private Reputation (proposed) — Endorsement metadata payload, per-endorser-per-recipient nullifier, on-chain verifiable credential, threshold aggregation proofs
+   - Private Predictions (proposed) — Position commitment payload, per-market-per-epoch nullifier, delayed reveal, MEV resistance
+   - Healthcare Credentialing (concept) — Credential attestation payload, optional nullifier, verifiable presentation, dynamic tree for license renewals
+
+#### Credential Vault
+
+**Problem:** Wallet-based identity links all user actions on-chain. Same address voting in a DAO and submitting a whistleblower report = trivially correlated.
+
+**Solution:** Local-first encrypted keystore with BIP-32 master key deriving child keys per bridge (`m/spectre'/bridge_id'/credential_index'`). Each credential is independent — activities across applications produce cryptographically unlinkable nullifiers. Nothing stored on server or on-chain.
+
+**Credential Bridges** (translate real-world identity into ZK-compatible credential key):
+- Token-Gated Bridge (live) — ERC-20/721/1155 balances at snapshot block → Merkle tree of qualifying addresses
+- OAuth/SAML Bridge (building next) — Corporate SSO (Okta, Azure AD, Google Workspace) → one-way credential key derivation → Merkle leaf added → mapping discarded. Bridge runs in TEE
+- Professional Registry Bridge (concept) — Oracle queries medical boards, bar associations, engineering boards → proves active license without revealing name/number
+- Civic Identity Bridge (concept) — Government ID systems (digital ID, passport NFC) → attests citizenship, residency, age bracket
+- Attestation Aggregator (proposed) — On-chain history + off-chain attestations (EAS, Verax, Gitcoin Passport) → composite reputation credentials
+
+#### ERC-4337 Smart Contract Wallet Integration
+
+Credential logic as ERC-4337 smart account modules (via ERC-7579). Wallet validation checks credential proofs before operations reach chain. Invalid ops rejected without spending gas.
+
+**Four ERC-7579 Modules:**
+1. **Validator (Type 1)** — Runs during UserOp validation: parse operation type → extract ZK proof → verify Groth16 on-chain → check Merkle root freshness → check nullifier uniqueness → check session key constraints. Reject before execution if any check fails
+2. **Executor (Type 2)** — Automated rules ("auto-vote NO if I haven't voted by quorum"), cross-protocol credential queries, agent batch actions. Only pre-authorized actions
+3. **Hook (Type 4)** — Pre/post checks: signer tier requirements (DAO voting → passkey, employer credential → hardware wallet), cross-scope rate limiting, credential usage logging, emergency freeze, cross-credential isolation
+4. **Fallback Handler (Type 3)** — External discovery: which credentials installed, eligibility for scopes, supported modules
+
+**Session Keys:** User grants agent a scoped session key ("vote on my behalf in scope X, credential Y, for Z hours, up to N actions"). Agent signs UserOps autonomously within bounds. One delegation per session instead of one signature per action.
+
+**Paymaster:** Spectre-operated Paymaster sponsors gas for credential actions. Users never need ETH. Scope operators fund their channel's Paymaster. Costs settle in USDC via x402.
+
+**Wallet Frontend:** Rabby (supports smart contract wallets, hardware pairing, 122+ EVM chains).
+
+#### AI Agent Integration
+
+1. User provides natural language intent ("vote yes on proposal #47")
+2. Agent resolves scope, checks eligibility via Intent API
+3. Agent constructs EIP-712 intent → user's wallet for one signature (or session key)
+4. Agent generates ZK proof (proving service or locally)
+5. Agent submits UserOp through 4337 bundler
+6. Smart wallet Validator/Hook modules enforce all credential rules on-chain
+
+**Trust boundary:** Agent never holds credential keys or master key. Vault retrieves correct key internally, signs intent, returns signed intent. Compromised agent can only submit specific user-approved actions.
+
+#### Economic Model
+
+**Cost per action (Base L2):** $0.01–$0.05 all-in (Groth16 verification <$0.01, proof generation $0.001–$0.01, Merkle root update <$0.01, bundler fee 5–15% of gas).
+
+**Revenue:** Credential issuance fees ($1–5/attestation), proof service fees (x402), premium application modules, Paymaster margins.
+
+**Token strategy:** Launch without native token. Pay operators in USDC via x402. Introduce token only when decentralized governance/proving needed and real economic activity justifies it.
+
+#### Build Phases
+
+1. **Core Engine Extraction + Intent API (4-6 weeks)** — Refactor voting circuits into parametric modules, build Intent API wrapper, decouple frontend from cryptographic layer
+2. **Agent Integration Layer (3-4 weeks)** — EIP-712 intent signing, delegated proof generation, meta-transaction relay, Coinbase AgentKit integration, session keys
+3. **Credential Bridge Expansion (4-6 weeks)** — OAuth/SAML bridge, dynamic Merkle tree management (join/leave), credential vault mobile app with secure enclave
+4. **ERC-4337 Module Development (6-8 weeks)** — ERC-7579 modules (Validator, Executor, Hook, Fallback), target Safe + ZeroDev, Paymaster on Base L2, session key infra
+5. **Anonymous Communication Layer (3-5 weeks)** — Sealed-sender relay, anonymous mailboxes (nullifier-derived IDs), multi-message session continuity for whistleblowing
+6. **Additional Application Modules (2-3 weeks each)** — Private reputation, prediction markets, healthcare credentialing
+
+#### Enterprise & Web2 Abstraction Layer
+
+The enterprise abstraction layer sits on top of the protocol and presents Spectre as a **compliance, governance, and credentialing platform**. Blockchain is the trust infrastructure underneath (like Stripe uses banking rails) — buyer and user never interact with it directly.
+
+**Core enterprise value props** (no blockchain understanding required):
+- **Zero-knowledge anonymity** — No stored identity mappings anywhere. Mathematically impossible to reconstruct, not just policy-protected
+- **Tamper-proof audit trail** — Immutable ledger. Organization cannot retroactively alter records
+- **Mathematically guaranteed ballot secrecy** — Enforced by cryptographic proof, not access controls
+- **Coercion resistance** — Decoy proofs under duress. No competitor offers this
+
+**Abstraction mapping:**
+- Credential Bridge → SSO Integration ("Connect Identity Provider" settings page)
+- Credential Vault → Mobile App / Browser Session (SSO login, no seed phrases or wallets shown)
+- ZK Proof Generation → "Securing your submission..." loading indicator
+- Blockchain Submission → Invisible backend (relayer submits via Paymaster, user sees "Report submitted successfully")
+- Smart Contract Verification → Compliance Dashboard (aggregate stats, audit trail)
+- Anonymous Mailbox → Secure Messaging Inbox (in-app encrypted messaging)
+
+**Three Enterprise Product Lines** (same Spectre protocol, different buyers):
+
+1. **Spectre Report — Anonymous Compliance Reporting**
+   - Target: CCO, General Counsel, VP Ethics & Compliance
+   - Competes with: NAVEX Global (EthicsPoint), OneTrust Ethics, SAI Global
+   - Differentiator: Anonymity is mathematically guaranteed, not policy-based. Even Spectre can't identify reporters
+   - Features: SSO integration, ZK-verified org membership, encrypted anonymous mailbox, coercion resistance, tamper-proof ledger
+   - Compliance: EU Whistleblower Directive (2019/1937), SOX Section 301, Dodd-Frank, SEC Rule 21F
+   - Pricing: $5/employee/year, $10K minimum (annual license, tiered by employee count)
+
+2. **Spectre Govern — Private Governance Voting**
+   - Target: Corporate Secretary, Board Chair, Association/Union/Cooperative leadership
+   - Competes with: Diligent (Insights), Broadridge, Simply Voting, ElectionBuddy, Lumi
+   - Differentiator: Ballot secrecy mathematically enforced. One-person-one-vote without identity exposure
+   - Features: Private ballot casting, nullifier-based 1p1v, real-time quorum tracking, configurable rules (majority/supermajority/ranked choice), proxy + weighted voting, board portal integration
+   - Use cases: Corporate boards, unions, cooperatives, professional associations, HOAs, non-profits
+   - Pricing: $500–$5K per election (one-off) or $10K–$50K/year (recurring governance)
+
+3. **Spectre Verify — Private Credential Verification**
+   - Target: Credentialing Officer (hospitals), HR Director, Compliance Manager, Licensing Board
+   - Competes with: Verity, CredentialMyDoc, NPDB, Equifax Workforce Solutions
+   - Differentiator: Selective disclosure — prove "board-certified orthopedic surgeon in NY" without revealing name, license number, or any other credential
+   - Features: Selective credential disclosure, professional registry integration, real-time status verification, bias-free hiring, anonymous peer review, expiration tracking
+   - Use cases: Healthcare credentialing, legal qualification, financial services compliance, anonymous peer review, security clearance verification
+   - Pricing: $2–$10 per verification or annual org subscription
+
+**Go-to-Market:**
+- Crypto-native (DAOs, DeFi): Lead with protocol architecture, ZK voting, wallet integration, on-chain verification
+- Enterprise compliance/governance: Never lead with blockchain. Lead with compliance/security story. "Blockchain" only appears in technical architecture docs for security team due diligence, framed as "tamper-proof immutable infrastructure layer"
+- Healthcare/legal/professional: Lead with credential verification and privacy story
+
+**Regulatory posture:**
+- GDPR: Inherently friendly — no PII processed/stored. On-chain data is only cryptographic proofs and nullifiers
+- Data residency: ZK proofs generated client-side. Public blockchain not subject to data residency for non-PII
+- SOC 2 / ISO 27001: Required for Spectre-operated infrastructure (relayers, dashboards). On-chain components independently verifiable
+
+**Enterprise build priority:**
+1. Admin Dashboard + SSO Bridge — minimum viable enterprise product
+2. White-Label Mobile App — primary end-user interface
+3. Relayer Service + Paymaster — gasless, invisible blockchain submission
+4. Compliance Reporting Module — required for regulated industry sales
+5. API Gateway — enables Spectre Verify and third-party integrations
+
+**Revenue potential:** Global ethics/compliance market ~$60B (12–15% growth), whistleblower reporting ~$3B, corporate governance ~$4B, credential verification ~$15B. ZK architecture is a genuine technical moat — competitors cannot retrofit mathematical anonymity onto database-backed systems.
+
+#### Key Design Principles
+
+- **Parametric, not monolithic** — Core circuits are shared templates. New use case = new parameter set, not rewriting cryptography
+- **Unlinkable by default** — Different bridges produce cryptographically independent nullifiers. Only the user can link their own credentials
+- **Agent-abstracted** — Smart contracts and ZK circuits identical whether proof came from browser UI or AI agent
+- **Progressive security** — Mobile secure enclave → optional hardware wallet → smart wallet enforces signer tiers on-chain
+- **Invisible infrastructure** — Users never need to understand Merkle trees, ZK circuits, or gas fees. Long-term UX: tell your agent what to do, approve once, done
+
 ### Done — Infrastructure
 - [x] **Base mainnet deployment** — ~$0.001/tx, 2s blocks, production-ready
 

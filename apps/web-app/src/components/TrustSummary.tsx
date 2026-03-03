@@ -1,7 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
-
 type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain" | "github-org"
 
 interface TrustSummaryProps {
@@ -18,7 +16,7 @@ interface Indicator {
     color: string // CSS variable
 }
 
-function getIndicators(props: TrustSummaryProps, isSimple: boolean): Indicator[] {
+function getIndicators(props: TrustSummaryProps): Indicator[] {
     const indicators: Indicator[] = []
 
     // Sybil resistance
@@ -47,7 +45,7 @@ function getIndicators(props: TrustSummaryProps, isSimple: boolean): Indicator[]
     } else {
         indicators.push({
             label: "Key custody",
-            value: isSimple ? "You (browser)" : "Single key (browser)",
+            value: "Single key (browser)",
             color: "var(--accent)",
         })
     }
@@ -63,8 +61,7 @@ function getIndicators(props: TrustSummaryProps, isSimple: boolean): Indicator[]
 }
 
 export default function TrustSummary(props: TrustSummaryProps) {
-    const { isSimple } = useMode()
-    const indicators = getIndicators(props, isSimple)
+    const indicators = getIndicators(props)
 
     return (
         <div className="trust-summary">

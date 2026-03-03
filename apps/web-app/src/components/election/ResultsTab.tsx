@@ -1,6 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
 import { EXPLORER_URL } from "@/lib/contracts"
 
 type Phase = "signup" | "voting" | "closed"
@@ -94,23 +93,17 @@ export default function ResultsTab({
     onChainTally, commitStep, commitTxHash, commitError, handleCommitTally,
     copyToClipboard, copied,
 }: ResultsTabProps) {
-    const { isSimple, isAdvanced } = useMode()
-
     return (
         <>
             {!tallyResult && tallyStep !== "done" && (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
-                        {isSimple ? "Count Votes" : "Decrypt & Tally"}
+                        Decrypt &amp; Tally
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14 }}>
                         {phase !== "closed"
-                            ? isSimple
-                                ? "Voting is still open. You can preview current results."
-                                : "Election is still active. You can preview interim results."
-                            : isSimple
-                                ? "Voting is closed. Count the votes to see the final result."
-                                : "Voting is closed. Decrypt all votes to see the final result."}
+                            ? "Election is still active. You can preview interim results."
+                            : "Voting is closed. Decrypt all votes to see the final result."}
                     </p>
 
                     {isOnChainCommittee && committeeState ? (
@@ -118,24 +111,18 @@ export default function ResultsTab({
                         <>
                             <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
                                 <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--purple)" }}>
-                                    {isSimple
-                                        ? committeeSharesReady
-                                            ? "Results are ready!"
-                                            : `Waiting for organizers to publish results (${committeeState.submittedShareCount} of ${committeeState.threshold} ready)`
-                                        : <>
-                                            Committee Election &mdash; {committeeState.submittedShareCount} of {committeeState.threshold} shares submitted
-                                            {committeeSharesReady && <span style={{ color: "var(--success)" }}> &mdash; ready to tally!</span>}
-                                        </>}
+                                    Committee Election &mdash; {committeeState.submittedShareCount} of {committeeState.threshold} shares submitted
+                                    {committeeSharesReady && <span style={{ color: "var(--success)" }}> &mdash; ready to tally!</span>}
                                 </span>
                             </div>
-                            {!committeeSharesReady && !isSimple && (
+                            {!committeeSharesReady && (
                                 <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
                                     Waiting for committee members to submit their decrypted shares on the Committee tab.
                                     Need {committeeState.threshold - committeeState.submittedShareCount} more share(s).
                                 </p>
                             )}
                         </>
-                    ) : isAdvanced && isThresholdElection && thresholdMeta ? (
+                    ) : isThresholdElection && thresholdMeta ? (
                         /* ── LEGACY THRESHOLD TALLY UI (hidden in Simple mode) ── */
                         <>
                             <div style={{ padding: "10px 14px", background: "var(--purple-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--purple-border)", marginBottom: 14 }}>
@@ -241,37 +228,31 @@ export default function ResultsTab({
                         /* ── NON-ADMIN WITHOUT KEY — show waiting message ── */
                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
                             {onChainTally?.committed
-                                ? isSimple
-                                    ? "The results have been published below."
-                                    : "The admin has published verified results below."
-                                : isSimple
-                                    ? "Results will appear here once the organizer publishes them."
-                                    : "Results will be available once the election admin publishes them."}
+                                ? "The admin has published verified results below."
+                                : "Results will be available once the election admin publishes them."}
                         </p>
                     ) : (
                         /* ── SINGLE KEY TALLY UI (admin or key holder) ── */
                         <>
                             {hasStoredKey ? (
                                 <div style={{ marginBottom: 12 }}>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: isAdvanced ? 8 : 0 }}>
-                                        {isSimple ? "Ready to count votes" : "Election key found in this browser"}
+                                    <p style={{ fontSize: "0.8rem", color: "var(--success)", marginBottom: 8 }}>
+                                        Election key found in this browser
                                     </p>
-                                    {isAdvanced && (
-                                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                            <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem" }}>
-                                                {electionKeyHex}
-                                            </code>
-                                            <button
-                                                onClick={() => copyToClipboard(electionKeyHex, "election-key")}
-                                                className="btn-secondary"
-                                                style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}
-                                            >
-                                                {copied === "election-key" ? "Copied!" : "Copy Key"}
-                                            </button>
-                                        </div>
-                                    )}
+                                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem" }}>
+                                            {electionKeyHex}
+                                        </code>
+                                        <button
+                                            onClick={() => copyToClipboard(electionKeyHex, "election-key")}
+                                            className="btn-secondary"
+                                            style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}
+                                        >
+                                            {copied === "election-key" ? "Copied!" : "Copy Key"}
+                                        </button>
+                                    </div>
                                 </div>
-                            ) : isAdvanced ? (
+                            ) : (
                                 <div style={{ marginBottom: 12 }}>
                                     <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
                                         No election key found. Paste the key from the browser that created this election:
@@ -283,7 +264,7 @@ export default function ResultsTab({
                                         style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.75rem" }}
                                     />
                                 </div>
-                            ) : null}
+                            )}
                         </>
                     )}
 
@@ -321,7 +302,7 @@ export default function ResultsTab({
                     >
                         {tallyStep === "fetching" || tallyStep === "decrypting"
                             ? "Computing..."
-                            : isSimple ? "Count Votes" : "Tally Votes"}
+                            : "Tally Votes"}
                     </button>
                     )}
                 </div>
@@ -387,33 +368,31 @@ export default function ResultsTab({
                         )}
                     </div>
 
-                    {/* Audit stats — Advanced only */}
-                    {isAdvanced && (
-                        <div className="card" style={{ marginBottom: 16 }}>
-                            <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Audit</h4>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "0.85rem" }}>
-                                <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Valid</div>
-                                    <div style={{ fontWeight: 700, color: "var(--success)" }}>{tallyResult.totalValid}</div>
-                                </div>
-                                <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Invalid</div>
-                                    <div style={{ fontWeight: 700, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" }}>{tallyResult.totalInvalid}</div>
-                                </div>
-                                <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Duplicates Removed</div>
-                                    <div style={{ fontWeight: 700 }}>{tallyResult.duplicatesRemoved}</div>
-                                </div>
-                                <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                    <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>On-chain Total</div>
-                                    <div style={{ fontWeight: 700 }}>{state.voteCount}</div>
-                                </div>
+                    {/* Audit stats */}
+                    <div className="card" style={{ marginBottom: 16 }}>
+                        <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Audit</h4>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "0.85rem" }}>
+                            <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Valid</div>
+                                <div style={{ fontWeight: 700, color: "var(--success)" }}>{tallyResult.totalValid}</div>
+                            </div>
+                            <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Invalid</div>
+                                <div style={{ fontWeight: 700, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" }}>{tallyResult.totalInvalid}</div>
+                            </div>
+                            <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>Duplicates Removed</div>
+                                <div style={{ fontWeight: 700 }}>{tallyResult.duplicatesRemoved}</div>
+                            </div>
+                            <div style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                                <div style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginBottom: 4 }}>On-chain Total</div>
+                                <div style={{ fontWeight: 700 }}>{state.voteCount}</div>
                             </div>
                         </div>
-                    )}
+                    </div>
 
-                    {/* Detailed vote list — Advanced only */}
-                    {isAdvanced && tallyResult.decryptedVotes.length > 0 && (
+                    {/* Detailed vote list */}
+                    {tallyResult.decryptedVotes.length > 0 && (
                         <div className="card" style={{ marginBottom: 16 }}>
                             <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
                                 Votes ({tallyResult.decryptedVotes.length})
@@ -450,12 +429,10 @@ export default function ResultsTab({
                     {isAdmin && phase === "closed" && !onChainTally?.committed && (
                         <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
-                                {isSimple ? "Publish Results" : "Commit Results On-Chain"}
+                                Commit Results On-Chain
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? "Publish the final results. Once published, they can\u2019t be changed."
-                                    : "Publish the tally permanently on-chain with a Poseidon commitment hash. Anyone can verify by recomputing the hash from the stored data. This action is irreversible."}
+                                Publish the tally permanently on-chain with a Poseidon commitment hash. Anyone can verify by recomputing the hash from the stored data. This action is irreversible.
                             </p>
                             {commitStep === "submitting" && (
                                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
@@ -465,12 +442,10 @@ export default function ResultsTab({
                             )}
                             {commitStep === "done" && commitTxHash && (
                                 <div style={{ marginBottom: 12, padding: 12, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
-                                    <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: isSimple ? 0 : 4 }}>Tally committed!</p>
-                                    {!isSimple && (
-                                        <a href={`${EXPLORER_URL}/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                            View on Basescan
-                                        </a>
-                                    )}
+                                    <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>Tally committed!</p>
+                                    <a href={`${EXPLORER_URL}/tx/${commitTxHash}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
+                                        View on Basescan
+                                    </a>
                                 </div>
                             )}
                             {commitStep === "error" && commitError && (
@@ -480,15 +455,15 @@ export default function ResultsTab({
                             )}
                             <button className="btn-primary" onClick={handleCommitTally}
                                 disabled={commitStep === "submitting"}>
-                                {commitStep === "submitting" ? "Committing..." : isSimple ? "Publish Results" : "Commit Tally On-Chain"}
+                                {commitStep === "submitting" ? "Committing..." : "Commit Tally On-Chain"}
                             </button>
                         </div>
                     )}
                 </>
             )}
 
-            {/* On-chain commitment display — Advanced only */}
-            {isAdvanced && onChainTally?.committed && (
+            {/* On-chain commitment display */}
+            {onChainTally?.committed && (
                 <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)" }}>
                     <h4 style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
                         On-Chain Commitment
@@ -520,15 +495,6 @@ export default function ResultsTab({
                 </div>
             )}
 
-            {/* Simple mode: show committed confirmation */}
-            {isSimple && onChainTally?.committed && !tallyResult && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                        <p style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--success)" }}>Results have been published and verified.</p>
-                    </div>
-                </div>
-            )}
         </>
     )
 }

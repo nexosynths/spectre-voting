@@ -17,7 +17,6 @@ import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToE
 import { poseidon2, poseidon3 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
-import { useMode } from "@/context/ModeContext"
 import ElectionHeader from "@/components/election/ElectionHeader"
 import SignupSection from "@/components/election/SignupSection"
 import VotingSection from "@/components/election/VotingSection"
@@ -147,7 +146,6 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const electionAddress = params.address
     const searchParams = useSearchParams()
     const { address, signer, connectWallet, addLog, anonymousId } = useSpectre()
-    const { isSimple, isAdvanced } = useMode()
 
     // ── Per-election identity (scoped to election + wallet/anonymous session) ──
     const [identity, setIdentity] = useState<Identity | null>(null)
@@ -272,10 +270,6 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [loading, setLoading] = useState(true)
     const [copied, setCopied] = useState("")
 
-    // Auto-switch from Committee tab when mode changes to Simple
-    useEffect(() => {
-        if (isSimple && tab === "committee") setTab("vote")
-    }, [isSimple, tab])
 
     // Vote state
     const [selectedVote, setSelectedVote] = useState<number | null>(null)
@@ -2118,13 +2112,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
             )}
 
             {/* Info footer */}
-            {isAdvanced && (
-                <div style={{ marginTop: 24, padding: "12px 0", borderTop: "1px solid var(--border)", textAlign: "center" }}>
-                    <a href={`${EXPLORER_URL}/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                        Contract: {electionAddress.slice(0, 10)}...{electionAddress.slice(-8)}
-                    </a>
-                </div>
-            )}
+            <div style={{ marginTop: 24, padding: "12px 0", borderTop: "1px solid var(--border)", textAlign: "center" }}>
+                <a href={`${EXPLORER_URL}/address/${electionAddress}`} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
+                    Contract: {electionAddress.slice(0, 10)}...{electionAddress.slice(-8)}
+                </a>
+            </div>
         </>
     )
 }

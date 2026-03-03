@@ -1,6 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
 import { explorerTxUrl } from "@/lib/relayer"
 
 type Phase = "signup" | "voting" | "closed"
@@ -37,8 +36,6 @@ export default function VotingSection({
     txHash, error, onChainVerified, joinStatus,
     handleJoinAndVote, setVoteStep, setTxHash, setError,
 }: VotingSectionProps) {
-    const { isSimple } = useMode()
-
     return (
         <>
             {/* ── VOTING PHASE ── */}
@@ -51,12 +48,10 @@ export default function VotingSection({
                                 <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
                                 <div>
                                     <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>
-                                        {isSimple ? "You\u2019re ready to vote" : "Anonymously joined"}
+                                        Anonymously joined
                                     </p>
                                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                        {isSimple
-                                            ? "Select an option below and cast your vote."
-                                            : "Your identity has been separated from your registration. Select an option and cast your vote."}
+                                        Your identity has been separated from your registration. Select an option and cast your vote.
                                     </p>
                                 </div>
                             </div>
@@ -66,11 +61,9 @@ export default function VotingSection({
                     {voteStep === "idle" && joinStatus === "not-joined" && (
                         <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? "When you vote, it will be completely anonymous. No one can see how you voted."
-                                    : gaslessEnabled
-                                        ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
-                                        : "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. This requires two wallet confirmations."}
+                                {gaslessEnabled
+                                    ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
+                                    : "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. This requires two wallet confirmations."}
                             </p>
                         </div>
                     )}
@@ -103,20 +96,18 @@ export default function VotingSection({
                                     <p style={{ fontSize: "0.85rem", fontWeight: 600 }}>
                                         {stepInfo ? `Step ${stepInfo.step} of ${stepInfo.total}: ${stepInfo.label}` : stepMsg}
                                     </p>
-                                    {!isSimple && (
-                                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                                            {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
-                                            {voteStep === "timing-delay" && "Random delay protects your identity"}
-                                            {voteStep === "verifying" && "Independently checking the blockchain"}
-                                        </p>
-                                    )}
+                                    <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                                        {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
+                                        {voteStep === "timing-delay" && "Random delay protects your identity"}
+                                        {voteStep === "verifying" && "Independently checking the blockchain"}
+                                    </p>
                                 </div>
                             </div>
                         )}
 
                         {voteStep === "done" && txHash && (
                             <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
-                                <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: isSimple ? 0 : 4 }}>
+                                <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
                                     Vote submitted anonymously!
                                     {gaslessEnabled && onChainVerified === true && " \u2713 Verified on-chain"}
                                 </p>
@@ -125,11 +116,9 @@ export default function VotingSection({
                                         \u26a0 Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
                                     </p>
                                 )}
-                                {!isSimple && (
-                                    <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                        View on Etherscan &rarr;
-                                    </a>
-                                )}
+                                <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
+                                    View on Etherscan &rarr;
+                                </a>
                             </div>
                         )}
 

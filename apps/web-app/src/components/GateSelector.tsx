@@ -1,6 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
 import TrustCallout from "./TrustCallout"
 
 export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain" | "github-org"
@@ -31,42 +30,24 @@ interface GateSelectorProps {
     disabled?: boolean
 }
 
-const SIMPLE_GATES: Array<{ key: GateType; label: string; desc: string }> = [
+const GATES: Array<{ key: GateType; label: string; desc: string }> = [
     { key: "open", label: "Anyone", desc: "Anyone with the link can vote" },
-    { key: "allowlist", label: "People on a list", desc: "You specify who can participate" },
+    { key: "allowlist", label: "Allowlist", desc: "You specify who can participate" },
     { key: "invite-codes", label: "Invite codes", desc: "One code per voter" },
     { key: "email-domain", label: "Email domain", desc: "Must verify a company email" },
     { key: "github-org", label: "GitHub org", desc: "Must be in a GitHub organization" },
     { key: "token-gate", label: "Token holders", desc: "Must hold a token or NFT" },
+    { key: "admin-only", label: "Admin only", desc: "You register each voter" },
 ]
 
-const ADVANCED_GATES: Array<{ key: GateType; label: string; desc: string }> = [
-    { key: "open", label: "Open", desc: "Anyone with the link can vote" },
-    { key: "invite-codes", label: "Invite Codes", desc: "One-time codes you distribute" },
-    { key: "allowlist", label: "Allowlist", desc: "Only people on your list" },
-    { key: "email-domain", label: "Email Domain", desc: "Verify email at specific domain(s)" },
-    { key: "github-org", label: "GitHub Org", desc: "Must be member of a GitHub organization" },
-    { key: "token-gate", label: "Token Gate", desc: "ERC-20 balance or NFT ownership" },
-    { key: "admin-only", label: "Admin Only", desc: "You register each voter" },
-]
-
-const TRUST_SIMPLE: Record<string, { text: string; variant: "info" | "caution" | "warning" }> = {
+const TRUST_MAP: Record<string, { text: string; variant: "info" | "caution" | "warning" }> = {
     "open": { text: "Anyone with the link can vote. If this link leaks, unwanted people can join. Use invite codes or an allowlist for controlled access.", variant: "caution" },
-    "allowlist": { text: "Only people you list can vote. They enter their name or email to join.", variant: "info" },
+    "allowlist": { text: "Only people you list can vote. They enter their identifier to join.", variant: "info" },
     "invite-codes": { text: "Each code works once. Distribute codes privately to the people you want to vote.", variant: "info" },
     "email-domain": { text: "Voters verify their email at your domain(s). One vote per email address.", variant: "info" },
     "github-org": { text: "Voters sign in with GitHub to prove org membership. One vote per GitHub account.", variant: "info" },
     "token-gate": { text: "Only people who hold the required token or NFT can vote. Voters must connect a wallet.", variant: "info" },
-}
-
-const TRUST_ADVANCED: Record<string, { text: string; variant: "info" | "caution" | "warning" }> = {
-    "open": { text: "No eligibility restriction. Sybil resistance: none.", variant: "caution" },
-    "invite-codes": { text: "Application-layer enforcement via relay. Direct contract calls can bypass. Acceptable for gasless elections where relay is the only submission path.", variant: "info" },
-    "allowlist": { text: "Relay validates identifiers against on-chain keccak256 hashes. Identifiers are not cryptographically bound to the person.", variant: "info" },
-    "email-domain": { text: "Email verification via Resend. HMAC token proves email ownership. One signup per email per election. Email provider sees who verified.", variant: "info" },
-    "github-org": { text: "GitHub OAuth verifies org membership. HMAC token proves verification. One signup per GitHub user per election. GitHub sees who authenticated.", variant: "info" },
-    "token-gate": { text: "On-chain balance check via balanceOf(). Voters must connect a wallet for eligibility verification. Sybil resistance depends on token distribution.", variant: "info" },
-    "admin-only": { text: "Strongest control. Only admin can register voters on-chain.", variant: "info" },
+    "admin-only": { text: "Only you can register voters. Strongest control over who participates.", variant: "info" },
 }
 
 export default function GateSelector({
@@ -79,10 +60,8 @@ export default function GateSelector({
     githubOrg, setGithubOrg,
     disabled,
 }: GateSelectorProps) {
-    const { isSimple } = useMode()
-    const gates = isSimple ? SIMPLE_GATES : ADVANCED_GATES
-    const trustMap = isSimple ? TRUST_SIMPLE : TRUST_ADVANCED
-    const trust = trustMap[gateType]
+    const gates = GATES
+    const trust = TRUST_MAP[gateType]
 
     return (
         <div>
@@ -98,7 +77,7 @@ export default function GateSelector({
                             flex: 1, padding: "10px 14px", borderRadius: "var(--radius)", cursor: disabled ? "not-allowed" : "pointer",
                             border: `1px solid ${gateType === g.key ? "var(--accent)" : "var(--border)"}`,
                             background: gateType === g.key ? "var(--accent-bg)" : "var(--bg)",
-                            minWidth: isSimple ? "calc(33% - 6px)" : "calc(50% - 4px)",
+                            minWidth: "calc(33% - 6px)",
                         }}
                     >
                         <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{g.label}</span>
@@ -158,7 +137,7 @@ export default function GateSelector({
             {gateType === "email-domain" && (
                 <div style={{ marginTop: 8, padding: "10px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                        {isSimple ? "Allowed email domain(s)" : "Allowed domains (comma-separated)"}
+                        Allowed email domain(s)
                     </label>
                     <input
                         type="text"
@@ -177,9 +156,7 @@ export default function GateSelector({
                         ) : null
                     })()}
                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
-                        {isSimple
-                            ? "Voters verify their email to join. No wallet needed."
-                            : "Voters receive a 6-digit code via email. One signup per email. Gasless by default."}
+                        Voters verify their email to join. No wallet needed.
                     </p>
                 </div>
             )}
@@ -205,9 +182,7 @@ export default function GateSelector({
                         </p>
                     )}
                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
-                        {isSimple
-                            ? "Voters sign in with GitHub to prove they're in this org. No wallet needed."
-                            : "Voters authenticate via GitHub OAuth. Org membership checked server-side. Gasless by default."}
+                        Voters sign in with GitHub to prove they&apos;re in this org. No wallet needed.
                     </p>
                 </div>
             )}
@@ -284,15 +259,15 @@ export default function GateSelector({
                                 disabled={disabled}
                             />
                             <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>
-                                {isSimple ? "More tokens = more votes" : "Weighted voting (balance-based)"}
+                                Weighted voting
                             </span>
                         </label>
                         {weightedVoting && (
                             <div style={{ marginTop: 6 }}>
                                 <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginBottom: 4 }}>
                                     {tokenType === "erc721"
-                                        ? (isSimple ? "Each NFT held = 1 vote (max 255)" : "Weight = number of NFTs held (capped at 255)")
-                                        : (isSimple ? "Set how many tokens = 1 vote" : "Weight = floor(balance / threshold), capped at 255")}
+                                        ? "Each NFT held = 1 vote (max 255)"
+                                        : "Set how many tokens = 1 vote"}
                                 </p>
                                 {tokenType === "erc20" && (
                                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -313,15 +288,13 @@ export default function GateSelector({
                         )}
                         {!weightedVoting && (
                             <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 4 }}>
-                                {isSimple ? "Every eligible voter gets 1 vote regardless of balance" : "Eligibility only — 1 vote per holder"}
+                                Every eligible voter gets 1 vote regardless of balance
                             </p>
                         )}
                     </div>
 
                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
-                        {isSimple
-                            ? "Voters must connect a wallet to prove they hold the token."
-                            : `Voters must connect a wallet. Eligibility checked via on-chain balanceOf() at signup time.`}
+                        Voters must connect a wallet to prove they hold the token.
                     </p>
                 </div>
             )}

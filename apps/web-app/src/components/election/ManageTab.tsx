@@ -1,6 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
 import { getAdminCodes, codesToCsv, downloadCsv, getAdminAllowlist, allowlistToCsv } from "@/lib/inviteCodes"
 
 interface ManageTabProps {
@@ -36,8 +35,6 @@ export default function ManageTab({
     handleCloseSignup, handleCloseVoting,
     copyToClipboard, copied, setCopied,
 }: ManageTabProps) {
-    const { isSimple } = useMode()
-
     if (!isAdmin) return null
 
     return (
@@ -50,11 +47,9 @@ export default function ManageTab({
                         ? "Use the per-identifier share links below to send voters a link with their identifier pre-filled."
                         : isInviteCodeElection
                             ? "Use the per-code share links below to send voters a link with their code pre-filled."
-                            : isSimple
-                                ? "Send this link to your voters."
-                                : phase === "signup" && !isInviteCodeElection && !isAllowlistElection
-                                    ? "Send this link to voters. They can sign up directly during the signup phase."
-                                    : "Send this link to voters. Since this is a gated election, you\u2019ll need to register them via the form below."}
+                            : phase === "signup" && !isInviteCodeElection && !isAllowlistElection
+                                ? "Send this link to voters. They can sign up directly during the signup phase."
+                                : "Send this link to voters. Since this is a gated election, you\u2019ll need to register them via the form below."}
                 </p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
@@ -170,12 +165,10 @@ export default function ManageTab({
                     <div className="card" style={{ marginBottom: 16 }}>
                         <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Register Voter</h4>
                         <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            {isSimple
-                                ? "Add a voter manually by pasting their Voter ID."
-                                : "Admin can also add voters directly. Paste their Voter ID."}
+                            Admin can also add voters directly. Paste their Voter ID.
                         </p>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <input placeholder={isSimple ? "Voter ID" : "Voter ID (commitment)"} value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
+                            <input placeholder="Voter ID (commitment)" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
                             <button className="btn-primary" onClick={registerVoter} disabled={adminLoading || !commitment.trim()} style={{ width: "auto", padding: "12px 18px" }}>
                                 {adminLoading ? "..." : "Add"}
                             </button>
@@ -198,9 +191,7 @@ export default function ManageTab({
                 <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Close Signup &amp; Open Voting</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                        {isSimple
-                            ? "Close registration and let people vote."
-                            : "Close registration and open the anonymous join + voting phase. Voters who signed up can now anonymously re-key and vote."}
+                        Close registration and open the anonymous join + voting phase. Voters who signed up can now anonymously re-key and vote.
                     </p>
                     <button className="btn-primary" onClick={handleCloseSignup} disabled={adminLoading}>
                         {adminLoading ? "Closing..." : "Close Signup"}
@@ -213,9 +204,7 @@ export default function ManageTab({
                 <div className="card" style={{ marginBottom: 16, borderColor: "var(--error)" }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8, color: "var(--error)" }}>Close Voting</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                        {isSimple
-                            ? "End this vote. No more votes will be accepted."
-                            : "Permanently close this election. No more joins or votes will be accepted."}
+                        Permanently close this election. No more joins or votes will be accepted.
                     </p>
                     <button className="btn-secondary" onClick={handleCloseVoting} disabled={adminLoading} style={{ borderColor: "var(--error)", color: "var(--error)" }}>
                         {adminLoading ? "Closing..." : "Close Voting"}

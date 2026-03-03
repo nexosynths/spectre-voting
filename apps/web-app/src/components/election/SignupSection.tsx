@@ -1,7 +1,5 @@
 "use client"
 
-import { useMode } from "@/context/ModeContext"
-
 type Phase = "signup" | "voting" | "closed"
 
 interface SignupSectionProps {
@@ -88,8 +86,6 @@ export default function SignupSection({
     recoveryImportValue, setRecoveryImportValue,
     recoveryError, handleRecoveryImport,
 }: SignupSectionProps) {
-    const { isSimple } = useMode()
-
     return (
         <>
             {/* Gasless banner */}
@@ -99,12 +95,10 @@ export default function SignupSection({
                         <span style={{ fontSize: "1.1rem" }}>&#9889;</span>
                         <div>
                             <p style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>
-                                {isSimple ? "No wallet needed" : "Gasless Voting"}
+                                Gasless Voting
                             </p>
                             <p style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>
-                                {isSimple
-                                    ? "You can vote directly from this page."
-                                    : "No wallet or crypto needed. Your vote is relayed on-chain automatically."}
+                                No wallet or crypto needed. Your vote is relayed on-chain automatically.
                             </p>
                         </div>
                     </div>
@@ -115,7 +109,7 @@ export default function SignupSection({
             {!address && !gaslessEnabled && (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>
-                        {isSimple ? "Connect Wallet" : "Step 1: Connect Wallet"}
+                        Step 1: Connect Wallet
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
                         Connect to submit transactions on-chain. Your wallet is only for gas — your vote stays anonymous.
@@ -128,12 +122,10 @@ export default function SignupSection({
             {address && !gaslessEnabled && !identity && (
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>
-                        {isSimple ? "Set Up Your Identity" : "Step 2: Create Identity"}
+                        Step 2: Create Identity
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                        {isSimple
-                            ? "Create your anonymous identity. Nobody will be able to see how you voted."
-                            : "Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote."}
+                        Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
                     </p>
                     <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
                 </div>
@@ -143,12 +135,10 @@ export default function SignupSection({
             {showRecoveryNudge && identity && (
                 <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning-border)", background: "var(--warning-bg)" }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                        {isSimple ? "Save Your Backup Code" : "Save Your Recovery Code"}
+                        Save Your Recovery Code
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10, lineHeight: 1.5 }}>
-                        {isSimple
-                            ? "If you clear your browser data, you\u2019ll need this code to recover your vote. Copy it somewhere safe."
-                            : "Your identity is stored in this browser. If you clear your data or switch devices, paste this code to restore your identity."}
+                        Your identity is stored in this browser. If you clear your data or switch devices, paste this code to restore your identity.
                     </p>
                     <code className="mono" style={{
                         display: "block", background: "var(--bg)", padding: "10px 12px", borderRadius: 8,
@@ -170,7 +160,7 @@ export default function SignupSection({
                             onClick={dismissRecoveryNudge}
                             style={{ flex: 1, fontSize: "0.8rem" }}
                         >
-                            {isSimple ? "I saved it" : "Dismiss"}
+                            Dismiss
                         </button>
                     </div>
                 </div>
@@ -184,17 +174,15 @@ export default function SignupSection({
                             onClick={() => setShowRecoveryImport(true)}
                             style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.8rem", cursor: "pointer", textDecoration: "underline" }}
                         >
-                            {isSimple ? "Have a backup code?" : "Recover identity from backup"}
+                            Recover identity from backup
                         </button>
                     ) : (
                         <div className="card">
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Enter Backup Code" : "Restore Identity"}
+                                Restore Identity
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                                {isSimple
-                                    ? "Paste the backup code you saved earlier."
-                                    : "Paste your exported identity string to restore your identity."}
+                                Paste your exported identity string to restore your identity.
                             </p>
                             <textarea
                                 placeholder="Paste your backup code here..."
@@ -251,9 +239,7 @@ export default function SignupSection({
                             <div>
                                 <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
                                 <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                    {isSimple
-                                        ? "Waiting for the organizer to open voting."
-                                        : "Wait for the admin to close signup. Once voting opens, you\u2019ll anonymously join and cast your vote."}
+                                    Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
                                 </p>
                             </div>
                         </div>
@@ -263,27 +249,19 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && !selfSignupAllowed && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Admin Registration Required" : "Admin-Only Registration"}
+                                Admin-Only Registration
                             </h4>
-                            {isSimple ? (
-                                <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                    This vote requires the admin to register you. Contact the organizer for access.
-                                </p>
-                            ) : (
-                                <>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
-                                    </p>
-                                    <div style={{ display: "flex", gap: 8 }}>
-                                        <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
-                                            {identityCommitment}
-                                        </code>
-                                        <button onClick={() => copyToClipboard(identityCommitment, "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                            {copied === "vid" ? "Copied!" : "Copy ID"}
-                                        </button>
-                                    </div>
-                                </>
-                            )}
+                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                                This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
+                            </p>
+                            <div style={{ display: "flex", gap: 8 }}>
+                                <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
+                                    {identityCommitment}
+                                </code>
+                                <button onClick={() => copyToClipboard(identityCommitment, "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
+                                    {copied === "vid" ? "Copied!" : "Copy ID"}
+                                </button>
+                            </div>
                         </>
                     )}
 
@@ -291,12 +269,10 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isInviteCodeElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Enter Your Code" : "Enter Invite Code"}
+                                Enter Invite Code
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? "Paste the code you received."
-                                    : "This election requires an invite code to sign up. Enter the code you received from the election admin."}
+                                This election requires an invite code to sign up. Enter the code you received from the election admin.
                             </p>
                             <input
                                 type="text"
@@ -327,12 +303,10 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isAllowlistElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Confirm Your Identity" : "Enter Your Identifier"}
+                                Enter Your Identifier
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? "Enter the name or email the organizer gave you."
-                                    : "This election uses an allowlist. Enter the email, name, or ID the admin registered for you."}
+                                This election uses an allowlist. Enter the email, name, or ID the admin registered for you.
                             </p>
                             <input
                                 type="text"
@@ -361,12 +335,10 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isTokenGateElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Token Required" : "Token Gate"}
+                                Token Gate
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? `You need to hold ${tokenGateMeta?.tokenType === "erc721" ? "the required NFT" : `${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} to vote.`
-                                    : `This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}...`}
+                                {`This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}...`}
                             </p>
                             {!address ? (
                                 <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
@@ -398,12 +370,10 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isEmailDomainElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "Verify Your Email" : "Email Domain Verification"}
+                                Email Domain Verification
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? `Enter your ${emailDomainMeta?.domains.map(d => "@" + d).join(" or ") || ""} email to join this vote.`
-                                    : `This election requires a verified email at: ${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || ""}. One signup per email.`}
+                                {`This election requires a verified email at: ${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || ""}. One signup per email.`}
                             </p>
 
                             {/* Email verified badge */}
@@ -491,12 +461,10 @@ export default function SignupSection({
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && selfSignupAllowed && isGithubOrgElection && (
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
-                                {isSimple ? "GitHub Required" : "GitHub Organization Verification"}
+                                GitHub Organization Verification
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? `You must be a member of github.com/${githubOrgMeta?.org || "the organization"} to vote.`
-                                    : `This election requires membership in the GitHub organization: ${githubOrgMeta?.org || "?"}. Sign in with GitHub to verify.`}
+                                {`This election requires membership in the GitHub organization: ${githubOrgMeta?.org || "?"}. Sign in with GitHub to verify.`}
                             </p>
 
                             {ghError && (
@@ -537,9 +505,7 @@ export default function SignupSection({
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {isSimple
-                                    ? "Register to participate. Your vote stays secret."
-                                    : <>Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong></>}
+                                Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong>
                             </p>
                             <button
                                 className="btn-primary"
