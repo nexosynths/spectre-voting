@@ -1,6 +1,6 @@
 // Deployed contract addresses (Base mainnet) — v2: weighted voting circuits
 export const CONTRACTS = {
-    FACTORY: "0xf9Ea108bC31012F2ae384E3c1296B2552A0A12D9",
+    FACTORY: "0x1581c010cC06942ADEEc85baa9a3D19a7e82A21e",
     SEMAPHORE: "0x8A1fd199516489B0Fb7153EB5f075cDAC83c693D",
     VOTE_VERIFIER: "0xD0B778a60E57be0681f660E9c9319274EB10272E",
     JOIN_VERIFIER: "0x753126E842baa748e46384c115e1CF6952c01522",
@@ -13,7 +13,7 @@ export const EXPLORER_URL = "https://basescan.org"
 // Base RPC limits eth_getLogs to 10,000 blocks per call
 export const MAX_LOG_RANGE = 9500
 // Factory deployment block on Base mainnet (used as lower bound for event scans)
-export const FACTORY_DEPLOY_BLOCK = 42854800
+export const FACTORY_DEPLOY_BLOCK = 42893400
 
 // SpectreVotingFactory ABI (v3: two verifiers, signup deadline, numOptions)
 export const FACTORY_ABI = [
