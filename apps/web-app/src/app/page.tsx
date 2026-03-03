@@ -322,6 +322,42 @@ export default function HomePage() {
 
     return (
         <>
+            {/* Hero section */}
+            <div style={{ textAlign: "center", padding: "32px 0 28px" }}>
+                <h2 style={{ fontSize: "2rem", fontWeight: 800, lineHeight: 1.15, marginBottom: 14, letterSpacing: "-0.03em" }}>
+                    Private voting,<br />verified results
+                </h2>
+                <p style={{ fontSize: "1.1rem", color: "var(--text-muted)", lineHeight: 1.5, maxWidth: 400, margin: "0 auto 32px" }}>
+                    Anonymous elections powered by zero-knowledge proofs. No one sees how you voted — not even the admin.
+                </p>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+                    {[
+                        { icon: "\u{1F6E1}", title: "Anonymous", desc: "ZK proofs break the link between your identity and your vote" },
+                        { icon: "\u{1F512}", title: "Encrypted", desc: "Votes stay sealed until results are revealed" },
+                        { icon: "\u2705", title: "Verifiable", desc: "Anyone can independently confirm the tally on-chain" },
+                    ].map(g => (
+                        <div key={g.title} style={{
+                            display: "flex", alignItems: "center", gap: 16,
+                            padding: "16px 18px",
+                            background: "var(--bg-card)",
+                            borderRadius: "var(--radius)",
+                            border: "1px solid var(--border)",
+                        }}>
+                            <span style={{ fontSize: "1.6rem", flexShrink: 0 }}>{g.icon}</span>
+                            <div>
+                                <span style={{ fontSize: "1rem", fontWeight: 700 }}>{g.title}</span>
+                                <p style={{ fontSize: "0.9rem", color: "var(--text-muted)", marginTop: 3 }}>{g.desc}</p>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <p style={{ fontSize: "0.9rem", color: "var(--text-muted)", marginTop: 24 }}>
+                    No wallet needed for voters &middot; Works in any browser
+                </p>
+            </div>
+
             {/* Elections header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <h3 style={{ fontSize: "1rem", fontWeight: 700 }}>Elections</h3>
@@ -382,20 +418,47 @@ export default function HomePage() {
                 />
             )}
 
+            {/* Your elections (wallet connected) */}
+            {address && (() => {
+                const yours = elections.filter(e => e.admin.toLowerCase() === address.toLowerCase())
+                return yours.length > 0 ? (
+                    <>
+                        <div style={{ marginBottom: 6, marginTop: 4 }}>
+                            <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                                Your elections
+                            </span>
+                        </div>
+                        <ElectionList elections={yours} loading={false} />
+                        {elections.length > yours.length && (
+                            <div style={{ marginBottom: 6, marginTop: 16 }}>
+                                <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                                    All elections
+                                </span>
+                            </div>
+                        )}
+                    </>
+                ) : null
+            })()}
+
+            {/* Election list */}
+            <ElectionList
+                elections={address
+                    ? elections.filter(e => e.admin.toLowerCase() !== address.toLowerCase())
+                    : elections}
+                loading={loadingElections}
+            />
+
             {/* Connect wallet prompt */}
             {!address && !showCreate && (
-                <div className="card" style={{ marginBottom: 16, textAlign: "center" }}>
+                <div className="card" style={{ marginBottom: 16, marginTop: 16, textAlign: "center" }}>
                     <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 12 }}>
-                        Connect your wallet to create elections or vote
+                        Connect your wallet to see your elections
                     </p>
                     <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>
                         Connect Wallet
                     </button>
                 </div>
             )}
-
-            {/* Election list */}
-            <ElectionList elections={elections} loading={loadingElections} />
         </>
     )
 }

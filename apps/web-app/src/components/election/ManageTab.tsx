@@ -163,20 +163,25 @@ export default function ManageTab({
             {phase === "signup" && (
                 <>
                     <div className="card" style={{ marginBottom: 16 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Register Voter</h4>
-                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                            Admin can also add voters directly. Paste their Voter ID.
+                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Register Voter</h4>
+                        <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
+                            {!isInviteCodeElection && !isAllowlistElection
+                                ? "Each voter visits this election page, creates their identity, and copies their Voter ID. Paste it here to register them."
+                                : "You can also register voters directly by pasting their Voter ID."}
                         </p>
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <input placeholder="Voter ID (commitment)" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
+                            <input placeholder="Paste Voter ID here" value={commitment} onChange={e => setCommitment(e.target.value)} disabled={adminLoading} style={{ flex: 1, minWidth: 0 }} />
                             <button className="btn-primary" onClick={registerVoter} disabled={adminLoading || !commitment.trim()} style={{ width: "auto", padding: "12px 18px" }}>
-                                {adminLoading ? "..." : "Add"}
+                                {adminLoading ? "..." : "Register"}
                             </button>
                         </div>
                     </div>
 
                     <div className="card" style={{ marginBottom: 16 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 4 }}>Bulk Register</h4>
+                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Bulk Register</h4>
+                        <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
+                            Register multiple voters at once. One Voter ID per line.
+                        </p>
                         <textarea placeholder="One Voter ID per line..." value={bulkCommitments} onChange={e => setBulkCommitments(e.target.value)} disabled={adminLoading} rows={3}
                             style={{ width: "100%", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius)", color: "var(--text)", padding: "10px 14px", fontFamily: "inherit", fontSize: "0.85rem", resize: "vertical", outline: "none", marginBottom: 8 }} />
                         <button className="btn-primary" onClick={registerBulk} disabled={adminLoading || !bulkCommitments.trim()}>

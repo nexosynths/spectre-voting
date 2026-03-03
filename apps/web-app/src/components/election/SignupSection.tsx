@@ -248,19 +248,32 @@ export default function SignupSection({
                     {/* ADMIN-ONLY MODE */}
                     {signupStatus !== "checking" && signupStatus !== "signed-up" && !selfSignupAllowed && (
                         <>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>
+                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
                                 Admin-Only Registration
                             </h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                This election uses gated signup — only the admin can register voters. Share your Voter ID with the election admin:
+                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
+                                The admin must register you before you can vote. Send them your Voter ID below.
                             </p>
-                            <div style={{ display: "flex", gap: 8 }}>
-                                <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
-                                    {identityCommitment}
-                                </code>
-                                <button onClick={() => copyToClipboard(identityCommitment, "vid")} className="btn-secondary" style={{ width: "auto", padding: "8px 12px", fontSize: "0.7rem" }}>
-                                    {copied === "vid" ? "Copied!" : "Copy ID"}
-                                </button>
+
+                            <div style={{ padding: "12px 14px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)", marginBottom: 14 }}>
+                                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                                    <code className="mono" style={{ flex: 1, background: "var(--bg-card)", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.7rem" }}>
+                                        {identityCommitment}
+                                    </code>
+                                    <button onClick={() => copyToClipboard(identityCommitment, "vid")} className="btn-primary" style={{ width: "auto", padding: "8px 16px", fontSize: "0.8rem" }}>
+                                        {copied === "vid" ? "Copied!" : "Copy ID"}
+                                    </button>
+                                </div>
+                                <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", lineHeight: 1.4 }}>
+                                    This is your anonymous Voter ID. It doesn&apos;t reveal your identity.
+                                </p>
+                            </div>
+
+                            <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.6 }}>
+                                <p style={{ fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>How it works:</p>
+                                <p>1. Copy your Voter ID above and send it to the election admin</p>
+                                <p>2. The admin registers your ID on-chain</p>
+                                <p>3. Once registered and voting opens, return here to cast your vote</p>
                             </div>
                         </>
                     )}
