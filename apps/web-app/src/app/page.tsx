@@ -340,7 +340,7 @@ export default function HomePage() {
                         { icon: "\u{1F6E1}", title: "Anonymous", desc: "Your identity is cryptographically separated from your vote — nobody can connect the two" },
                         { icon: "\u{1F512}", title: "Encrypted", desc: "Votes stay sealed until the election ends — no early peeking" },
                         { icon: "\u2705", title: "Verifiable", desc: "Anyone can independently confirm the results are correct" },
-                        { icon: "\u26A1", title: "No wallet needed", desc: "Voters just open a link and vote — no crypto, no downloads, works in any browser" },
+                        { icon: "\u26A1", title: "Trustless", desc: "No coordinator or admin can see individual votes — only the final tally is revealed" },
                     ].map(g => (
                         <div key={g.title} style={{
                             display: "flex", alignItems: "center", gap: 16,
