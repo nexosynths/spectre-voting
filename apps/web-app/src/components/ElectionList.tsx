@@ -11,6 +11,16 @@ interface ElectionInfo {
     admin: string
     title: string
     phase: "signup" | "voting" | "closed"
+    gateType: string
+    gasless: boolean
+}
+
+const GATE_LABELS: Record<string, string> = {
+    "invite-codes": "Invite codes",
+    "allowlist": "Allowlist",
+    "token-gate": "Token gate",
+    "email-domain": "Email",
+    "github-org": "GitHub",
 }
 
 interface ElectionListProps {
@@ -55,8 +65,14 @@ export default function ElectionList({ elections, loading }: ElectionListProps) 
                                 {e.phase === "signup" ? "REGISTRATION" : e.phase === "voting" ? "VOTING" : "ENDED"}
                             </span>
                         </div>
-                        <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                        <div style={{ display: "flex", gap: 10, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap", alignItems: "center" }}>
                             <span>{e.voteCount} vote{e.voteCount !== 1 ? "s" : ""}</span>
+                            {e.gateType && GATE_LABELS[e.gateType] && (
+                                <span style={{ fontSize: "0.7rem", color: "var(--accent)" }}>{GATE_LABELS[e.gateType]}</span>
+                            )}
+                            {e.gasless && (
+                                <span style={{ fontSize: "0.7rem", color: "var(--success)" }}>&#9889; No wallet</span>
+                            )}
                         </div>
                     </div>
                 </Link>

@@ -22,6 +22,8 @@ interface ElectionInfo {
     admin: string
     title: string
     phase: "signup" | "voting" | "closed"
+    gateType: string
+    gasless: boolean
 }
 
 export default function HomePage() {
@@ -71,7 +73,7 @@ export default function HomePage() {
             const addresses = await factory.getElections(0, total)
 
             // Batch-fetch metadata from ElectionDeployed events (paginated for Base 10k block limit)
-            const metaByAddr = new Map<string, string>()
+            const metaByAddr = new Map<string, any>()
             try {
                 const currentBlock = await provider.getBlockNumber()
                 const deployEvents: any[] = []
@@ -86,7 +88,7 @@ export default function HomePage() {
                         if (args.metadata && args.metadata !== "0x" && args.metadata.length > 2) {
                             const decoded = toUtf8String(args.metadata)
                             const obj = JSON.parse(decoded)
-                            if (obj.title) metaByAddr.set(args.election.toLowerCase(), obj.title)
+                            if (obj.title) metaByAddr.set(args.election.toLowerCase(), obj)
                         }
                     } catch { /* skip invalid metadata */ }
                 }
@@ -106,14 +108,13 @@ export default function HomePage() {
                     ])
 
                     // Priority: on-chain event > localStorage > fallback
-                    let title = metaByAddr.get(addr.toLowerCase()) || ""
-                    if (!title) {
+                    let meta = metaByAddr.get(addr.toLowerCase()) || null
+                    if (!meta) {
                         try {
-                            const meta = JSON.parse(localStorage.getItem(`spectre-election-meta-${addr}`) || "{}")
-                            if (meta.title) title = meta.title
+                            meta = JSON.parse(localStorage.getItem(`spectre-election-meta-${addr}`) || "{}")
                         } catch { /* ignore */ }
                     }
-                    if (!title) title = "Untitled Election"
+                    const title = meta?.title || "Untitled Election"
 
                     const phase = sOpen ? "signup" : vOpen ? "voting" : "closed"
 
@@ -126,6 +127,8 @@ export default function HomePage() {
                         admin,
                         title,
                         phase,
+                        gateType: meta?.gateType || "",
+                        gasless: !!meta?.gaslessEnabled,
                     })
                 } catch { /* skip broken elections */ }
             }
