@@ -42,6 +42,9 @@ node_modules/
 .env
 .env.local
 .env*.local
+.env.production
+.env.development
+apps/web-app/.env*
 
 # Optional npm cache directory
 .npm
