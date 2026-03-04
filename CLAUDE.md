@@ -479,6 +479,119 @@ The election creation form becomes a decision tree:
 
 ---
 
+### Next Up — Protocol Features (Coercion Resistance & DAO Adoption)
+
+Informed by PSE *State of Private Voting 2026* report and analysis of DAVINCI (Vocdoni), Enclave/CRISP (Gnosis Guild), MACI (PSE), Incendia, and Cicada (a16z). Core mission: **coercion-resistant voting with zero trusted coordinators**.
+
+#### Feature Summary Matrix
+
+| Feature | Effort | Complexity | Coercion Impact | Adoption Impact | Recommendation |
+|---|---|---|---|---|---|
+| Vote Overwriting | 2–3 weeks | Low–Medium | CRITICAL | Medium | BUILD NOW |
+| Pedersen Commitment Migration | 4–6 weeks | High | HIGH | Low | GRANT-FUNDED |
+| Commitment Re-randomization | 2–3 weeks* | High | HIGH | Low | GRANT-FUNDED |
+| Weighted / QV Voting | 2–3 weeks | Medium | None | HIGH | PHASE 3 |
+| Delegation Privacy | 6–10 weeks | Very High | Low | Medium | ROADMAP ONLY |
+
+*Requires Pedersen migration as prerequisite. Timeline is additional work on top of migration.
+
+#### Feature 1: Vote Overwriting (BUILD NOW)
+
+Allows voters to update their vote during the voting period. Tally reflects only the most recent submission. **Single most important feature for "Yes" on coercion resistance** in PSE evaluation framework.
+
+**Mechanism:** Nullifiers extended with version counter: `nullifier_v = Poseidon(identity_secret, election_id, version)`. Each version produces a unique nullifier. On overwrite, ZK circuit proves knowledge of previous version's commitment, enabling contract to subtract old commitment and add new one.
+
+**Circuit changes:** Add `version` as private input, add "prove knowledge of previous commitment" constraint for version > 0. Estimated +5–10K constraints. Proof generation ~8–10s (up from ~5s).
+
+**Contract changes:** Add `nullifier => commitment` mapping, `nullifier => version` tracking. Implement atomic tally correction: `tally = tally - old_commitment + new_commitment`. Enforce version cap (max 5 overwrites).
+
+**Key constraints:** Version counter is private input — observers can't distinguish first votes from overwrites. Link between version 0 and version 1 nullifiers hidden by ZK proof. Compatible with existing Poseidon commitments — no migration needed.
+
+**Tradeoffs:** Gas doubles per overwrite. Storage up to 5x per voter. Transaction timing can signal overwrite (mitigated by relayer batching/delayed posting). Verdict: non-negotiable for credibility — every competing protocol implements this.
+
+#### Feature 2: Pedersen Commitment Migration (GRANT-FUNDED)
+
+Replaces Poseidon hash-based commitments with Pedersen commitments (`C = v·G + r·H`) as on-chain ballot representation. Unlocks algebraic re-randomization (Feature 3) and native additive homomorphism for coordinator-free tallying.
+
+**Dual-commitment bridge:** On-chain: `PedersenCommit(vote, r)` — re-randomizable, feeds homomorphic tally. In-circuit: voter proves `(vote, r)` opens both the Pedersen commitment AND the Poseidon hash for Semaphore eligibility. This bridge is novel — needs cryptographic review.
+
+**Homomorphic tally (no coordinator):** `C_total = C_1 + C_2 + ... + C_n`. Tally extraction via bounded discrete log (baby-step-giant-step): binary vote with 10K voters = ~100 steps (trivial), weighted vote with 10K voters × 1M max weight = ~100K steps (seconds). Generator G: standard BN254/Baby Jubjub. Generator H: derived via hash-to-curve from "nothing-up-my-sleeve" string. Critical: discrete log relationship between G and H must be unknown.
+
+**Circuit changes:** EC scalar multiplication (Baby Jubjub), dual-commitment bridge. Estimated +10–20K additional constraints. Uses `circomlib/babyjub.circom`, `circomlib/escalarmulfix.circom`.
+
+**Contract changes:** Storage: field elements → EC points (2x per ballot, 32→64 bytes). Tally accumulator: EC point addition. New `extractTally(claimedTally)` that verifies `claimedTally·G + R·H == C_total` — anyone can call, no coordinator needed. Verification O(1), extraction O(√n).
+
+**Tradeoffs:** Strongest differentiator but highest-risk change. Enables information-theoretic hiding (infinite compute can't break ballot privacy). Eliminates coordinator for tallying. Differentiates from DAVINCI and Enclave. Risks: storage doubles, vulnerable to ECDLP break (same as every other protocol), dual-commitment bridge needs external cryptographic review. Should be grant-funded research, not a solo sprint.
+
+#### Feature 3: Commitment Re-randomization / Masking (GRANT-FUNDED)
+
+Allows anyone to transform a voter's on-chain commitment into a new commitment encoding the same vote with fresh randomness. Voter loses ability to produce a valid receipt. Inspired by Enclave/CRISP's masking but without FHE or Ciphernode committee.
+
+**Mechanism:** Given Pedersen commitment `C = v·G + r·H`, anyone computes `C' = C + r'·H = v·G + (r + r')·H`. Single EC point addition, no ZK proof needed. Original voter can't open the commitment because they don't know `r'`.
+
+**Masking cadence options:** (1) Auto-mask on submission — guaranteed but O(n) gas. (2) Periodic guardian masking — predictable but needs incentive design. (3) Piggyback masking — each ballot submission masks K other ballots, scales naturally. (4) Bounty masking — market-driven. **Recommended:** Piggyback masking with K=5. Gas-cheap on Base (5 EC point additions ≈ minimal gas).
+
+**Prerequisite:** Requires Feature 2 (Pedersen migration). Cannot work with Poseidon commitments.
+
+**Tradeoffs:** Strongest possible receipt-freeness — voter can't produce a valid receipt even if they want to. No trusted party required (unlike DAVINCI's Sequencer re-encryption). Community-level defense: anyone can contribute. Risk: game theory fragility — if no one masks, coercer can verify commitments haven't changed. Best pursued together with Pedersen migration as a single funded research milestone.
+
+#### Feature 4: Weighted & Quadratic Voting (PHASE 3)
+
+Token-weighted voting (power proportional to holdings) and quadratic voting (cost grows quadratically). Required for DAO governance adoption.
+
+**Mechanism:** Merkle leaf expands to `Poseidon(address, weight)`. Token-weighted: circuit verifies `committed_value = choice × weight` and weight matches Merkle leaf. QV: voter allocates credits `[a_1, ..., a_k]`, circuit verifies `Σ(a_i²) ≤ w`.
+
+**Circuit changes:** Basic weighted: +8–15K constraints. QV: +20–30K constraints. Proof generation: ~12–15s weighted, ~18–25s QV.
+
+**Weight privacy concern:** Unique token balances can deanonymize voters from tally. Mitigation: weight bucketing — round to nearest 100 or 1,000, configurable by election creator.
+
+**Verdict:** Important for adoption but doesn't differentiate Spectre technically — every protocol has it or is adding it. Implement after coercion resistance is solid.
+
+#### Feature 5: Delegation Privacy (ROADMAP ONLY — 2027+)
+
+Private delegation of voting power where even the delegate doesn't learn who delegated to them. Requires a parallel delegation circuit (+40–60K constraints), homomorphic encryption of delegation weights. Contains unsolved research problems (principal-agent: how do delegators verify delegate voted as promised without breaking delegate privacy?). Not feasible for solo developer; requires funded research team.
+
+#### Implementation Plan
+
+**Phase 1: Coercion Resistance Foundation (2–3 weeks, BUILD NOW)**
+- Vote overwriting + quorum status display
+- Deliverables: updated circuit, contracts on Base Sepolia, demo on Vercel, updated README
+- Success: voter can cast, overwrite, verify only latest vote tallied. Demo-able in 2 minutes.
+- Unlocks: grant applications (PSE, Gitcoin, Base Builder Grants), "Yes" on coercion resistance
+
+**Phase 2: Trustless Receipt-Freeness (6–9 weeks, GRANT-FUNDED)**
+- Pedersen commitment migration + commitment re-randomization (masking)
+- Deliverables: new circuit with dual-commitment bridge, masking contract, external cryptographic review
+- Success: third-party masking demonstrably breaks vote receipts, no coordinator/committee
+- Unlocks: first protocol in ecosystem with coercion resistance + zero threshold trust assumption
+
+**Phase 3: DAO Adoption Readiness (2–3 weeks, after Phase 2)**
+- Token-weighted voting, cross-chain NFT eligibility, weight bucketing
+- Deliverables: extended circuit, Merkle snapshot tooling for ERC-20/ERC-721, pilot DAO partnership
+- Success: a real DAO runs a real governance vote on Spectre with token-weighted ballots
+
+#### Competitive Positioning (After Phase 1–3)
+
+| Property | MACI V3 | DAVINCI | Enclave | Spectre |
+|---|---|---|---|---|
+| Coercion Resistant | Yes* | Yes* | Yes* | **Yes** |
+| No Trusted Coordinator | No | No | No | **Yes** |
+| No Threshold Committee | N/A | No | No | **Yes** |
+| Receipt-Free (structural) | Key change | Re-encrypt | Masking | **Re-randomization** |
+| Running Tally Privacy | Yes | Yes | Yes | Yes |
+| Weighted Voting | Yes | Yes | Yes | Yes (Phase 3) |
+
+\* Requires trust in a coordinator (MACI), threshold of Sequencers (DAVINCI), or threshold of Ciphernodes (Enclave).
+
+#### Non-Negotiable Design Principles
+
+- **Zero trusted coordinators** — No feature introduces a party that must be trusted for privacy or correctness. Vote overwriting uses deterministic nullifiers. Pedersen tallying uses public discrete log extraction. Re-randomization is permissionless.
+- **Zero threshold committees** — No feature requires N-of-M honest parties for decryption or key management. This is the specific property differentiating Spectre from DAVINCI and Enclave.
+- **Structural coercion resistance** — Must be a mathematical property of the protocol, not a behavioral assumption. Voters should be unable to produce valid receipts even if cooperating with a coercer.
+- **Auditability** — Protocol must remain simple enough for external cryptographers to review. Complexity traded only when security gain is clear and added surface area is bounded.
+
+---
+
 ### Long Term — Platform Evolution
 
 Spectre evolves from a ZK voting protocol into a **private verifiable action protocol**. Voting is the flagship use case, but the same ZK primitives support any application where users prove a credential and perform an action without revealing identity.
@@ -538,6 +651,15 @@ Four independent layers:
 - Civic Identity Bridge (concept) — Government ID systems (digital ID, passport NFC) → attests citizenship, residency, age bracket
 - Attestation Aggregator (proposed) — On-chain history + off-chain attestations (EAS, Verax, Gitcoin Passport) → composite reputation credentials
 
+**Unlinkability Guarantee:** Credentials from different bridges cannot be linked to each other by anyone except the user. Each bridge generates an independent key. The master key deterministically derives child keys per bridge (using bridge ID as the derivation path), so the user can regenerate credentials from their seed, but no external party can work backwards from a credential key to the master key or to any other credential key.
+
+**Credential Vault Storage — Recommended Build Path:**
+- **Phase 1: Mobile Secure Enclave** — Master key stored in iOS Secure Enclave / Android StrongBox. Hardware-isolated key derivation and signing. Biometric authentication. Full proof generation on device. Buildable immediately with best UX for adoption.
+- **Phase 2: ERC-4337 Smart Wallet Integration** — On-chain identity layer with Spectre modules (Validator, Executor, Hook). Session keys for agent delegation. Paymaster for gasless operations. Credential configuration stored on-chain in wallet contract.
+- **Phase 3: Hardware Wallet Support (Optional)** — Ledger/Trezor as root-of-trust signer for high-sensitivity credentials. Hardware wallet signs new credential registrations and high-value actions. Mobile enclave handles daily operations. Smart wallet enforces which signer tier is required per credential type.
+
+**Hybrid Model (Production Target):** Hardware wallet is root-of-trust (cold signer). Smart contract wallet is on-chain identity with credential plugin. Mobile enclave is hot signer for daily operations. User configures which operations require which signer level. Agent intents flow through mobile hot signer path — no hardware wallet needed for routine operations.
+
 #### ERC-4337 Smart Contract Wallet Integration
 
 Credential logic as ERC-4337 smart account modules (via ERC-7579). Wallet validation checks credential proofs before operations reach chain. Invalid ops rejected without spending gas.
@@ -567,11 +689,18 @@ Credential logic as ERC-4337 smart account modules (via ERC-7579). Wallet valida
 
 #### Economic Model
 
+**Operator Roles & Incentives:**
+- **Bundlers** — Collect UserOperations, bundle, submit to EntryPoint. Incentivized natively by 4337 protocol (collect gas fee margins). Use existing infrastructure (Pimlico, Stackup, Alchemy). No custom incentive needed.
+- **Credential Tree Maintainers** — Maintain Merkle trees per credential scope, update on-chain roots. Incentivized by the entity operating the scope: DAO treasury funds governance tree updates; regulators/NGOs fund reporting channel trees; professional bridge operators charge a credential issuance fee ($1-5 per attestation).
+- **Provers** — Generate ZK proofs. Three models: client-side (no operator cost), centralized proving service in TEE (per-proof fee via x402), or decentralized proving network (staking/slashing with per-proof fees). Start centralized, decentralize when volume justifies.
+- **Paymaster Operators** — Sponsor gas for credential actions. Protocol treasury subsidizes high-priority actions (voting, whistleblowing). Scope operators fund their channel's Paymaster. Third-party Paymasters charge small premium in ERC-20 tokens.
+- **Relay Operators** — Forward encrypted messages for anonymous communication channels. Funded by reporting channel operators or protocol treasury as public good.
+
 **Cost per action (Base L2):** $0.01–$0.05 all-in (Groth16 verification <$0.01, proof generation $0.001–$0.01, Merkle root update <$0.01, bundler fee 5–15% of gas).
 
 **Revenue:** Credential issuance fees ($1–5/attestation), proof service fees (x402), premium application modules, Paymaster margins.
 
-**Token strategy:** Launch without native token. Pay operators in USDC via x402. Introduce token only when decentralized governance/proving needed and real economic activity justifies it.
+**Token strategy:** Launch without native token. Pay operators in USDC via x402. Fund protocol treasury through credential issuance and proof service fees. Introduce token only when the network reaches sufficient scale to require decentralized governance and proving, and when there is enough economic activity to give the token real utility rather than speculative value.
 
 #### Build Phases
 
@@ -593,12 +722,12 @@ The enterprise abstraction layer sits on top of the protocol and presents Spectr
 - **Coercion resistance** — Decoy proofs under duress. No competitor offers this
 
 **Abstraction mapping:**
-- Credential Bridge → SSO Integration ("Connect Identity Provider" settings page)
-- Credential Vault → Mobile App / Browser Session (SSO login, no seed phrases or wallets shown)
-- ZK Proof Generation → "Securing your submission..." loading indicator
-- Blockchain Submission → Invisible backend (relayer submits via Paymaster, user sees "Report submitted successfully")
-- Smart Contract Verification → Compliance Dashboard (aggregate stats, audit trail)
-- Anonymous Mailbox → Secure Messaging Inbox (in-app encrypted messaging)
+- **Credential Bridge → SSO Integration** — Enterprise sees a settings page: "Connect Identity Provider." They select Okta, Azure AD, Google Workspace, or SAML and authorize. Underneath: OAuth/SAML bridge authenticates sessions, derives deterministic credential keys, adds Merkle leaves to the org's tree, forgets the mapping. Admin sees "247 employees enrolled," never a Merkle tree.
+- **Credential Vault → Mobile App / Browser Session** — User downloads the Spectre app, logs in with corporate SSO, sees "You're verified as an employee of Acme Corp." Underneath: app generates credential key in phone's secure enclave, enrolls user in org's Merkle tree, stores Merkle path in encrypted local storage. No seed phrase, no wallet address shown.
+- **ZK Proof Generation → "Securing your submission..."** — User sees a brief loading indicator. Underneath: WASM-compiled Groth16 circuit prover runs client-side. Credential key, Merkle path, and private data never leave the device.
+- **Blockchain Submission → Invisible backend** — User sees "Report submitted successfully. Your anonymous mailbox ID is: SPECTRE-4X7KM." Underneath: Spectre-operated relayer submits ZK proof on-chain via Paymaster (gasless). On-chain tx verifies proof, records nullifier, emits event. User never knows a blockchain transaction occurred.
+- **Smart Contract Verification → Compliance Dashboard** — Admin sees aggregate statistics: "14 reports submitted this quarter, all from verified employees. 0 duplicate submissions. System integrity verified." Underneath: dashboard reads on-chain events and contract state. Proof verification, nullifier uniqueness, and credential tree integrity are all on-chain and independently auditable.
+- **Anonymous Mailbox → Secure Messaging Inbox** — User sees an in-app messaging interface: "You have a new message from the Ethics Committee." Underneath: sealed-sender relay routes encrypted messages between anonymous reporter and designated recipient via nullifier-derived mailbox ID. Neither relay operator nor Spectre can read contents or identify sender.
 
 **Three Enterprise Product Lines** (same Spectre protocol, different buyers):
 
@@ -631,19 +760,24 @@ The enterprise abstraction layer sits on top of the protocol and presents Spectr
 - Enterprise compliance/governance: Never lead with blockchain. Lead with compliance/security story. "Blockchain" only appears in technical architecture docs for security team due diligence, framed as "tamper-proof immutable infrastructure layer"
 - Healthcare/legal/professional: Lead with credential verification and privacy story
 
+**Sales Motion:**
+- **Spectre Report:** Enterprise sales. Target compliance officers at companies with 500+ employees, especially in financial services, healthcare, defense, and technology. Key objection handling: "How is this different from EthicsPoint?" — EthicsPoint stores reports in a database that admins can access; Spectre makes identification mathematically impossible. SOC 2 Type II certification and independent security audit as table stakes.
+- **Spectre Govern:** Combination of enterprise sales (corporate boards) and self-serve (associations, cooperatives, unions). Per-election pricing creates a low-friction entry point. Annual subscriptions for repeat governance needs.
+- **Spectre Verify:** API-first for integration into existing workflows (hospital credentialing systems, HR platforms, legal case management). Partnership model with vertical software vendors (EMR systems, practice management platforms, legal tech).
+
 **Regulatory posture:**
 - GDPR: Inherently friendly — no PII processed/stored. On-chain data is only cryptographic proofs and nullifiers
 - Data residency: ZK proofs generated client-side. Public blockchain not subject to data residency for non-PII
 - SOC 2 / ISO 27001: Required for Spectre-operated infrastructure (relayers, dashboards). On-chain components independently verifiable
 
 **Enterprise build priority:**
-1. Admin Dashboard + SSO Bridge — minimum viable enterprise product
-2. White-Label Mobile App — primary end-user interface
-3. Relayer Service + Paymaster — gasless, invisible blockchain submission
-4. Compliance Reporting Module — required for regulated industry sales
-5. API Gateway — enables Spectre Verify and third-party integrations
+1. **Admin Dashboard + SSO Bridge** — minimum viable enterprise product. Web application for enterprise administrators: organization management, SSO configuration, credential tree monitoring, aggregate reporting metrics, audit trail export, user enrollment status. No blockchain concepts exposed. SSO Bridge: managed deployment of the OAuth/SAML credential bridge, multi-tenant architecture supporting multiple organizations, automated credential tree rebuilds on employee join/leave events from the identity provider.
+2. **White-Label Mobile App** — primary end-user interface. Brandable mobile application for end users: SSO login, anonymous report composition, secure messaging inbox, credential management, vote casting. Secure enclave key management. No wallet terminology.
+3. **Relayer Service + Paymaster** — gasless, invisible blockchain submission. Managed infrastructure that submits on-chain transactions on behalf of users. Paymaster-funded gasless operations. Enterprise SLA (uptime guarantees, latency targets). Users and enterprises never interact with the blockchain directly.
+4. **Compliance Reporting Module** — required for regulated industry sales. Export-ready reports for auditors: number of submissions per period, credential tree integrity proofs, nullifier uniqueness verification, system availability metrics. Formatted for SOX, EU Whistleblower Directive, and SEC reporting requirements.
+5. **API Gateway** — enables Spectre Verify and third-party integrations. RESTful API for enterprise integrations: credential verification API, report submission API for embedded workflows, webhook support for event notifications (new report, credential status change).
 
-**Revenue potential:** Global ethics/compliance market ~$60B (12–15% growth), whistleblower reporting ~$3B, corporate governance ~$4B, credential verification ~$15B. ZK architecture is a genuine technical moat — competitors cannot retrofit mathematical anonymity onto database-backed systems.
+**Revenue potential:** Global ethics/compliance market ~$60B (12–15% growth), whistleblower reporting ~$3B, corporate governance ~$4B, credential verification ~$15B. ZK architecture is a genuine technical moat — competitors cannot retrofit mathematical anonymity onto database-backed systems. They would need to rebuild from scratch using ZK primitives — which is exactly what Spectre has already built. The enterprise products create a sustainable revenue model (recurring SaaS subscriptions) that funds continued protocol development, while crypto-native protocol usage generates transaction-level fees and ecosystem growth. Both markets are served by the same underlying infrastructure — every improvement to the core engine, credential bridges, or proving infrastructure benefits both product lines.
 
 #### Key Design Principles
 
