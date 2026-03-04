@@ -63,7 +63,7 @@ export default function VotingSection({
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
                                 {gaslessEnabled
                                     ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
-                                    : "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. This requires two wallet confirmations."}
+                                    : "Voting requires two wallet confirmations. The first delinks your identity from your registration. The second submits your encrypted vote. Both are needed to keep your vote anonymous."}
                             </p>
                         </div>
                     )}
@@ -98,6 +98,8 @@ export default function VotingSection({
                                     </p>
                                     <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                                         {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
+                                        {voteStep === "submitting-join" && !gaslessEnabled && "This separates your identity from your signup"}
+                                        {voteStep === "submitting-vote" && !gaslessEnabled && "This submits your encrypted ballot"}
                                         {voteStep === "timing-delay" && "Random delay protects your identity"}
                                         {voteStep === "verifying" && "Independently checking the blockchain"}
                                     </p>

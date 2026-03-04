@@ -1680,11 +1680,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } : {
             "fetching-signup-group":  { step: 1, total: 5, label: "Preparing..." },
             "generating-join-proof":  { step: 2, total: 5, label: "Proving your eligibility (~15s)" },
-            "submitting-join":        { step: 3, total: 5, label: "Confirm in wallet" },
+            "submitting-join":        { step: 3, total: 5, label: "Confirm in wallet (1 of 2: delink identity)" },
             "fetching-voting-group":  { step: 3, total: 5, label: "Preparing your ballot..." },
             "generating-vote-proof":  { step: 4, total: 5, label: "Sealing your vote (~15s)" },
             "encrypting":             { step: 4, total: 5, label: "Encrypting your ballot" },
-            "submitting-vote":        { step: 5, total: 5, label: "Confirm in wallet" },
+            "submitting-vote":        { step: 5, total: 5, label: "Confirm in wallet (2 of 2: submit vote)" },
         }
         return steps[voteStep] || null
     }, [voteStep, isProcessing, gaslessEnabled])
