@@ -838,7 +838,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 setCommitteeState(null)
             }
         } catch (err: any) {
-            addLog(`Failed to load election: ${err.message}`)
+            addLog("Failed to load election. Check your connection and try refreshing.")
         } finally { setLoading(false) }
     }, [electionAddress, addLog])
 
@@ -854,7 +854,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const found = members.some(m => m.toString() === weightedLeaf.toString())
             setSignupStatus(found ? "signed-up" : "not-signed-up")
         } catch (err: any) {
-            addLog(`Signup check failed: ${err.message}`)
+            addLog("Could not check signup status. Try refreshing the page.")
             setSignupStatus("unknown")
         }
     }, [identity, state, addLog, voterWeight])
@@ -1242,7 +1242,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
             addLog(`Tally: ${summary}`)
         } catch (err: any) {
-            setTallyError(err.message || "Tally failed"); setTallyStep("error"); setTallyMsg("")
+            setTallyError(err.message || "Tally failed. Please try again."); setTallyStep("error"); setTallyMsg("")
         }
     }, [electionAddress, addLog, state, optionLabels])
 
@@ -1272,7 +1272,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 })
             }
         } catch (err: any) {
-            setDecryptShareError(err.message || "Decryption failed")
+            setDecryptShareError(err.message || "Decryption failed. Check your private key and try again.")
         }
     }, [decryptShareInput, decryptKeyInput, selectedMemberIdx])
 
@@ -1364,7 +1364,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
             addLog(`Threshold tally: ${summary}`)
         } catch (err: any) {
-            setTallyError(err.message || "Threshold tally failed"); setTallyStep("error"); setTallyMsg("")
+            setTallyError(err.message || "Threshold tally failed. Check that enough shares were provided."); setTallyStep("error"); setTallyMsg("")
         }
     }, [electionAddress, addLog, state, optionLabels, thresholdMeta, thresholdShareInputs])
 
@@ -1642,7 +1642,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
             addLog(`Committee tally: ${summary}`)
         } catch (err: any) {
-            setTallyError(err.message || "Committee tally failed"); setTallyStep("error"); setTallyMsg("")
+            setTallyError(err.message || "Committee tally failed. Ensure enough shares have been submitted."); setTallyStep("error"); setTallyMsg("")
         }
     }, [electionAddress, addLog, state, optionLabels, committeeState])
 

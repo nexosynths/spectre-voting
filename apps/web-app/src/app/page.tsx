@@ -132,7 +132,7 @@ export default function HomePage() {
 
             setElections(infos.reverse())
         } catch (err: any) {
-            addLog(`Failed to load elections: ${err.message}`)
+            addLog("Failed to load elections. Check your connection and try refreshing.")
         } finally {
             setLoadingElections(false)
         }

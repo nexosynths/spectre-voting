@@ -107,7 +107,7 @@ export function SpectreProvider({ children }: { children: ReactNode }) {
             setAddress(accounts[0])
             addLog(`Connected: ${accounts[0].slice(0, 6)}...${accounts[0].slice(-4)}`)
         } catch (err: any) {
-            addLog(`Connection failed: ${err.message}`)
+            addLog("Wallet connection failed. Make sure your wallet is unlocked and try again.")
         }
     }, [addLog])
 
