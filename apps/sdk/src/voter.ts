@@ -6,12 +6,14 @@ import { eciesEncrypt } from "./ecies.js"
 
 // Minimal ABI for SpectreVoting contract interaction
 const SPECTRE_VOTING_ABI = [
-    "function castVote(uint[2] pA, uint[2][2] pB, uint[2] pC, uint256 merkleTreeRoot, uint256 nullifierHash, uint256 voteCommitment, bytes encryptedBlob) external",
+    "function castVote(uint[2] pA, uint[2][2] pB, uint[2] pC, uint256 merkleTreeRoot, uint256 baseNullifier, uint256 versionedNullifier, uint256 voteCommitment, bytes encryptedBlob) external",
     "function proposalId() view returns (uint256)",
     "function votingOpen() view returns (bool)",
     "function voteCount() view returns (uint256)",
+    "function uniqueVoterCount() view returns (uint256)",
     "function usedNullifiers(uint256) view returns (bool)",
-    "event VoteCast(uint256 indexed proposalId, uint256 indexed nullifierHash, uint256 voteCommitment, bytes encryptedBlob)"
+    "function knownVoters(uint256) view returns (bool)",
+    "event VoteCast(uint256 indexed proposalId, uint256 indexed baseNullifier, uint256 versionedNullifier, uint256 voteCommitment, bytes encryptedBlob)"
 ]
 
 export interface VotePayload {
@@ -75,6 +77,7 @@ export function decodeVotePayload(buf: Uint8Array): VotePayload {
  * @param electionPubKey — 33-byte compressed secp256k1 public key
  * @param numOptions — total number of vote options (default 2 for backwards compat)
  * @param weight — voting weight (default 1 for non-weighted elections)
+ * @param version — vote version for overwriting (0 = first vote, max 5)
  * @param artifacts — optional custom circuit artifact paths
  */
 export async function prepareVote(
@@ -85,6 +88,7 @@ export async function prepareVote(
     electionPubKey: Uint8Array,
     numOptions: bigint = 2n,
     weight: bigint = 1n,
+    version: bigint = 0n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<PreparedVote> {
     // Generate random blinding factor
@@ -103,6 +107,7 @@ export async function prepareVote(
         voteRandomness,
         numOptions,
         weight,
+        version,
         artifacts
     )
 
@@ -137,7 +142,8 @@ export async function submitVote(
         proof.pB,
         proof.pC,
         proof.merkleRoot,
-        proof.nullifierHash,
+        proof.baseNullifier,
+        proof.versionedNullifier,
         proof.voteCommitment,
         encryptedBlob
     )

@@ -19,16 +19,20 @@ const ELECTION_PUBKEY_Y = 222n
 const DEFAULT_NUM_OPTIONS = 2n
 const CREATION_FEE = ethers.parseEther("0.001")
 
-// Helper: generate a SpectreVote proof (updated for numOptions)
+// Helper: generate a SpectreVote proof (v2: dual nullifiers + version)
 async function generateSpectreProof(
     identity: Identity,
     group: Group,
     proposalId: bigint,
     vote: bigint,
     voteRandomness: bigint,
-    numOptions: bigint
+    numOptions: bigint,
+    weight: bigint = 1n,
+    version: bigint = 0n
 ) {
-    const leafIndex = group.indexOf(identity.commitment)
+    // Group uses weighted leaves: Poseidon(commitment, weight)
+    const weightedLeaf = poseidon2([identity.commitment, weight])
+    const leafIndex = group.indexOf(weightedLeaf)
     const merkleProof = group.generateMerkleProof(leafIndex)
 
     const siblings = merkleProof.siblings.map((s: bigint) => s.toString())
@@ -36,17 +40,20 @@ async function generateSpectreProof(
 
     const input = {
         secret: identity.secretScalar.toString(),
+        weight: weight.toString(),
         merkleProofLength: merkleProof.siblings.length,
         merkleProofIndex: merkleProof.index,
         merkleProofSiblings: siblings,
         proposalId: proposalId.toString(),
         vote: vote.toString(),
         voteRandomness: voteRandomness.toString(),
-        numOptions: numOptions.toString()
+        numOptions: numOptions.toString(),
+        version: version.toString()
     }
 
     const { proof, publicSignals } = await groth16.fullProve(input, VOTE_WASM_PATH, VOTE_ZKEY_PATH)
 
+    // Public signals: [merkleRoot, baseNullifier, versionedNullifier, voteCommitment, proposalId, numOptions]
     return {
         pA: [proof.pi_a[0], proof.pi_a[1]] as [string, string],
         pB: [
@@ -55,10 +62,11 @@ async function generateSpectreProof(
         ] as [[string, string], [string, string]],
         pC: [proof.pi_c[0], proof.pi_c[1]] as [string, string],
         merkleRoot: publicSignals[0],
-        nullifierHash: publicSignals[1],
-        voteCommitment: publicSignals[2],
-        proposalId: publicSignals[3],
-        numOptions: publicSignals[4]
+        baseNullifier: publicSignals[1],
+        versionedNullifier: publicSignals[2],
+        voteCommitment: publicSignals[3],
+        proposalId: publicSignals[4],
+        numOptions: publicSignals[5]
     }
 }
 
@@ -67,9 +75,11 @@ async function generateAnonJoinProof(
     signupIdentity: Identity,
     votingIdentity: Identity,
     signupGroup: Group,
-    electionId: bigint
+    electionId: bigint,
+    weight: bigint = 1n
 ) {
-    const leafIndex = signupGroup.indexOf(signupIdentity.commitment)
+    const weightedLeaf = poseidon2([signupIdentity.commitment, weight])
+    const leafIndex = signupGroup.indexOf(weightedLeaf)
     const merkleProof = signupGroup.generateMerkleProof(leafIndex)
 
     const siblings = merkleProof.siblings.map((s: bigint) => s.toString())
@@ -78,6 +88,7 @@ async function generateAnonJoinProof(
     const input = {
         secret: signupIdentity.secretScalar.toString(),
         newSecret: votingIdentity.secretScalar.toString(),
+        weight: weight.toString(),
         merkleProofLength: merkleProof.siblings.length,
         merkleProofIndex: merkleProof.index,
         merkleProofSiblings: siblings,
@@ -101,6 +112,8 @@ async function generateAnonJoinProof(
 }
 
 describe("SpectreVotingFactory", () => {
+    let _poseidonT3Address: string
+
     async function deployFixture() {
         const [deployer, alice, bob, carol] = await ethers.getSigners()
 
@@ -116,8 +129,15 @@ describe("SpectreVotingFactory", () => {
         const joinVerifier = await JoinVerifierFactory.deploy()
         const joinVerifierAddress = await joinVerifier.getAddress()
 
-        // Deploy factory
-        const FactoryFactory = await ethers.getContractFactory("SpectreVotingFactory")
+        // Deploy PoseidonT3 library (needed by SpectreVoting for weighted leaves)
+        const PoseidonT3Factory = await ethers.getContractFactory("PoseidonT3")
+        const poseidonT3 = await PoseidonT3Factory.deploy()
+        _poseidonT3Address = await poseidonT3.getAddress()
+
+        // Deploy factory (linked with PoseidonT3)
+        const FactoryFactory = await ethers.getContractFactory("SpectreVotingFactory", {
+            libraries: { PoseidonT3: _poseidonT3Address }
+        })
         const factory = await FactoryFactory.deploy(semaphoreAddress, voteVerifierAddress, joinVerifierAddress)
 
         return {
@@ -164,7 +184,9 @@ describe("SpectreVotingFactory", () => {
         )
 
         const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
-        const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
+        const SpectreVoting = await ethers.getContractFactory("SpectreVoting", {
+            libraries: { PoseidonT3: _poseidonT3Address }
+        })
         return SpectreVoting.attach(electionAddr)
     }
 
@@ -337,7 +359,7 @@ describe("SpectreVotingFactory", () => {
                     { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(
-                await ethers.getContractFactory("SpectreVoting").then(f => f.deploy(
+                await ethers.getContractFactory("SpectreVoting", { libraries: { PoseidonT3: _poseidonT3Address } }).then(f => f.deploy(
                     ethers.ZeroAddress, ethers.ZeroAddress, ethers.ZeroAddress,
                     0, 0, 0, ethers.ZeroAddress, 0, 0, 2, true
                 ).catch(() => null)) || (await createElectionVia(factory, alice)),
@@ -363,7 +385,9 @@ describe("SpectreVotingFactory", () => {
 
             expect(await factory.electionCount()).to.equal(3)
 
-            const SpectreVoting = await ethers.getContractFactory("SpectreVoting")
+            const SpectreVoting = await ethers.getContractFactory("SpectreVoting", {
+                libraries: { PoseidonT3: _poseidonT3Address }
+            })
 
             const e1 = SpectreVoting.attach(await factory.elections(0))
             const e2 = SpectreVoting.attach(await factory.elections(1))
@@ -490,7 +514,7 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 election.castVote(
                     [0, 0], [[0, 0], [0, 0]], [0, 0],
-                    0, 0, 0, "0x"
+                    0, 0, 0, 0, "0x"
                 )
             ).to.be.revertedWithCustomError(election, "VotingNotOpen")
         })
@@ -568,8 +592,8 @@ describe("SpectreVotingFactory", () => {
 
             // Build local signup group
             const signupGroup = new Group()
-            signupGroup.addMember(voter1.commitment)
-            signupGroup.addMember(filler.commitment)
+            signupGroup.addMember(poseidon2([voter1.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
 
             // Close signup → opens voting
             await election.connect(alice).closeSignup()
@@ -605,8 +629,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(filler.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(voter1.commitment)
-            signupGroup.addMember(filler.commitment)
+            signupGroup.addMember(poseidon2([voter1.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
 
             await election.connect(alice).closeSignup()
 
@@ -657,8 +681,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(fillerId.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(signupId.commitment)
-            signupGroup.addMember(fillerId.commitment)
+            signupGroup.addMember(poseidon2([signupId.commitment, 1n]))
+            signupGroup.addMember(poseidon2([fillerId.commitment, 1n]))
 
             // Phase transition: close signup → open voting
             await election.connect(alice).closeSignup()
@@ -675,7 +699,7 @@ describe("SpectreVotingFactory", () => {
             // Phase 2b: Cast vote
             // Build the voting group (mirrors on-chain state)
             const votingGroup = new Group()
-            votingGroup.addMember(votingId.commitment)
+            votingGroup.addMember(poseidon2([votingId.commitment, 1n]))
 
             // Need at least 1 member in voting group; we have it.
             // But the circuit needs valid Merkle proof — single member group works.
@@ -685,7 +709,7 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await election.connect(bob).castVote(
                 voteProof.pA, voteProof.pB, voteProof.pC,
-                voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
+                voteProof.merkleRoot, voteProof.baseNullifier, voteProof.versionedNullifier, voteProof.voteCommitment,
                 "0xfeed"
             )
 
@@ -693,7 +717,7 @@ describe("SpectreVotingFactory", () => {
             expect(await election.voteCount()).to.equal(1)
         })
 
-        it("Should reject double-voting (same nullifier)", async () => {
+        it("Should reject replay of same versioned nullifier", async () => {
             const { factory, alice, bob } = await loadFixture(deployFixture)
             const election = await createElectionVia(factory, alice)
 
@@ -704,8 +728,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(signup2.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(signup1.commitment)
-            signupGroup.addMember(signup2.commitment)
+            signupGroup.addMember(poseidon2([signup1.commitment, 1n]))
+            signupGroup.addMember(poseidon2([signup2.commitment, 1n]))
 
             await election.connect(alice).closeSignup()
 
@@ -727,14 +751,14 @@ describe("SpectreVotingFactory", () => {
 
             // Build voting group
             const votingGroup = new Group()
-            votingGroup.addMember(voting1.commitment)
-            votingGroup.addMember(voting2.commitment)
+            votingGroup.addMember(poseidon2([voting1.commitment, 1n]))
+            votingGroup.addMember(poseidon2([voting2.commitment, 1n]))
 
             // First vote succeeds
             const vote1 = await generateSpectreProof(voting1, votingGroup, PROPOSAL_ID, 0n, 111n, DEFAULT_NUM_OPTIONS)
             await election.connect(bob).castVote(
                 vote1.pA, vote1.pB, vote1.pC,
-                vote1.merkleRoot, vote1.nullifierHash, vote1.voteCommitment,
+                vote1.merkleRoot, vote1.baseNullifier, vote1.versionedNullifier, vote1.voteCommitment,
                 "0xaa"
             )
 
@@ -743,7 +767,7 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 election.connect(bob).castVote(
                     vote1again.pA, vote1again.pB, vote1again.pC,
-                    vote1again.merkleRoot, vote1again.nullifierHash, vote1again.voteCommitment,
+                    vote1again.merkleRoot, vote1again.baseNullifier, vote1again.versionedNullifier, vote1again.voteCommitment,
                     "0xbb"
                 )
             ).to.be.revertedWithCustomError(election, "NullifierAlreadyUsed")
@@ -752,11 +776,143 @@ describe("SpectreVotingFactory", () => {
             const vote2 = await generateSpectreProof(voting2, votingGroup, PROPOSAL_ID, 1n, 333n, DEFAULT_NUM_OPTIONS)
             await election.connect(bob).castVote(
                 vote2.pA, vote2.pB, vote2.pC,
-                vote2.merkleRoot, vote2.nullifierHash, vote2.voteCommitment,
+                vote2.merkleRoot, vote2.baseNullifier, vote2.versionedNullifier, vote2.voteCommitment,
                 "0xcc"
             )
 
             expect(await election.voteCount()).to.equal(2)
+        })
+    })
+
+    describe("# vote overwriting (coercion resistance)", () => {
+        // Helper to set up a single voter ready to cast votes
+        async function setupVoterForOverwrite(factory: any, alice: any, bob: any) {
+            const election = await createElectionVia(factory, alice)
+            const signup = new Identity("overwrite-signup")
+            await election.connect(alice).registerVoter(signup.commitment)
+            const signupGroup = new Group()
+            signupGroup.addMember(poseidon2([signup.commitment, 1n]))
+            await election.connect(alice).closeSignup()
+            const votingId = new Identity("overwrite-voting")
+            const joinProof = await generateAnonJoinProof(signup, votingId, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+            const votingGroup = new Group()
+            votingGroup.addMember(poseidon2([votingId.commitment, 1n]))
+            return { election, votingId, votingGroup }
+        }
+
+        it("Should accept vote overwrite (version 1 after version 0)", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const { election, votingId, votingGroup } = await setupVoterForOverwrite(factory, alice, bob)
+
+            // Version 0 — first vote
+            const proof0 = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 0n, 100n, DEFAULT_NUM_OPTIONS, 1n, 0n)
+            await election.connect(bob).castVote(
+                proof0.pA, proof0.pB, proof0.pC,
+                proof0.merkleRoot, proof0.baseNullifier, proof0.versionedNullifier, proof0.voteCommitment,
+                "0xaa"
+            )
+
+            // Version 1 — overwrite
+            const proof1 = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 1n, 200n, DEFAULT_NUM_OPTIONS, 1n, 1n)
+            const tx = await election.connect(bob).castVote(
+                proof1.pA, proof1.pB, proof1.pC,
+                proof1.merkleRoot, proof1.baseNullifier, proof1.versionedNullifier, proof1.voteCommitment,
+                "0xbb"
+            )
+
+            await expect(tx).to.emit(election, "VoteCast")
+            // Same baseNullifier for both
+            expect(proof0.baseNullifier).to.equal(proof1.baseNullifier)
+            // Different versionedNullifiers
+            expect(proof0.versionedNullifier).to.not.equal(proof1.versionedNullifier)
+            // uniqueVoterCount stays 1, voteCount is 2
+            expect(await election.uniqueVoterCount()).to.equal(1)
+            expect(await election.voteCount()).to.equal(2)
+        })
+
+        it("Should track uniqueVoterCount correctly for overwrites", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+
+            // Setup 2 voters
+            const signup1 = new Identity("ow-signup-1")
+            const signup2 = new Identity("ow-signup-2")
+            await election.connect(alice).registerVoter(signup1.commitment)
+            await election.connect(alice).registerVoter(signup2.commitment)
+            const signupGroup = new Group()
+            signupGroup.addMember(poseidon2([signup1.commitment, 1n]))
+            signupGroup.addMember(poseidon2([signup2.commitment, 1n]))
+            await election.connect(alice).closeSignup()
+
+            const voting1 = new Identity("ow-voting-1")
+            const voting2 = new Identity("ow-voting-2")
+            const join1 = await generateAnonJoinProof(signup1, voting1, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(join1.pA, join1.pB, join1.pC, join1.signupMerkleRoot, join1.joinNullifier, join1.newCommitment)
+            const join2 = await generateAnonJoinProof(signup2, voting2, signupGroup, PROPOSAL_ID)
+            await election.connect(bob).anonJoin(join2.pA, join2.pB, join2.pC, join2.signupMerkleRoot, join2.joinNullifier, join2.newCommitment)
+
+            const votingGroup = new Group()
+            votingGroup.addMember(poseidon2([voting1.commitment, 1n]))
+            votingGroup.addMember(poseidon2([voting2.commitment, 1n]))
+
+            // Voter 1: vote version 0
+            const v1_0 = await generateSpectreProof(voting1, votingGroup, PROPOSAL_ID, 0n, 111n, DEFAULT_NUM_OPTIONS, 1n, 0n)
+            await election.connect(bob).castVote(v1_0.pA, v1_0.pB, v1_0.pC, v1_0.merkleRoot, v1_0.baseNullifier, v1_0.versionedNullifier, v1_0.voteCommitment, "0x01")
+
+            // Voter 2: vote version 0
+            const v2_0 = await generateSpectreProof(voting2, votingGroup, PROPOSAL_ID, 1n, 222n, DEFAULT_NUM_OPTIONS, 1n, 0n)
+            await election.connect(bob).castVote(v2_0.pA, v2_0.pB, v2_0.pC, v2_0.merkleRoot, v2_0.baseNullifier, v2_0.versionedNullifier, v2_0.voteCommitment, "0x02")
+
+            expect(await election.uniqueVoterCount()).to.equal(2)
+            expect(await election.voteCount()).to.equal(2)
+
+            // Voter 1: overwrite with version 1
+            const v1_1 = await generateSpectreProof(voting1, votingGroup, PROPOSAL_ID, 1n, 333n, DEFAULT_NUM_OPTIONS, 1n, 1n)
+            await election.connect(bob).castVote(v1_1.pA, v1_1.pB, v1_1.pC, v1_1.merkleRoot, v1_1.baseNullifier, v1_1.versionedNullifier, v1_1.voteCommitment, "0x03")
+
+            // uniqueVoterCount still 2, voteCount now 3
+            expect(await election.uniqueVoterCount()).to.equal(2)
+            expect(await election.voteCount()).to.equal(3)
+        })
+
+        it("Should accept versions in non-sequential order", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const { election, votingId, votingGroup } = await setupVoterForOverwrite(factory, alice, bob)
+
+            // Version 0
+            const p0 = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 0n, 10n, DEFAULT_NUM_OPTIONS, 1n, 0n)
+            await election.connect(bob).castVote(p0.pA, p0.pB, p0.pC, p0.merkleRoot, p0.baseNullifier, p0.versionedNullifier, p0.voteCommitment, "0x01")
+
+            // Version 3 (skip 1, 2)
+            const p3 = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 1n, 30n, DEFAULT_NUM_OPTIONS, 1n, 3n)
+            await election.connect(bob).castVote(p3.pA, p3.pB, p3.pC, p3.merkleRoot, p3.baseNullifier, p3.versionedNullifier, p3.voteCommitment, "0x02")
+
+            // Version 1 (go back)
+            const p1 = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 0n, 11n, DEFAULT_NUM_OPTIONS, 1n, 1n)
+            await election.connect(bob).castVote(p1.pA, p1.pB, p1.pC, p1.merkleRoot, p1.baseNullifier, p1.versionedNullifier, p1.voteCommitment, "0x03")
+
+            expect(await election.voteCount()).to.equal(3)
+            expect(await election.uniqueVoterCount()).to.equal(1)
+        })
+
+        it("Should emit correct baseNullifier in VoteCast event", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const { election, votingId, votingGroup } = await setupVoterForOverwrite(factory, alice, bob)
+
+            const proof = await generateSpectreProof(votingId, votingGroup, PROPOSAL_ID, 0n, 50n, DEFAULT_NUM_OPTIONS, 1n, 0n)
+            const tx = await election.connect(bob).castVote(
+                proof.pA, proof.pB, proof.pC,
+                proof.merkleRoot, proof.baseNullifier, proof.versionedNullifier, proof.voteCommitment,
+                "0xfeed"
+            )
+
+            await expect(tx).to.emit(election, "VoteCast").withArgs(
+                PROPOSAL_ID, proof.baseNullifier, proof.versionedNullifier, proof.voteCommitment, "0xfeed"
+            )
         })
     })
 
@@ -773,8 +929,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(filler.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(signup.commitment)
-            signupGroup.addMember(filler.commitment)
+            signupGroup.addMember(poseidon2([signup.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
 
             await election.connect(alice).closeSignup()
 
@@ -788,7 +944,7 @@ describe("SpectreVotingFactory", () => {
 
             // Vote with option 2 (valid: 0 <= 2 < 4)
             const votingGroup = new Group()
-            votingGroup.addMember(votingId.commitment)
+            votingGroup.addMember(poseidon2([votingId.commitment, 1n]))
 
             const voteProof = await generateSpectreProof(
                 votingId, votingGroup, PROPOSAL_ID, 2n, 555n, numOptions
@@ -796,7 +952,7 @@ describe("SpectreVotingFactory", () => {
 
             const tx = await election.connect(bob).castVote(
                 voteProof.pA, voteProof.pB, voteProof.pC,
-                voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
+                voteProof.merkleRoot, voteProof.baseNullifier, voteProof.versionedNullifier, voteProof.voteCommitment,
                 "0xfeed"
             )
 
@@ -815,8 +971,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(filler.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(signup.commitment)
-            signupGroup.addMember(filler.commitment)
+            signupGroup.addMember(poseidon2([signup.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
 
             await election.connect(alice).closeSignup()
 
@@ -828,7 +984,7 @@ describe("SpectreVotingFactory", () => {
             )
 
             const votingGroup = new Group()
-            votingGroup.addMember(votingId.commitment)
+            votingGroup.addMember(poseidon2([votingId.commitment, 1n]))
 
             // vote=5 with numOptions=2 should fail at circuit level
             // (circuit won't generate valid proof when vote >= numOptions)
@@ -859,8 +1015,8 @@ describe("SpectreVotingFactory", () => {
             await election.connect(alice).registerVoter(filler.commitment)
 
             const signupGroup = new Group()
-            signupGroup.addMember(signup.commitment)
-            signupGroup.addMember(filler.commitment)
+            signupGroup.addMember(poseidon2([signup.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
 
             await election.connect(alice).closeSignup()
 
@@ -874,7 +1030,7 @@ describe("SpectreVotingFactory", () => {
 
             // Build voting group + proof BEFORE deadline
             const votingGroup = new Group()
-            votingGroup.addMember(votingId.commitment)
+            votingGroup.addMember(poseidon2([votingId.commitment, 1n]))
             const voteProof = await generateSpectreProof(
                 votingId, votingGroup, PROPOSAL_ID, 1n, 888n, DEFAULT_NUM_OPTIONS
             )
@@ -887,7 +1043,7 @@ describe("SpectreVotingFactory", () => {
             await expect(
                 election.connect(bob).castVote(
                     voteProof.pA, voteProof.pB, voteProof.pC,
-                    voteProof.merkleRoot, voteProof.nullifierHash, voteProof.voteCommitment,
+                    voteProof.merkleRoot, voteProof.baseNullifier, voteProof.versionedNullifier, voteProof.voteCommitment,
                     "0xdead"
                 )
             ).to.be.revertedWithCustomError(election, "VotingDeadlinePassed")

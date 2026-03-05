@@ -164,7 +164,8 @@ export async function relayCastVote(
         pB: proof.pB,
         pC: proof.pC,
         merkleTreeRoot: proof.merkleRoot,
-        nullifierHash: proof.nullifierHash,
+        baseNullifier: proof.baseNullifier,
+        versionedNullifier: proof.versionedNullifier,
         voteCommitment: proof.voteCommitment,
         encryptedBlob: blobHex,
     })
@@ -213,7 +214,7 @@ export async function waitForRelayTx(
 // ---------------------------------------------------------------------------
 
 /**
- * Independently verify that a VoteCast event with the voter's nullifierHash
+ * Independently verify that a VoteCast event with the voter's baseNullifier
  * was emitted on-chain. This is the anti-censorship check — the client
  * queries the chain directly via public RPC, not through the relayer.
  *
@@ -221,13 +222,13 @@ export async function waitForRelayTx(
  * may be censoring votes. The voter should fall back to direct wallet submission.
  *
  * @param electionAddress - The election contract address
- * @param nullifierHash - The voter's nullifier hash (from the ZK proof)
+ * @param baseNullifier - The voter's base nullifier (from the ZK proof)
  * @param txHash - The transaction hash returned by the relayer
  * @returns true if the VoteCast event was found and matches
  */
 export async function verifyVoteOnChain(
     electionAddress: string,
-    nullifierHash: string,
+    baseNullifier: string,
     txHash: string
 ): Promise<boolean> {
     try {
@@ -251,7 +252,7 @@ export async function verifyVoteOnChain(
                 if (
                     parsed &&
                     parsed.name === "VoteCast" &&
-                    parsed.args.nullifierHash.toString() === nullifierHash
+                    parsed.args.baseNullifier.toString() === baseNullifier
                 ) {
                     return true
                 }

@@ -12,13 +12,15 @@ include "@zk-kit/circuits/circom/binary-merkle-root.circom";
 //   1. Identity: secret → BabyJubJub pubkey → Poseidon commitment (Merkle leaf)
 //   2. Weighted leaf: Poseidon(identityCommitment, weight) — binds weight to identity
 //   3. Membership: weighted leaf is in the group Merkle tree
-//   4. Nullifier: Poseidon(proposalId, secret) — deterministic, public in v1
-//   5. Vote commitment: Poseidon(vote, weight, voteRandomness) — binds encrypted vote + weight to proof
-//   6. Vote validity: 0 <= vote < numOptions (supports multi-option elections)
-//   7. Weight validity: 1 <= weight < 256
+//   4. Base nullifier: Poseidon(proposalId, secret) — deterministic per voter (tally dedup)
+//   5. Versioned nullifier: Poseidon(proposalId, secret, version) — unique per submission (on-chain replay prevention)
+//   6. Vote commitment: Poseidon(vote, weight, voteRandomness) — binds encrypted vote + weight to proof
+//   7. Vote validity: 0 <= vote < numOptions (supports multi-option elections)
+//   8. Weight validity: 1 <= weight < 256
+//   9. Version validity: 0 <= version < 6 (max 5 overwrites)
 //
-// v1: nullifier is public (no coercion resistance). On-chain dedup by nullifier.
-// v2: nullifier will be committed (hidden) for coercion resistance.
+// v2: dual nullifiers for coercion resistance (vote overwriting).
+//     version is private — observers can't distinguish first votes from overwrites.
 template SpectreVote(MAX_DEPTH) {
     // === Private inputs ===
     signal input secret;                                      // EdDSA secret scalar
@@ -30,10 +32,12 @@ template SpectreVote(MAX_DEPTH) {
     signal input vote;                                        // 0 to numOptions-1
     signal input voteRandomness;                              // blinding factor for vote commitment
     signal input numOptions;                                  // total options (e.g. 2 for yes/no, 4 for multi)
+    signal input version;                                     // 0 to 5 (private — observers can't distinguish)
 
     // === Public outputs ===
     signal output merkleRoot;                                 // group Merkle root
-    signal output nullifierHash;                              // identity × proposalId (public in v1)
+    signal output baseNullifier;                              // Poseidon(proposalId, secret) — tally dedup
+    signal output versionedNullifier;                         // Poseidon(proposalId, secret, version) — on-chain uniqueness
     signal output voteCommitment;                             // Poseidon(vote, weight, randomness)
 
     // --- 1. Identity ---
@@ -81,9 +85,11 @@ template SpectreVote(MAX_DEPTH) {
         merkleProofSiblings
     );
 
-    // --- 5. Nullifier ---
-    // Deterministic per (proposalId, identity). Prevents double-voting in v1.
-    nullifierHash <== Poseidon(2)([proposalId, secret]);
+    // --- 5. Nullifiers ---
+    // Base nullifier: deterministic per (proposalId, identity). Used for tally dedup.
+    baseNullifier <== Poseidon(2)([proposalId, secret]);
+    // Versioned nullifier: unique per (proposalId, identity, version). Used on-chain for replay prevention.
+    versionedNullifier <== Poseidon(3)([proposalId, secret, version]);
 
     // --- 6. Vote commitment ---
     // Binds the voter's choice AND weight to the proof. The encrypted blob (sent as calldata)
@@ -98,6 +104,14 @@ template SpectreVote(MAX_DEPTH) {
     voteRange.in[0] <== vote;
     voteRange.in[1] <== numOptions;
     voteRange.out === 1;
+
+    // --- 8. Version validity ---
+    // version must be in range [0, 6): max 5 overwrites (6 total submissions)
+    // LessThan(3) supports 3 bits (0-7), then constrained < 6
+    component versionRange = LessThan(3);
+    versionRange.in[0] <== version;
+    versionRange.in[1] <== 6;
+    versionRange.out === 1;
 }
 
 // MAX_DEPTH=20 supports groups up to 2^20 = ~1M members

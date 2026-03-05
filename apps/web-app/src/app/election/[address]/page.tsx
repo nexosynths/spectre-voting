@@ -29,7 +29,7 @@ type VoteStep = "idle" | "fetching-signup-group" | "generating-join-proof" | "su
 type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
 
 interface DecryptedVote {
-    nullifierHash: string
+    baseNullifier: string
     vote: bigint
     weight: bigint
     voteRandomness: bigint
@@ -173,6 +173,23 @@ export default function ElectionPage({ params }: { params: { address: string } }
         return scope ? `spectre-weight-${electionAddress}-${scope}` : ""
     }, [electionAddress, address, anonymousId])
 
+    // Vote version storage key (same scoping as identity)
+    const versionStorageKey = useMemo(() => {
+        const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
+        return scope ? `spectre-vote-version-${electionAddress}-${scope}` : ""
+    }, [electionAddress, address, anonymousId])
+
+    // Load vote version from localStorage on mount
+    useEffect(() => {
+        if (!versionStorageKey) return
+        const saved = localStorage.getItem(versionStorageKey)
+        if (saved) {
+            const v = parseInt(saved, 10)
+            setVoteVersion(v)
+            if (v > 0) setHasVotedBefore(true)
+        }
+    }, [versionStorageKey])
+
     // Derive deterministic identity from wallet signature
     const deriveIdentityFromWallet = useCallback(async (): Promise<Identity | null> => {
         if (!signer) return null
@@ -280,6 +297,11 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // Gasless relay state (cont.)
     const [onChainVerified, setOnChainVerified] = useState<boolean | null>(null) // null = not checked, true/false = result
+
+    // Vote overwriting state
+    const [voteVersion, setVoteVersion] = useState(0)
+    const [hasVotedBefore, setHasVotedBefore] = useState(false)
+    const MAX_OVERWRITES = 5
 
     // Signup state
     const [signupLoading, setSignupLoading] = useState(false)
@@ -930,8 +952,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const assignedWeight = result.weight
                 setVoterWeight(assignedWeight)
                 if (weightStorageKey) localStorage.setItem(weightStorageKey, assignedWeight.toString())
-                const weightedLeaf = poseidon2([identity.commitment, assignedWeight])
-                const verified = await verifySignupOnChain(electionAddress, weightedLeaf.toString(), result.txHash)
+                const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), result.txHash)
                 if (!verified) addLog("Warning: signup event not found on-chain")
                 addLog(assignedWeight > 1n ? `Signed up with weight ${assignedWeight}!` : "Signed up for election!")
                 setSignupStatus("signed-up")
@@ -946,8 +967,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setSignupLoading(true)
         try {
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const weightedLeaf = poseidon2([identity.commitment, 1n])
-            const tx = await c.signUp(weightedLeaf)
+            const tx = await c.signUp(identity.commitment)
             await tx.wait()
             setVoterWeight(1n)
             if (weightStorageKey) localStorage.setItem(weightStorageKey, "1")
@@ -1048,7 +1068,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             const proof = await generateProofInBrowser(
                 votingId!, votingGroup, BigInt(state.proposalId),
-                BigInt(selectedVote), voteRand, BigInt(state.numOptions), voterWeight
+                BigInt(selectedVote), voteRand, BigInt(state.numOptions), voterWeight, BigInt(voteVersion)
             )
             addLog("Proof ready")
 
@@ -1067,7 +1087,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                 // Anti-censorship: independently verify on-chain
                 setVoteStep("verifying"); setStepMsg("Verifying vote on-chain...")
-                const verified = await verifyVoteOnChain(electionAddress, proof.nullifierHash, voteTxHash)
+                const verified = await verifyVoteOnChain(electionAddress, proof.baseNullifier, voteTxHash)
                 setOnChainVerified(verified)
                 if (verified) {
                     addLog("Vote verified on-chain!")
@@ -1082,7 +1102,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const contract = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer!)
                 const tx = await contract.castVote(
                     proof.pA, proof.pB, proof.pC,
-                    proof.merkleRoot, proof.nullifierHash, proof.voteCommitment, blob
+                    proof.merkleRoot, proof.baseNullifier, proof.versionedNullifier, proof.voteCommitment, blob
                 )
                 setStepMsg("Waiting for vote confirmation...")
                 const receipt = await tx.wait()
@@ -1090,13 +1110,21 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 setTxHash(tx.hash); setVoteStep("done"); setStepMsg("")
                 addLog("Vote confirmed")
             }
+            // Increment vote version after successful submission
+            const newVersion = voteVersion + 1
+            setVoteVersion(newVersion)
+            setHasVotedBefore(true)
+            if (versionStorageKey) {
+                localStorage.setItem(versionStorageKey, newVersion.toString())
+            }
+
             await refresh()
         } catch (err: any) {
             const msg = err instanceof RelayError ? err.message : friendlyError(err)
             setError(msg); setVoteStep("error"); setStepMsg("")
             addLog(`Error: ${msg}`)
         }
-    }, [identity, signer, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, gaslessEnabled, voterWeight])
+    }, [identity, signer, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, gaslessEnabled, voterWeight, voteVersion, versionStorageKey])
 
     // ── ADMIN LOGIC ──
     const registerVoter = useCallback(async () => {
@@ -1191,7 +1219,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const decryptedVotes: DecryptedVote[] = []
             for (const event of events) {
                 const args = (event as any).args
-                const nullifierHash = args.nullifierHash.toString()
+                const baseNullifier = args.baseNullifier.toString()
                 const voteCommitment = args.voteCommitment.toString()
                 const encryptedBlob = args.encryptedBlob
 
@@ -1206,9 +1234,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
                     const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1218,8 +1246,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const byNullifier = new Map<string, DecryptedVote>()
             let duplicatesRemoved = 0
             for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.nullifierHash)) duplicatesRemoved++
-                byNullifier.set(dv.nullifierHash, dv)
+                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
+                byNullifier.set(dv.baseNullifier, dv)
             }
 
             const uniqueVotes = Array.from(byNullifier.values())
@@ -1318,7 +1346,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const decryptedVotes: DecryptedVote[] = []
             for (const event of events) {
                 const args = (event as any).args
-                const nullifierHash = args.nullifierHash.toString()
+                const baseNullifier = args.baseNullifier.toString()
                 const voteCommitment = args.voteCommitment.toString()
                 const encryptedBlob = args.encryptedBlob
                 const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
@@ -1330,9 +1358,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
                     const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1342,8 +1370,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const byNullifier = new Map<string, DecryptedVote>()
             let duplicatesRemoved = 0
             for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.nullifierHash)) duplicatesRemoved++
-                byNullifier.set(dv.nullifierHash, dv)
+                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
+                byNullifier.set(dv.baseNullifier, dv)
             }
 
             const uniqueVotes = Array.from(byNullifier.values())
@@ -1597,7 +1625,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const decryptedVotes: DecryptedVote[] = []
             for (const event of voteEvents) {
                 const args = (event as any).args
-                const nullifierHash = args.nullifierHash.toString()
+                const baseNullifier = args.baseNullifier.toString()
                 const voteCommitment = args.voteCommitment.toString()
                 const encryptedBlob = args.encryptedBlob
                 const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
@@ -1609,9 +1637,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
                     const recomputed = poseidon3([vote, weight, voteRandomness])
                     const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ nullifierHash, vote, weight, voteRandomness, commitmentValid })
+                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
                 } catch {
-                    decryptedVotes.push({ nullifierHash, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
+                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
                 }
             }
 
@@ -1620,8 +1648,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
             const byNullifier = new Map<string, DecryptedVote>()
             let duplicatesRemoved = 0
             for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.nullifierHash)) duplicatesRemoved++
-                byNullifier.set(dv.nullifierHash, dv)
+                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
+                byNullifier.set(dv.baseNullifier, dv)
             }
 
             const uniqueVotes = Array.from(byNullifier.values())
@@ -1832,6 +1860,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         setSelectedVote_reset={() => setSelectedVote(null)}
                         setTxHash={setTxHash}
                         setError={setError}
+                        hasVotedBefore={hasVotedBefore}
+                        voteVersion={voteVersion}
+                        maxOverwrites={MAX_OVERWRITES}
                     />
                 </>
             )}

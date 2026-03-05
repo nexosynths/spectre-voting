@@ -17,7 +17,8 @@ export interface SpectreProof {
     pB: [[string, string], [string, string]]
     pC: [string, string]
     merkleRoot: string
-    nullifierHash: string
+    baseNullifier: string
+    versionedNullifier: string
     voteCommitment: string
     proposalId: string
     numOptions: string
@@ -36,7 +37,8 @@ export async function generateProofInBrowser(
     vote: bigint,
     voteRandomness: bigint,
     numOptions: bigint,
-    weight: bigint = 1n
+    weight: bigint = 1n,
+    version: bigint = 0n
 ): Promise<SpectreProof> {
     if (vote < 0n || vote >= numOptions) {
         throw new Error(`Vote must be between 0 and ${numOptions - 1n}`)
@@ -70,13 +72,14 @@ export async function generateProofInBrowser(
         vote: vote.toString(),
         voteRandomness: voteRandomness.toString(),
         numOptions: numOptions.toString(),
+        version: version.toString(),
     }
 
     // Generate Groth16 proof (snarkjs fetches wasm + zkey via HTTP in browser)
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(input, WASM_URL, ZKEY_URL)
 
     // Pack proof points for Solidity verifier
-    // publicSignals: [merkleRoot, nullifierHash, voteCommitment, proposalId, numOptions]
+    // publicSignals: [merkleRoot, baseNullifier, versionedNullifier, voteCommitment, proposalId, numOptions]
     return {
         pA: [proof.pi_a[0], proof.pi_a[1]],
         pB: [
@@ -85,9 +88,10 @@ export async function generateProofInBrowser(
         ],
         pC: [proof.pi_c[0], proof.pi_c[1]],
         merkleRoot: publicSignals[0],
-        nullifierHash: publicSignals[1],
-        voteCommitment: publicSignals[2],
-        proposalId: publicSignals[3],
-        numOptions: publicSignals[4],
+        baseNullifier: publicSignals[1],
+        versionedNullifier: publicSignals[2],
+        voteCommitment: publicSignals[3],
+        proposalId: publicSignals[4],
+        numOptions: publicSignals[5],
     }
 }

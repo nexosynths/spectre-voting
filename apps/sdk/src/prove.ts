@@ -18,7 +18,8 @@ export interface SpectreProof {
     pB: [[string, string], [string, string]]
     pC: [string, string]
     merkleRoot: string
-    nullifierHash: string
+    baseNullifier: string
+    versionedNullifier: string
     voteCommitment: string
     proposalId: string
     numOptions: string
@@ -37,11 +38,23 @@ export function computeVoteCommitment(vote: bigint, weight: bigint, randomness: 
 }
 
 /**
- * Compute the nullifier hash: Poseidon(proposalId, secretScalar)
+ * Compute the base nullifier: Poseidon(proposalId, secretScalar)
+ * Deterministic per voter per election. Used for tally deduplication.
  */
-export function computeNullifier(proposalId: bigint, secretScalar: bigint): bigint {
+export function computeBaseNullifier(proposalId: bigint, secretScalar: bigint): bigint {
     return poseidon2([proposalId, secretScalar])
 }
+
+/**
+ * Compute a versioned nullifier: Poseidon(proposalId, secretScalar, version)
+ * Unique per voter per election per version. Used on-chain for replay prevention.
+ */
+export function computeVersionedNullifier(proposalId: bigint, secretScalar: bigint, version: bigint): bigint {
+    return poseidon3([proposalId, secretScalar, version])
+}
+
+/** @deprecated Use computeBaseNullifier instead */
+export const computeNullifier = computeBaseNullifier
 
 /**
  * Generate a SpectreVote ZK proof.
@@ -55,6 +68,7 @@ export function computeNullifier(proposalId: bigint, secretScalar: bigint): bigi
  * @param voteRandomness — blinding factor for vote commitment
  * @param numOptions — total number of vote options (default 2 for backwards compat)
  * @param weight — voting weight (default 1 for non-weighted elections)
+ * @param version — vote version for overwriting (0 = first vote, max 5)
  * @param artifacts — optional custom paths to wasm/zkey
  */
 export async function generateSpectreProof(
@@ -65,10 +79,14 @@ export async function generateSpectreProof(
     voteRandomness: bigint,
     numOptions: bigint = 2n,
     weight: bigint = 1n,
+    version: bigint = 0n,
     artifacts?: Partial<ProofArtifacts>
 ): Promise<SpectreProof> {
     if (vote < 0n || vote >= numOptions) {
         throw new Error(`Vote must be in range [0, ${numOptions})`)
+    }
+    if (version < 0n || version > 5n) {
+        throw new Error(`Version must be in range [0, 5]`)
     }
 
     const wasmPath = artifacts?.wasmPath ?? DEFAULT_WASM
@@ -98,7 +116,8 @@ export async function generateSpectreProof(
         proposalId: proposalId.toString(),
         vote: vote.toString(),
         voteRandomness: voteRandomness.toString(),
-        numOptions: numOptions.toString()
+        numOptions: numOptions.toString(),
+        version: version.toString()
     }
 
     // Generate Groth16 proof
@@ -106,6 +125,7 @@ export async function generateSpectreProof(
 
     // Pack proof points for Solidity verifier
     // Note: pB coordinates are swapped (snarkjs → Solidity convention)
+    // Public signals: [merkleRoot, baseNullifier, versionedNullifier, voteCommitment, proposalId, numOptions]
     return {
         pA: [proof.pi_a[0], proof.pi_a[1]],
         pB: [
@@ -114,9 +134,10 @@ export async function generateSpectreProof(
         ],
         pC: [proof.pi_c[0], proof.pi_c[1]],
         merkleRoot: publicSignals[0],
-        nullifierHash: publicSignals[1],
-        voteCommitment: publicSignals[2],
-        proposalId: publicSignals[3],
-        numOptions: publicSignals[4]
+        baseNullifier: publicSignals[1],
+        versionedNullifier: publicSignals[2],
+        voteCommitment: publicSignals[3],
+        proposalId: publicSignals[4],
+        numOptions: publicSignals[5]
     }
 }

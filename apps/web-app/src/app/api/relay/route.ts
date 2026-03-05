@@ -23,13 +23,12 @@ import { NextRequest, NextResponse } from "next/server"
 import { JsonRpcProvider, Wallet, Contract, keccak256, toUtf8Bytes, toUtf8String } from "ethers"
 import { createHmac } from "crypto"
 import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
-import { poseidon2 } from "poseidon-lite"
 
 // ---------------------------------------------------------------------------
 // Rate limiting (in-memory, resets on cold start — fine for testnet)
 // ---------------------------------------------------------------------------
 const rateLimitMap = new Map<string, number>()
-const MAX_CALLS_PER_IP_PER_ELECTION = 10
+const MAX_CALLS_PER_IP_PER_ELECTION = 16  // 1 signup + 1 anonJoin + up to 6 castVotes + buffer
 
 function getRateLimitKey(ip: string, election: string): string {
     return `${ip}:${election.toLowerCase()}`
@@ -314,8 +313,7 @@ async function handleSignUp(
         markCodeUsed(electionAddress, codeHash)
 
         try {
-            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
-            const tx = await election.signUp(weightedLeaf)
+            const tx = await election.signUp(BigInt(identityCommitment))
             return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             // On tx failure: un-mark code to allow retry
@@ -372,8 +370,7 @@ async function handleSignUp(
         markCodeUsed(electionAddress, idHash)
 
         try {
-            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
-            const tx = await election.signUp(weightedLeaf)
+            const tx = await election.signUp(BigInt(identityCommitment))
             return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, idHash)
@@ -444,8 +441,7 @@ async function handleSignUp(
             )
         }
 
-        const weightedLeaf = poseidon2([BigInt(identityCommitment), weight])
-        const tx = await election.signUp(weightedLeaf)
+        const tx = await election.signUp(BigInt(identityCommitment))
         return NextResponse.json({ success: true, txHash: tx.hash, weight: weight.toString() })
     }
 
@@ -503,8 +499,7 @@ async function handleSignUp(
         markCodeUsed(electionAddress, emailHash)
 
         try {
-            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
-            const tx = await election.signUp(weightedLeaf)
+            const tx = await election.signUp(BigInt(identityCommitment))
             return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, emailHash)
@@ -553,8 +548,7 @@ async function handleSignUp(
         markCodeUsed(electionAddress, idHash)
 
         try {
-            const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
-            const tx = await election.signUp(weightedLeaf)
+            const tx = await election.signUp(BigInt(identityCommitment))
             return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
         } catch (err) {
             unmarkCodeUsed(electionAddress, idHash)
@@ -563,8 +557,7 @@ async function handleSignUp(
     }
 
     // Submit transaction (returns immediately, don't wait for confirmation)
-    const weightedLeaf = poseidon2([BigInt(identityCommitment), 1n])
-    const tx = await election.signUp(weightedLeaf)
+    const tx = await election.signUp(BigInt(identityCommitment))
     return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
 }
 
@@ -609,9 +602,9 @@ async function handleCastVote(
     election: Contract,
     body: any
 ): Promise<NextResponse> {
-    const { pA, pB, pC, merkleTreeRoot, nullifierHash, voteCommitment, encryptedBlob } = body
+    const { pA, pB, pC, merkleTreeRoot, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob } = body
 
-    if (!pA || !pB || !pC || !merkleTreeRoot || !nullifierHash || !voteCommitment || !encryptedBlob) {
+    if (!pA || !pB || !pC || !merkleTreeRoot || !baseNullifier || !versionedNullifier || !voteCommitment || !encryptedBlob) {
         return NextResponse.json(
             { success: false, error: "Missing proof fields for castVote" },
             { status: 400 }
@@ -621,7 +614,7 @@ async function handleCastVote(
     // Pre-checks in parallel
     const [votingOpen, nullifierUsed] = await Promise.all([
         election.votingOpen(),
-        election.usedNullifiers(nullifierHash),
+        election.usedNullifiers(versionedNullifier),
     ])
 
     if (!votingOpen) {
@@ -632,12 +625,12 @@ async function handleCastVote(
     }
     if (nullifierUsed) {
         return NextResponse.json(
-            { success: false, error: "Vote nullifier already used (you may have already voted)" },
+            { success: false, error: "This vote version already submitted" },
             { status: 400 }
         )
     }
 
     // Submit transaction — on-chain verifier will reject invalid proofs
-    const tx = await election.castVote(pA, pB, pC, merkleTreeRoot, nullifierHash, voteCommitment, encryptedBlob)
+    const tx = await election.castVote(pA, pB, pC, merkleTreeRoot, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob)
     return NextResponse.json({ success: true, txHash: tx.hash })
 }

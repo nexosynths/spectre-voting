@@ -27,6 +27,9 @@ interface VotingSectionProps {
     setSelectedVote_reset: () => void
     setTxHash: (v: string) => void
     setError: (v: string) => void
+    hasVotedBefore: boolean
+    voteVersion: number
+    maxOverwrites: number
 }
 
 export default function VotingSection({
@@ -35,7 +38,10 @@ export default function VotingSection({
     voteStep, stepMsg, stepInfo, isProcessing, canVote,
     txHash, error, onChainVerified, joinStatus,
     handleJoinAndVote, setVoteStep, setTxHash, setError,
+    hasVotedBefore, voteVersion, maxOverwrites,
 }: VotingSectionProps) {
+    const changesRemaining = maxOverwrites + 1 - voteVersion  // 6 total - used
+    const canOverwrite = changesRemaining > 0
     return (
         <>
             {/* ── VOTING PHASE ── */}
@@ -64,6 +70,24 @@ export default function VotingSection({
                                 {gaslessEnabled
                                     ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
                                     : "Voting requires two wallet confirmations. The first delinks your identity from your registration. The second submits your encrypted vote. Both are needed to keep your vote anonymous."}
+                            </p>
+                        </div>
+                    )}
+
+                    {/* Vote overwrite notice */}
+                    {voteStep === "idle" && hasVotedBefore && canOverwrite && (
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)", background: "var(--bg)" }}>
+                            <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                                You&apos;ve already voted. You can change your vote — only your most recent vote will count.
+                                <span style={{ color: "var(--accent)", fontWeight: 600 }}> {changesRemaining} change{changesRemaining !== 1 ? "s" : ""} remaining.</span>
+                            </p>
+                        </div>
+                    )}
+
+                    {voteStep === "idle" && hasVotedBefore && !canOverwrite && (
+                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--error-border)", background: "var(--error-bg)" }}>
+                            <p style={{ fontSize: "0.85rem", color: "var(--error)", lineHeight: 1.5 }}>
+                                Maximum vote changes reached. Your most recent vote will count.
                             </p>
                         </div>
                     )}
@@ -110,7 +134,7 @@ export default function VotingSection({
                         {voteStep === "done" && txHash && (
                             <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                 <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
-                                    Vote submitted anonymously!
+                                    {hasVotedBefore ? "Vote changed!" : "Vote submitted anonymously!"}
                                     {gaslessEnabled && onChainVerified === true && " \u2713 Verified on-chain"}
                                 </p>
                                 {gaslessEnabled && onChainVerified === false && (
@@ -118,9 +142,16 @@ export default function VotingSection({
                                         \u26a0 Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
                                     </p>
                                 )}
-                                <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                    View on Etherscan &rarr;
-                                </a>
+                                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                                    <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
+                                        View on Etherscan &rarr;
+                                    </a>
+                                    {canOverwrite && (
+                                        <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ fontSize: "0.75rem", padding: "4px 10px" }}>
+                                            Change your vote
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         )}
 
@@ -134,9 +165,15 @@ export default function VotingSection({
                         <button
                             className="btn-primary"
                             onClick={handleJoinAndVote}
-                            disabled={!canVote || selectedVote === null || isProcessing}
+                            disabled={!canVote || selectedVote === null || isProcessing || (hasVotedBefore && !canOverwrite)}
                         >
-                            {isProcessing ? "Processing..." : voteStep === "done" ? "Vote Submitted!" : "Vote"}
+                            {isProcessing
+                                ? "Processing..."
+                                : voteStep === "done"
+                                    ? (hasVotedBefore ? "Vote Changed!" : "Vote Submitted!")
+                                    : hasVotedBefore
+                                        ? "Change Your Vote"
+                                        : "Vote"}
                         </button>
 
                         {voteStep === "error" && (

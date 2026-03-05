@@ -143,7 +143,8 @@ async function main() {
                 2n // binary: 2 options
             )
             submittedVotes.push({
-                nullifierHash: prepared.proof.nullifierHash,
+                baseNullifier: prepared.proof.baseNullifier,
+                versionedNullifier: prepared.proof.versionedNullifier,
                 voteCommitment: prepared.proof.voteCommitment,
                 encryptedBlob: prepared.encryptedBlob
             })
@@ -226,7 +227,8 @@ async function main() {
                 BigInt(NUM_OPTIONS)
             )
             submittedVotes.push({
-                nullifierHash: prepared.proof.nullifierHash,
+                baseNullifier: prepared.proof.baseNullifier,
+                versionedNullifier: prepared.proof.versionedNullifier,
                 voteCommitment: prepared.proof.voteCommitment,
                 encryptedBlob: prepared.encryptedBlob
             })

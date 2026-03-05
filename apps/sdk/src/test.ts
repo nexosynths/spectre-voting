@@ -79,7 +79,7 @@ async function main() {
         // Off-chain verify with snarkjs
         const { readFileSync } = await import("fs")
         const vkey = JSON.parse(readFileSync(VKEY_PATH, "utf-8"))
-        const publicSignals = [proof.merkleRoot, proof.nullifierHash, proof.voteCommitment, proof.proposalId]
+        const publicSignals = [proof.merkleRoot, proof.baseNullifier, proof.versionedNullifier, proof.voteCommitment, proof.proposalId, proof.numOptions]
 
         // Reconstruct raw proof for snarkjs verify
         const rawProof = {

@@ -41,6 +41,8 @@ export const SPECTRE_VOTING_ABI = [
     "function signupOpen() view returns (bool)",
     "function votingOpen() view returns (bool)",
     "function voteCount() view returns (uint256)",
+    "function uniqueVoterCount() view returns (uint256)",
+    "function knownVoters(uint256) view returns (bool)",
     "function electionPubKeyX() view returns (uint256)",
     "function electionPubKeyY() view returns (uint256)",
     "function semaphore() view returns (address)",
@@ -56,7 +58,7 @@ export const SPECTRE_VOTING_ABI = [
     "function closeSignup()",
     // Phase 2: Anonymous Join + Vote
     "function anonJoin(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 signupRoot, uint256 joinNullifier, uint256 newCommitment)",
-    "function castVote(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 merkleTreeRoot, uint256 nullifierHash, uint256 voteCommitment, bytes encryptedBlob)",
+    "function castVote(uint256[2] pA, uint256[2][2] pB, uint256[2] pC, uint256 merkleTreeRoot, uint256 baseNullifier, uint256 versionedNullifier, uint256 voteCommitment, bytes encryptedBlob)",
     "function closeVoting()",
     // Phase 3: Tally commitment
     "function commitTallyResult(uint256[] optionCounts, uint256 totalValid, uint256 totalInvalid, uint256 poseidonCommitment)",
@@ -68,7 +70,7 @@ export const SPECTRE_VOTING_ABI = [
     // Events
     "event VoterSignedUp(uint256 indexed signupGroupId, uint256 identityCommitment)",
     "event AnonJoined(uint256 indexed votingGroupId, uint256 joinNullifier, uint256 newCommitment)",
-    "event VoteCast(uint256 indexed proposalId, uint256 indexed nullifierHash, uint256 voteCommitment, bytes encryptedBlob)",
+    "event VoteCast(uint256 indexed proposalId, uint256 indexed baseNullifier, uint256 versionedNullifier, uint256 voteCommitment, bytes encryptedBlob)",
     "event SignupClosed(uint256 indexed proposalId)",
     "event VotingClosed(uint256 indexed proposalId, uint256 totalVotes)",
     "event TallyCommitted(uint256 indexed proposalId, uint256 poseidonCommitment, uint256 totalValid, uint256 totalInvalid, uint256[] optionCounts)",

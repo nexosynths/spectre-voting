@@ -8,7 +8,8 @@ import { deserializeShare } from "./dealer.js"
  * A submitted vote as read from on-chain events.
  */
 export interface SubmittedVote {
-    nullifierHash: string
+    baseNullifier: string
+    versionedNullifier: string
     voteCommitment: string
     encryptedBlob: Uint8Array
 }
@@ -17,7 +18,8 @@ export interface SubmittedVote {
  * A decrypted, verified vote.
  */
 export interface DecryptedVote {
-    nullifierHash: string
+    baseNullifier: string
+    versionedNullifier: string
     vote: bigint
     weight: bigint
     voteRandomness: bigint
@@ -80,7 +82,8 @@ function decryptAndVerifyVote(
     } catch {
         // Decryption failed — voter encrypted garbage (self-griefing)
         return {
-            nullifierHash: submitted.nullifierHash,
+            baseNullifier: submitted.baseNullifier,
+            versionedNullifier: submitted.versionedNullifier,
             vote: -1n,
             weight: 0n,
             voteRandomness: 0n,
@@ -93,7 +96,8 @@ function decryptAndVerifyVote(
     const commitmentValid = recomputed.toString() === submitted.voteCommitment
 
     return {
-        nullifierHash: submitted.nullifierHash,
+        baseNullifier: submitted.baseNullifier,
+        versionedNullifier: submitted.versionedNullifier,
         vote: payload.vote,
         weight: payload.weight,
         voteRandomness: payload.voteRandomness,
@@ -107,7 +111,7 @@ function decryptAndVerifyVote(
  * 1. Reconstruct election key from shares
  * 2. Decrypt each vote blob
  * 3. Verify each commitment matches on-chain value
- * 4. Deduplicate by nullifier (last submission wins — for future re-voting support)
+ * 4. Deduplicate by baseNullifier (last submission wins — vote overwriting support)
  * 5. Count votes per option
  *
  * @param shares — at least threshold decrypted shares
@@ -124,18 +128,18 @@ export function computeTally(shares: Share[], submittedVotes: SubmittedVote[], n
     // Zero out the reconstructed key
     electionPrivKey.fill(0)
 
-    // 4. Deduplicate by nullifier (last submission wins)
-    const byNullifier = new Map<string, DecryptedVote>()
+    // 4. Deduplicate by baseNullifier (last submission wins — vote overwriting)
+    const byBaseNullifier = new Map<string, DecryptedVote>()
     let duplicatesRemoved = 0
     for (const dv of decryptedVotes) {
-        if (byNullifier.has(dv.nullifierHash)) {
+        if (byBaseNullifier.has(dv.baseNullifier)) {
             duplicatesRemoved++
         }
-        byNullifier.set(dv.nullifierHash, dv)
+        byBaseNullifier.set(dv.baseNullifier, dv)
     }
 
     // 5. Count per option
-    const uniqueVotes = Array.from(byNullifier.values())
+    const uniqueVotes = Array.from(byBaseNullifier.values())
     const optionCounts = new Array(numOptions).fill(0)
     let totalInvalid = 0
 

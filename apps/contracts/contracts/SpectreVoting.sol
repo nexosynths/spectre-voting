@@ -3,13 +3,14 @@ pragma solidity ^0.8.23;
 
 import "@semaphore-protocol/contracts/interfaces/ISemaphore.sol";
 import "@semaphore-protocol/contracts/interfaces/ISemaphoreGroups.sol";
+import "poseidon-solidity/PoseidonT3.sol";
 
 interface ISpectreVoteVerifier {
     function verifyProof(
         uint[2] calldata _pA,
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
-        uint[5] calldata _pubSignals
+        uint[6] calldata _pubSignals
     ) external view returns (bool);
 }
 
@@ -65,14 +66,16 @@ contract SpectreVoting {
     uint256 public signupDeadline;  // 0 = no deadline (admin-only close)
     uint256 public votingDeadline;  // 0 = no deadline (admin-only close)
 
-    // v1: public nullifier dedup for votes
-    mapping(uint256 => bool) public usedNullifiers;
+    // v2: versioned nullifier dedup for votes (vote overwriting / coercion resistance)
+    mapping(uint256 => bool) public usedNullifiers;      // versionedNullifier → used
+    mapping(uint256 => bool) public knownVoters;         // baseNullifier → has voted at least once
+    uint256 public uniqueVoterCount;                     // distinct voters (not counting overwrites)
 
     // AnonJoin nullifier dedup (prevents double-joining)
     mapping(uint256 => bool) public usedJoinNullifiers;
 
     // Vote storage
-    uint256 public voteCount;
+    uint256 public voteCount;                            // total submissions (including overwrites)
 
     // Tally result commitment (Phase 3 — set once by admin after tally)
     bool public tallyCommitted;
@@ -116,7 +119,8 @@ contract SpectreVoting {
 
     event VoteCast(
         uint256 indexed proposalId,
-        uint256 indexed nullifierHash,
+        uint256 indexed baseNullifier,
+        uint256 versionedNullifier,
         uint256 voteCommitment,
         bytes encryptedBlob
     );
@@ -224,10 +228,12 @@ contract SpectreVoting {
 
     /// @notice Self-register during signup phase. Only available when selfSignupAllowed is true.
     /// @param identityCommitment Poseidon(BabyJubJub_pubkey) — the voter's signup identity
+    /// @dev Stores Poseidon(identityCommitment, 1) as weighted leaf for AnonJoin circuit compatibility
     function signUp(uint256 identityCommitment) external whenSignupOpen {
         if (!selfSignupAllowed) revert SelfSignupNotAllowed();
         if (identityCommitment == 0) revert InvalidCommitment();
-        semaphore.addMember(signupGroupId, identityCommitment);
+        uint256 weightedLeaf = PoseidonT3.hash([identityCommitment, 1]);
+        semaphore.addMember(signupGroupId, weightedLeaf);
         emit VoterSignedUp(signupGroupId, identityCommitment);
     }
 
@@ -235,16 +241,19 @@ contract SpectreVoting {
     /// @param identityCommitment Poseidon(BabyJubJub_pubkey) — the voter's signup identity
     function registerVoter(uint256 identityCommitment) external onlyAdmin whenSignupOpen {
         if (identityCommitment == 0) revert InvalidCommitment();
-        semaphore.addMember(signupGroupId, identityCommitment);
+        uint256 weightedLeaf = PoseidonT3.hash([identityCommitment, 1]);
+        semaphore.addMember(signupGroupId, weightedLeaf);
         emit VoterSignedUp(signupGroupId, identityCommitment);
     }
 
     /// @notice Admin registers multiple voters at once
     function registerVoters(uint256[] calldata identityCommitments) external onlyAdmin whenSignupOpen {
+        uint256[] memory weightedLeaves = new uint256[](identityCommitments.length);
         for (uint256 i = 0; i < identityCommitments.length; i++) {
             if (identityCommitments[i] == 0) revert InvalidCommitment();
+            weightedLeaves[i] = PoseidonT3.hash([identityCommitments[i], 1]);
         }
-        semaphore.addMembers(signupGroupId, identityCommitments);
+        semaphore.addMembers(signupGroupId, weightedLeaves);
     }
 
     /// @notice Close signup and open voting. Admin can close anytime; anyone after deadline.
@@ -318,20 +327,22 @@ contract SpectreVoting {
     /// @param pB Groth16 proof point B
     /// @param pC Groth16 proof point C
     /// @param merkleTreeRoot The voting group Merkle root the proof was generated against
-    /// @param nullifierHash Poseidon(proposalId, secret) — unique per voter per election
-    /// @param voteCommitment Poseidon(vote, randomness) — binds encrypted vote to proof
-    /// @param encryptedBlob ECIES-encrypted (vote, randomness) to election public key
+    /// @param baseNullifier Poseidon(proposalId, secret) — deterministic per voter (tally dedup)
+    /// @param versionedNullifier Poseidon(proposalId, secret, version) — unique per submission
+    /// @param voteCommitment Poseidon(vote, weight, randomness) — binds encrypted vote to proof
+    /// @param encryptedBlob ECIES-encrypted (vote, weight, randomness) to election public key
     function castVote(
         uint[2] calldata pA,
         uint[2][2] calldata pB,
         uint[2] calldata pC,
         uint256 merkleTreeRoot,
-        uint256 nullifierHash,
+        uint256 baseNullifier,
+        uint256 versionedNullifier,
         uint256 voteCommitment,
         bytes calldata encryptedBlob
     ) external whenVotingOpen {
-        // 1. Check nullifier hasn't been used (prevents double-voting)
-        if (usedNullifiers[nullifierHash]) revert NullifierAlreadyUsed();
+        // 1. Check versioned nullifier hasn't been used (prevents replay of same version)
+        if (usedNullifiers[versionedNullifier]) revert NullifierAlreadyUsed();
 
         // 2. Verify the Merkle root is valid for the voting group
         if (ISemaphoreGroups(address(semaphore)).getMerkleTreeRoot(votingGroupId) != merkleTreeRoot) {
@@ -339,10 +350,11 @@ contract SpectreVoting {
         }
 
         // 3. Verify the ZK proof
-        //    Public signals: [merkleRoot, nullifierHash, voteCommitment, proposalId, numOptions]
-        uint[5] memory pubSignals = [
+        //    Public signals: [merkleRoot, baseNullifier, versionedNullifier, voteCommitment, proposalId, numOptions]
+        uint[6] memory pubSignals = [
             merkleTreeRoot,
-            nullifierHash,
+            baseNullifier,
+            versionedNullifier,
             voteCommitment,
             proposalId,
             numOptions
@@ -351,12 +363,16 @@ contract SpectreVoting {
         bool valid = voteVerifier.verifyProof(pA, pB, pC, pubSignals);
         if (!valid) revert InvalidProof();
 
-        // 4. Mark nullifier as used
-        usedNullifiers[nullifierHash] = true;
+        // 4. Update state
+        usedNullifiers[versionedNullifier] = true;
+        if (!knownVoters[baseNullifier]) {
+            knownVoters[baseNullifier] = true;
+            uniqueVoterCount++;
+        }
         voteCount++;
 
         // 5. Emit vote data (encrypted blob stored as event log)
-        emit VoteCast(proposalId, nullifierHash, voteCommitment, encryptedBlob);
+        emit VoteCast(proposalId, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob);
     }
 
     /// @notice Close voting — admin can close anytime; anyone can close after deadline
