@@ -10,7 +10,7 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 
 ## Tech Stack
 - **Smart Contracts:** Solidity 0.8.23, Hardhat, deployed on Base mainnet (L2)
-- **ZK Proofs:** Circom 2.2.3 (Groth16), snarkjs, two circuits (AnonJoin: 14k constraints, SpectreVote: 10k constraints)
+- **ZK Proofs:** Circom 2.2.3 (Groth16), snarkjs, two circuits (AnonJoin: 14k constraints, SpectreVote: 10.5k constraints)
 - **Identity:** Semaphore V4 (anonymous group membership via Merkle trees)
 - **Encryption:** ECIES-secp256k1 (ECDH + HKDF-SHA256 + AES-256-GCM) via @noble/curves
 - **Frontend:** Next.js 14, React 18, ethers.js v6
@@ -20,16 +20,17 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 ## Architecture
 
 ### Three-Phase Election Flow
-1. **Signup (Phase 1)** — Admin creates election via Factory. Voters self-signup by calling `signUp(identityCommitment)`. This is intentionally public — the admin can see who registered. The signup group Merkle tree records all commitments.
-2. **Anonymous Join + Vote (Phase 2)** — Admin closes signup, opening voting. Each voter generates a ZK proof (AnonJoin circuit) proving they're in the signup group WITHOUT revealing which member. The proof outputs a new, delinked commitment added to a separate voting group. Then the voter generates a second ZK proof (SpectreVote circuit) proving voting group membership + a vote commitment, encrypts their vote with the election public key, and submits on-chain. Two wallet confirmations required.
-3. **Tally (Phase 3)** — Admin (or anyone with the election private key) closes voting, decrypts all votes client-side, verifies Poseidon commitments, deduplicates by nullifier, and displays per-option results.
+1. **Signup (Phase 1)** — Admin creates election via Factory. Voters self-signup by calling `signUp(identityCommitment)`. This is intentionally public — the admin can see who registered. The contract computes `PoseidonT3.hash([identityCommitment, 1])` (weighted leaf) and stores it in the signup group Merkle tree.
+2. **Anonymous Join + Vote (Phase 2)** — Admin closes signup, opening voting. Each voter generates a ZK proof (AnonJoin circuit) proving they're in the signup group WITHOUT revealing which member. The proof outputs a new, delinked weighted commitment added to a separate voting group. Then the voter generates a second ZK proof (SpectreVote circuit) proving voting group membership + a vote commitment, encrypts their vote with the election public key, and submits on-chain. Two wallet confirmations required. Voters can overwrite their vote up to 5 times (6 total, version 0-5).
+3. **Tally (Phase 3)** — Admin (or anyone with the election private key) closes voting, decrypts all votes client-side, verifies Poseidon commitments, deduplicates by `baseNullifier` (last submission wins), and displays per-option results.
 
 ### Key Cryptographic Properties
 - **Identity delinking:** AnonJoin ZK proof cryptographically breaks the link between signup identity and voting identity (two separate Semaphore groups)
 - **Mandatory re-key:** Unlike aMACI (DoraHacks), the re-key is not optional — you cannot vote without going through AnonJoin
 - **End-to-end encrypted:** Votes are ECIES-encrypted; the admin never sees individual votes, not even during processing (unlike MACI where the coordinator decrypts)
 - **Circuit-enforced multi-option:** LessThan(8) range check inside the ZK circuit prevents invalid votes at the proof level, not just contract level
-- **Sybil-resistant:** Semaphore nullifiers prevent double voting (join nullifier for AnonJoin, vote nullifier for SpectreVote)
+- **Sybil-resistant:** Semaphore nullifiers prevent double voting (join nullifier for AnonJoin, versionedNullifier for SpectreVote replay prevention)
+- **Coercion-resistant:** Vote overwriting lets voters change their vote up to 5 times (6 total submissions). Only the most recent vote counts. Version is a private circuit input — observers cannot distinguish first votes from overwrites. Dual nullifiers: baseNullifier (deterministic per voter, for tally dedup) and versionedNullifier (unique per submission, for on-chain replay prevention).
 - **Verifiable:** Poseidon2 commitment binds vote to randomness; Groth16 proofs verified on-chain by two separate verifier contracts
 
 ### How It Compares
@@ -39,6 +40,7 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 | Admin can't see votes | Yes (ECIES) | No (coordinator decrypts) | Partially | Yes (time-lock) | During voting only |
 | Threshold decryption | Yes (t-of-n optional) | No | No | No | Partial (Shutter) |
 | Multi-option (circuit) | Yes | No | No | No | No |
+| Vote overwriting | Yes (up to 6) | Yes | No | No | No |
 | Production deployed | Testnet | Unaudited | Yes (920k users) | Research PoC | Yes |
 
 ### Election Lifecycle (Threshold Committee Mode)
@@ -88,14 +90,14 @@ Voters sign up publicly (eligibility check), then use a ZK proof to anonymously 
 
 ### Contract Architecture
 - **SpectreVotingFactory** — Deploys new election instances. Takes three verifier addresses (Semaphore, VoteVerifier, JoinVerifier). Creates elections with configurable signup deadline, voting deadline, number of options, and opaque `bytes metadata` (emitted in `ElectionDeployed` event for on-chain discoverability).
-- **SpectreVoting** — Individual election contract. Three-phase state machine (signupOpen/votingOpen flags). Two Semaphore groups (signupGroupId, votingGroupId). Two ZK verifiers (SpectreVoteVerifier, AnonJoinVerifier). Functions: `signUp()`, `registerVoter()`, `registerVoters()`, `closeSignup()`, `anonJoin()`, `castVote()`, `closeVoting()`, `commitTallyResult()`. Optional on-chain committee coordination: `setupCommittee()`, `registerCommitteeKey()`, `finalizeCommittee()`, `submitDecryptedShare()`, `getCommitteeMembers()`, `getDecryptedShare()`.
+- **SpectreVoting** — Individual election contract. Three-phase state machine (signupOpen/votingOpen flags). Two Semaphore groups (signupGroupId, votingGroupId). Two ZK verifiers (SpectreVoteVerifier, AnonJoinVerifier). Signup functions compute `PoseidonT3.hash([identityCommitment, 1])` on-chain for weighted leaf compatibility with AnonJoin circuit. `castVote()` takes dual nullifiers (baseNullifier for tally dedup, versionedNullifier for replay prevention) with `knownVoters` mapping and `uniqueVoterCount` tracking. Vote overwriting: up to 6 submissions per voter (version 0-5), enforced by circuit range check. Functions: `signUp()`, `registerVoter()`, `registerVoters()`, `closeSignup()`, `anonJoin()`, `castVote()`, `closeVoting()`, `commitTallyResult()`. Optional on-chain committee coordination: `setupCommittee()`, `registerCommitteeKey()`, `finalizeCommittee()`, `submitDecryptedShare()`, `getCommitteeMembers()`, `getDecryptedShare()`.
 - **Semaphore V4** — Group membership Merkle tree (two groups per election: signup + voting)
-- **SpectreVoteVerifier** — Groth16 verifier for vote proofs (5 public signals: merkleRoot, nullifierHash, voteCommitment, proposalId, numOptions)
+- **SpectreVoteVerifier** — Groth16 verifier for vote proofs (6 public signals: merkleRoot, baseNullifier, versionedNullifier, voteCommitment, proposalId, numOptions)
 - **AnonJoinVerifier** — Groth16 verifier for anonymous join proofs (4 public signals: signupMerkleRoot, joinNullifier, newCommitment, electionId)
 
 ### Circuit Architecture
 - **AnonJoin.circom** (14,094 constraints) — Proves signup group membership + outputs delinked commitment for voting group. Uses @zk-kit binary-merkle-root for Merkle proof, Poseidon2 for commitment and nullifier derivation.
-- **SpectreVote.circom** (9,912 constraints) — Proves voting group membership + binds encrypted vote to proof via Poseidon commitment. Includes LessThan(8) range check for multi-option voting (vote < numOptions).
+- **SpectreVote.circom** (10,454 constraints) — Proves voting group membership + binds encrypted vote to proof via Poseidon commitment. Includes LessThan(8) range check for multi-option voting (vote < numOptions), LessThan(3) range check for version < 6 (vote overwriting), and dual nullifier outputs (baseNullifier for tally dedup, versionedNullifier for on-chain replay prevention). Version is a private input — observers cannot distinguish first votes from overwrites.
 - Both circuits fit within 2^15 (32,768) ptau constraint limit.
 - Compiled with: `circom src/X.circom --r1cs --wasm --sym -o build -l /path/to/node_modules -l /path/to/node_modules/circomlib/circuits` (two `-l` flags needed because @zk-kit uses bare includes)
 
@@ -127,10 +129,10 @@ spectre-voting/
 │   │   ├── contracts/
 │   │   │   ├── SpectreVoting.sol         # Core election contract (three-phase, two groups, two verifiers)
 │   │   │   ├── SpectreVotingFactory.sol  # Factory for deploying elections
-│   │   │   ├── SpectreVoteVerifier.sol   # Groth16 vote proof verifier (5 public signals)
+│   │   │   ├── SpectreVoteVerifier.sol   # Groth16 vote proof verifier (6 public signals)
 │   │   │   └── AnonJoinVerifier.sol      # Groth16 join proof verifier (4 public signals)
 │   │   ├── test/
-│   │   │   └── SpectreVotingFactory.ts   # 63 tests (three-phase flow, ZK proofs, multi-option, gated signup, tally, metadata, on-chain committee)
+│   │   │   └── SpectreVotingFactory.ts   # 75 tests (three-phase flow, ZK proofs, multi-option, vote overwriting, gated signup, tally, metadata, on-chain committee)
 │   │   ├── tasks/deploy.ts
 │   │   └── scripts/deploy-factory-sepolia.ts
 │   ├── circuits/            # Circom ZK circuits
@@ -177,6 +179,15 @@ spectre-voting/
 
 ## Feature Status
 
+### Done (v8 — Vote Overwriting / Coercion Resistance)
+- [x] SpectreVote circuit: private `version` input (0-5), dual nullifier outputs (`baseNullifier` for tally dedup, `versionedNullifier` for on-chain replay prevention), `LessThan(3)` range check. 10,454 constraints (up from 9,912). Version is private — observers cannot distinguish first votes from overwrites.
+- [x] AnonJoin circuit: weighted leaf support — Merkle leaf = `Poseidon(identityCommitment, weight)`. Weight carried through re-key: output = `Poseidon(newCommitment, weight)`.
+- [x] Contract: `castVote()` takes `baseNullifier` + `versionedNullifier` with 6 public signals. `knownVoters` mapping + `uniqueVoterCount` track distinct voters. Signup functions compute `PoseidonT3.hash([identityCommitment, 1])` on-chain for weighted leaf compatibility.
+- [x] SDK: `computeBaseNullifier()` (Poseidon2) + `computeVersionedNullifier()` (Poseidon3). Version parameter on proof generation. Tally dedup by `baseNullifier` (last submission wins).
+- [x] Frontend: version tracking in localStorage, overwrite UX with "Change Your Vote" button and changes-remaining counter. Disabled when max overwrites reached.
+- [x] Relay route: passes raw `identityCommitment` to `signUp()` (contract handles weighting). Rate limit increased from 10 to 16 per IP per election.
+- [x] 75 passing contract tests (+12 new overwrite tests: accept overwrite, uniqueVoterCount tracking, non-sequential versions, event emission)
+
 ### Done (v5 — On-Chain Threshold Committee Coordination)
 - [x] On-chain committee lifecycle — `setupCommittee()`, `registerCommitteeKey()`, `finalizeCommittee()`, `submitDecryptedShare()` on SpectreVoting contract
 - [x] Self-sovereign key generation — committee members generate their own secp256k1 keypairs on the election page, private keys stay in browser localStorage
@@ -191,7 +202,7 @@ spectre-voting/
 - [x] Committee key backup/import — private key displayed with Copy button, Import Key for restoring on different browser
 - [x] Bug fixes: vote button disabled logic (`canVote` derived value), zero pubkey validation in `finalizeCommittee()`, finalized check in `submitDecryptedShare()`, parallel RPC calls
 - [x] Auto-connect wallet on page load via `eth_accounts` (no popup)
-- [x] 63 passing contract tests (+26 new committee tests), 28 passing SDK tests
+- [x] 75 passing contract tests (+12 new overwrite tests, +26 committee tests), 28 passing SDK tests
 - [x] Deployed v5 factory to Sepolia with bug fixes
 
 ### Done (v4 — Access Control + Threshold Encryption)
@@ -487,7 +498,7 @@ Informed by PSE *State of Private Voting 2026* report and analysis of DAVINCI (V
 
 | Feature | Effort | Complexity | Coercion Impact | Adoption Impact | Recommendation |
 |---|---|---|---|---|---|
-| Vote Overwriting | 2–3 weeks | Low–Medium | CRITICAL | Medium | BUILD NOW |
+| Vote Overwriting | ~~2–3 weeks~~ | Low–Medium | CRITICAL | Medium | **DONE (v8)** |
 | Pedersen Commitment Migration | 4–6 weeks | High | HIGH | Low | GRANT-FUNDED |
 | Commitment Re-randomization | 2–3 weeks* | High | HIGH | Low | GRANT-FUNDED |
 | Weighted / QV Voting | 2–3 weeks | Medium | None | HIGH | PHASE 3 |
@@ -495,19 +506,13 @@ Informed by PSE *State of Private Voting 2026* report and analysis of DAVINCI (V
 
 *Requires Pedersen migration as prerequisite. Timeline is additional work on top of migration.
 
-#### Feature 1: Vote Overwriting (BUILD NOW)
+#### Feature 1: Vote Overwriting (DONE — v8)
 
-Allows voters to update their vote during the voting period. Tally reflects only the most recent submission. **Single most important feature for "Yes" on coercion resistance** in PSE evaluation framework.
+Voters can update their vote up to 5 times during the voting period (6 total submissions, version 0-5). Only the most recent vote counts in the tally. **Single most important feature for "Yes" on coercion resistance** in PSE evaluation framework. Implemented via dual nullifier design with private version input.
 
-**Mechanism:** Nullifiers extended with version counter: `nullifier_v = Poseidon(identity_secret, election_id, version)`. Each version produces a unique nullifier. On overwrite, ZK circuit proves knowledge of previous version's commitment, enabling contract to subtract old commitment and add new one.
+**Mechanism (as implemented):** Circuit outputs two nullifiers: `baseNullifier = Poseidon(proposalId, secret)` (deterministic per voter, for tally dedup) and `versionedNullifier = Poseidon(proposalId, secret, version)` (unique per submission, for on-chain replay prevention). Version is a private input — observers cannot distinguish first votes from overwrites. Circuit constrains `version < 6` via `LessThan(3)`. No version ordering on-chain: contract only checks `usedNullifiers[versionedNullifier]`. Tally groups by `baseNullifier` and takes the chronologically last event.
 
-**Circuit changes:** Add `version` as private input, add "prove knowledge of previous commitment" constraint for version > 0. Estimated +5–10K constraints. Proof generation ~8–10s (up from ~5s).
-
-**Contract changes:** Add `nullifier => commitment` mapping, `nullifier => version` tracking. Implement atomic tally correction: `tally = tally - old_commitment + new_commitment`. Enforce version cap (max 5 overwrites).
-
-**Key constraints:** Version counter is private input — observers can't distinguish first votes from overwrites. Link between version 0 and version 1 nullifiers hidden by ZK proof. Compatible with existing Poseidon commitments — no migration needed.
-
-**Tradeoffs:** Gas doubles per overwrite. Storage up to 5x per voter. Transaction timing can signal overwrite (mitigated by relayer batching/delayed posting). Verdict: non-negotiable for credibility — every competing protocol implements this.
+**Constraint impact:** +542 constraints (LessThan(3) ~15 + Poseidon(3) ~500 + wiring). Total 10,454 (up from 9,912). Still within 2^15 ptau.
 
 #### Feature 2: Pedersen Commitment Migration (GRANT-FUNDED)
 
@@ -553,11 +558,10 @@ Private delegation of voting power where even the delegate doesn't learn who del
 
 #### Implementation Plan
 
-**Phase 1: Coercion Resistance Foundation (2–3 weeks, BUILD NOW)**
-- Vote overwriting + quorum status display
-- Deliverables: updated circuit, contracts on Base Sepolia, demo on Vercel, updated README
-- Success: voter can cast, overwrite, verify only latest vote tallied. Demo-able in 2 minutes.
-- Unlocks: grant applications (PSE, Gitcoin, Base Builder Grants), "Yes" on coercion resistance
+**Phase 1: Coercion Resistance Foundation — DONE (v8)**
+- [x] Vote overwriting via dual nullifier design (baseNullifier + versionedNullifier, private version 0-5)
+- [x] Updated circuit (10,454 constraints), contract, SDK, frontend, relay, 75 tests passing
+- Remaining: deploy updated contracts to Base mainnet, demo on Vercel, updated README
 
 **Phase 2: Trustless Receipt-Freeness (6–9 weeks, GRANT-FUNDED)**
 - Pedersen commitment migration + commitment re-randomization (masking)
@@ -813,7 +817,7 @@ yarn dev  # starts Next.js on localhost:3000
 ### Run contract tests
 ```bash
 cd apps/contracts
-npx hardhat test  # 63 tests, ~11s
+npx hardhat test  # 75 tests, ~19s
 ```
 
 ### Compile circuits
@@ -830,6 +834,7 @@ Note: Two `-l` flags are required because `@zk-kit/circuits` uses bare `include 
 cd apps/contracts
 npx hardhat run scripts/deploy-factory-sepolia.ts --network sepolia
 ```
+Note: SpectreVotingFactory requires PoseidonT3 library to be deployed and linked (SpectreVoting uses `PoseidonT3.hash` for weighted leaves in signup functions).
 
 ### Trusted setup (after circuit changes)
 ```bash
