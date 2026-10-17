@@ -15,6 +15,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
             </head>
             <body suppressHydrationWarning>
+                <div className="prototype-banner" role="note">
+                    Research prototype: unaudited, with known privacy limitations. Don&apos;t use it for votes that matter.
+                </div>
                 <Providers>
                     <Header />
                     <main className="container">

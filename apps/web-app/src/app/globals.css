@@ -285,3 +285,14 @@ input:focus, select:focus { border-color: var(--accent); }
     /* Readable minimum for hex/crypto data */
     .mono { font-size: 0.7rem !important; }
 }
+
+/* Research-prototype warning shown on every page */
+.prototype-banner {
+    background: var(--warning-bg);
+    border-bottom: 1px solid var(--warning);
+    color: var(--text);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    padding: 0.6rem 1rem;
+    text-align: center;
+}
