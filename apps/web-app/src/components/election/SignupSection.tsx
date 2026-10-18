@@ -112,7 +112,9 @@ export default function SignupSection({
                         Step 1: Connect Wallet
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                        Connect to submit transactions on-chain. Your wallet is only for gas — your vote stays anonymous.
+                        Your wallet signs you up, so it&apos;s public that this wallet registered. Joining and voting are
+                        submitted by the relay, so the chain doesn&apos;t record which wallet cast which ballot (in weighted
+                        elections, an unusual weight can still link them).
                     </p>
                     <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>Connect Wallet</button>
                 </div>
@@ -125,7 +127,7 @@ export default function SignupSection({
                         Step 2: Create Identity
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                        Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
+                        Generate an anonymous identity for this wallet. Each wallet gets its own identity for this election.
                     </p>
                     <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
                 </div>
@@ -242,7 +244,7 @@ export default function SignupSection({
                             <div>
                                 <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
                                 <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                    Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
+                                    Voting opens when signup ends (at its deadline, or earlier if the organizer closes it). Then you&apos;ll anonymously join and cast your vote.
                                 </p>
                             </div>
                         </div>
@@ -292,13 +294,15 @@ export default function SignupSection({
                             </p>
                             <input
                                 type="text"
-                                placeholder="8-character code"
+                                placeholder="32-character code"
                                 value={inviteCode}
                                 onChange={e => setInviteCode(e.target.value.toLowerCase().replace(/[^0-9a-f]/g, ""))}
-                                maxLength={8}
+                                maxLength={32}
                                 className="mono"
                                 disabled={signupLoading}
-                                style={{ textAlign: "center", fontSize: "1.1rem", letterSpacing: "0.15em", marginBottom: 8 }}
+                                spellCheck={false}
+                                autoComplete="off"
+                                style={{ textAlign: "center", fontSize: "0.95rem", letterSpacing: "0.05em", marginBottom: 8 }}
                             />
                             {inviteCode.length > 0 && (
                                 <p style={{ fontSize: "0.8rem", marginBottom: 8, color: codeValid ? "var(--success)" : codeError ? "var(--error)" : "var(--text-muted)" }}>
@@ -354,7 +358,7 @@ export default function SignupSection({
                                 Token Gate
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {`This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}...`}
+                                {`This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}..., counted at the block when the election was created. Tokens received after that don't count.`}
                             </p>
                             {!address ? (
                                 <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
@@ -368,8 +372,12 @@ export default function SignupSection({
                             ) : tokenBalance !== null ? (
                                 <p style={{ fontSize: "0.8rem", marginBottom: 8, color: tokenEligible ? "var(--success)" : "var(--error)" }}>
                                     {tokenEligible
-                                        ? `Eligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"}`
-                                        : `Ineligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} (need ${tokenGateMeta?.minBalance || "1"})`}
+                                        ? `Eligible — this wallet held ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} at the snapshot`
+                                        : `Ineligible — this wallet held ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} at the snapshot (need ${tokenGateMeta?.minBalance || "1"})`}
+                                </p>
+                            ) : tokenEligible ? (
+                                <p style={{ fontSize: "0.8rem", marginBottom: 8, color: "var(--text-muted)" }}>
+                                    Couldn&apos;t check your balance at the snapshot from here. The relay checks it when you sign up.
                                 </p>
                             ) : null}
                             <button
@@ -521,7 +529,7 @@ export default function SignupSection({
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong>
+                                Register for this election. The organizer can see who registered. When you vote, a zero-knowledge proof separates your vote from your registration and the relay submits it, so the chain doesn&apos;t link the two. The relay does see network details like your IP address.
                             </p>
                             <button
                                 className="btn-primary"

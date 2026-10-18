@@ -40,11 +40,11 @@ const GATES: Array<{ key: GateType; label: string; desc: string }> = [
 
 const TRUST_MAP: Record<string, { text: string; variant: "info" | "caution" | "warning" }> = {
     "open": { text: "Anyone with the link can vote. If this link leaks, unwanted people can join. Use invite codes or an allowlist for controlled access.", variant: "caution" },
-    "allowlist": { text: "Only people you list can vote. They enter their identifier to join.", variant: "info" },
+    "allowlist": { text: "Only people you list can vote. They enter their identifier to join. The list is published as hashes, so anyone who guesses an entry can confirm it, and anyone who knows an entry can use it.", variant: "info" },
     "invite-codes": { text: "Each code works once. Distribute codes privately to the people you want to vote.", variant: "info" },
-    "email-domain": { text: "Voters verify their email at your domain(s). One vote per email address.", variant: "info" },
+    "email-domain": { text: "Voters verify their email at your domain(s). One vote per email address: +tag aliases count as the same address, but separate aliases your organization hands out (like first.last@ and flast@) count separately.", variant: "info" },
     "github-org": { text: "Voters sign in with GitHub to prove org membership. One vote per GitHub account.", variant: "info" },
-    "token-gate": { text: "Only people who hold the required token or NFT can vote. Voters must connect a wallet.", variant: "info" },
+    "token-gate": { text: "Only wallets that held the required token or NFT when you create the election can vote. Voters must connect a wallet.", variant: "info" },
     "admin-only": { text: "Only you can register voters. Strongest control over who participates.", variant: "info" },
 }
 
@@ -292,7 +292,7 @@ export default function GateSelector({
                     </div>
 
                     <p style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 6 }}>
-                        Voters must connect a wallet to prove they hold the token.
+                        Voters connect a wallet to prove it held the token when the election was created.
                     </p>
                 </div>
             )}

@@ -4,12 +4,14 @@ import { codesToCsv, downloadCsv } from "@/lib/inviteCodes"
 
 interface CodesModalProps {
     codes: string[]
+    /** The new election, so CSV share links point at it */
+    electionAddress: string
     onClose: () => void
     copied: string
     onCopy: (text: string, label: string) => void
 }
 
-export default function CodesModal({ codes, onClose, copied, onCopy }: CodesModalProps) {
+export default function CodesModal({ codes, electionAddress, onClose, copied, onCopy }: CodesModalProps) {
     if (codes.length === 0) return null
 
     return (
@@ -29,7 +31,7 @@ export default function CodesModal({ codes, onClose, copied, onCopy }: CodesModa
             <div style={{ maxHeight: 200, overflow: "auto", marginBottom: 12, padding: "8px 12px", background: "var(--bg)", borderRadius: "var(--radius)", border: "1px solid var(--border)" }}>
                 {codes.map((code, i) => (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < codes.length - 1 ? "1px solid var(--border)" : "none" }}>
-                        <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
+                        <code className="mono" style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>{code}</code>
                         <button
                             onClick={() => onCopy(code, `code-${i}`)}
                             style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
@@ -46,7 +48,7 @@ export default function CodesModal({ codes, onClose, copied, onCopy }: CodesModa
                 <button
                     className="btn-secondary"
                     onClick={() => {
-                        const csv = codesToCsv(codes, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
+                        const csv = codesToCsv(codes, typeof window !== "undefined" ? `${window.location.origin}/election/${electionAddress}` : undefined)
                         downloadCsv(csv, `invite-codes-${new Date().toISOString().slice(0, 10)}.csv`)
                     }}
                     style={{ flex: 1, fontSize: "0.8rem" }}

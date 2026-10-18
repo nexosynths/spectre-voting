@@ -3,12 +3,10 @@
 interface WarningConfig {
     gateType: string
     gaslessMode: boolean
-    encryptionMode: string
     signupHours: number
     votingHours: number
     numOptions: number
-    threshold?: number
-    totalMembers?: number
+    weightedVoting: boolean
 }
 
 interface Warning {
@@ -26,22 +24,36 @@ function getWarnings(config: WarningConfig): Warning[] {
         })
     } else if (config.gateType === "open" && !config.gaslessMode) {
         warnings.push({
-            text: "Open elections allow anyone with the link to sign up. Wallet requirement provides some sybil resistance, but users with multiple wallets can create multiple identities.",
+            text: "Open elections allow anyone with the link to sign up. Requiring a wallet gives a little sybil resistance, but people with several wallets can create several identities.",
             severity: "medium",
         })
     }
 
-    if (config.encryptionMode === "single" && (config.signupHours + config.votingHours) > 168) {
+    if (config.gateType === "open") {
         warnings.push({
-            text: "Your election key is stored only in this browser. Elections longer than 7 days increase the risk of losing browser data. Consider committee mode for longer elections.",
+            text: "In an open election anyone can sign up, so someone could fill every slot up to your maximum and lock real voters out. Set the maximum well above the turnout you expect.",
             severity: "medium",
         })
     }
 
-    if (config.threshold && config.totalMembers && config.threshold === config.totalMembers) {
+    if (config.gateType === "token-gate") {
         warnings.push({
-            text: "Threshold equals total members \u2014 ALL members must participate to decrypt results. If any member is unavailable, results are permanently locked.",
+            text: "Balances count at the block when you create the election, so tokens bought or moved later don't qualify. The relay needs an archive RPC (RELAY_RPC_URL) to read those balances.",
+            severity: "medium",
+        })
+    }
+
+    if (config.weightedVoting) {
+        warnings.push({
+            text: "Weighted votes are public after the deadline, and weights are visible at signup. A voter with an unusual weight can be linked from signup to ballot.",
             severity: "high",
+        })
+    }
+
+    if (config.votingHours > 0 && config.votingHours < 1) {
+        warnings.push({
+            text: "Voting lasts under an hour, and the deadline can't be extended. Voters need time to sign up and generate two proofs.",
+            severity: "medium",
         })
     }
 

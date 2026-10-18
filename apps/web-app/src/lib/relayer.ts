@@ -1,27 +1,29 @@
 /**
  * Relayer Client Module
  *
- * Browser-side functions that call the /api/relay endpoint to submit
- * voter transactions without requiring a wallet or gas. The relayer
- * server wallet pays gas; voters just generate ZK proofs in the browser.
+ * Browser-side functions that call the /api/relay endpoint to submit voter
+ * transactions without a wallet or gas. The relay's wallet pays gas; voters
+ * generate ZK proofs in the browser.
  *
- * Anti-censorship: after every relayed vote, the client independently
- * verifies the VoteCast event on-chain via public RPC (not the relayer).
+ * Joins and ballots always go through the relay, in every election mode, so a
+ * voter's own wallet never appears on the transactions that carry their ballot.
  *
- * Usage:
- *   const txHash = await relaySignUp(electionAddr, commitment)
- *   await waitForRelayTx(txHash)
+ * Checking what landed: after each relayed action, the client reads the chain
+ * itself (through the public RPC, not the relay) and compares what's there with
+ * what it sent. For ballots that means the versioned nullifier, the commitment and
+ * the sealed bytes: the proof doesn't cover the sealed bytes, so a relay could
+ * submit a voter's proof with different contents, which would void the ballot.
  *
- *   const txHash2 = await relayAnonJoin(electionAddr, joinProof)
- *   await waitForRelayTx(txHash2)
- *
- *   const txHash3 = await relayCastVote(electionAddr, voteProof, encryptedBlob)
- *   await waitForRelayTx(txHash3)
- *   const confirmed = await verifyVoteOnChain(electionAddr, nullifierHash, txHash3)
+ * Privacy of the checks: each check scans every event of a kind for the whole
+ * election and matches locally, starting after a random delay, so the RPC provider
+ * isn't told which record this browser cares about. It still sees this browser's IP
+ * address and when it checks, so in an election with few ballots it could guess
+ * which ballot was just checked. The relay sees the IP address of every request.
  */
 
-import { JsonRpcProvider, Contract } from "ethers"
-import { SPECTRE_VOTING_ABI, RPC_URL, EXPLORER_URL } from "@/lib/contracts"
+import { JsonRpcProvider, keccak256 } from "ethers"
+import { RPC_URL } from "@/lib/contracts"
+import { fetchBallots, fetchSignups } from "@/lib/chain"
 import type { SpectreProof } from "@/lib/proof"
 import type { AnonJoinProof } from "@/lib/anonJoinProof"
 
@@ -41,6 +43,16 @@ export interface SignupResult {
     weight: bigint
 }
 
+export interface RelayInfo {
+    relayerAddress: string
+    /** False if the relay has no GATE_KEY_SECRET, so it can't register voters in gated elections */
+    gatedElections: boolean
+    /** Fingerprint of the relay's gate-key secret, recorded in gated elections' metadata */
+    gateKeyFingerprint: string | null
+    /** Whether the relay's RPC can read historical balances (needed for token gates) */
+    tokenGates: boolean
+}
+
 export class RelayError extends Error {
     public status: number
     constructor(message: string, status: number) {
@@ -54,23 +66,22 @@ export class RelayError extends Error {
 // Core relay function (shared POST logic)
 // ---------------------------------------------------------------------------
 
-async function callRelay(body: Record<string, any>): Promise<string> {
+async function callRelay(body: Record<string, any>): Promise<RelayResponse & { txHash: string }> {
     const res = await fetch("/api/relay", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
     })
-
-    const data: RelayResponse = await res.json()
-
-    if (!data.success || !data.txHash) {
-        throw new RelayError(
-            data.error || "Relay request failed",
-            res.status
-        )
+    let data: RelayResponse
+    try {
+        data = await res.json()
+    } catch {
+        throw new RelayError(`Relay request failed (HTTP ${res.status})`, res.status)
     }
-
-    return data.txHash
+    if (!data.success || !data.txHash) {
+        throw new RelayError(data.error || "Relay request failed", res.status)
+    }
+    return data as RelayResponse & { txHash: string }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,59 +89,71 @@ async function callRelay(body: Record<string, any>): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
+ * The relay's public address, and whether it can serve gated elections. Gated elections
+ * name it as their registrar so that only the relay (after checking eligibility) or the
+ * admin can register voters.
+ */
+export async function getRelayInfo(): Promise<RelayInfo> {
+    const res = await fetch("/api/relay", { method: "GET" })
+    const data = await res.json().catch(() => ({}))
+    if (!data.success || !data.relayerAddress) {
+        throw new RelayError(data.error || "Relay is not available", res.status)
+    }
+    return {
+        relayerAddress: data.relayerAddress as string,
+        gatedElections: data.gatedElections === true,
+        gateKeyFingerprint: typeof data.gateKeyFingerprint === "string" ? data.gateKeyFingerprint : null,
+        tokenGates: data.tokenGates === true,
+    }
+}
+
+export async function getRelayerAddress(): Promise<string> {
+    return (await getRelayInfo()).relayerAddress
+}
+
+export interface SignupGateData {
+    code?: string
+    identifier?: string
+    voterAddress?: string
+    walletSignature?: string
+    email?: string
+    emailToken?: string
+    githubToken?: string
+    githubId?: string
+}
+
+/**
  * Relay a voter signup (Phase 1).
- * No proof needed — just the identity commitment.
- * @returns Transaction hash
+ * Gasless open elections: the relay calls signUp(). Gated elections: the relay checks
+ * the gate and registers the voter as the election's registrar.
+ * @returns Transaction hash and the weight the relay asked for (confirm it on-chain)
  */
 export async function relaySignUp(
     electionAddress: string,
     identityCommitment: bigint | string,
-    code?: string,
-    identifier?: string,
-    voterAddress?: string,
-    email?: string,
-    emailToken?: string,
-    githubToken?: string,
-    githubId?: string,
+    gate: SignupGateData = {},
 ): Promise<SignupResult> {
     const body: Record<string, any> = {
         action: "signUp",
         electionAddress,
         identityCommitment: identityCommitment.toString(),
     }
-    if (code) body.code = code.toLowerCase().trim()
-    if (identifier) body.identifier = identifier.trim()
-    if (voterAddress) body.voterAddress = voterAddress
-    if (email) body.email = email.toLowerCase().trim()
-    if (emailToken) body.emailToken = emailToken
-    if (githubToken) body.githubToken = githubToken
-    if (githubId) body.githubId = githubId
+    if (gate.code) body.code = gate.code.trim()
+    if (gate.identifier) body.identifier = gate.identifier.trim()
+    if (gate.voterAddress) body.voterAddress = gate.voterAddress
+    if (gate.walletSignature) body.walletSignature = gate.walletSignature
+    if (gate.email) body.email = gate.email.trim()
+    if (gate.emailToken) body.emailToken = gate.emailToken
+    if (gate.githubToken) body.githubToken = gate.githubToken
+    if (gate.githubId) body.githubId = gate.githubId
 
-    const res = await fetch("/api/relay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    })
-    const data: RelayResponse = await res.json()
-    if (!data.success || !data.txHash) {
-        throw new RelayError(data.error || "Relay request failed", res.status)
-    }
-    return {
-        txHash: data.txHash,
-        weight: data.weight ? BigInt(data.weight) : 1n,
-    }
+    const data = await callRelay(body)
+    return { txHash: data.txHash, weight: data.weight ? BigInt(data.weight) : 1n }
 }
 
-/**
- * Relay an anonymous join (Phase 2, step 1).
- * Submits the AnonJoin ZK proof via relayer.
- * @returns Transaction hash
- */
-export async function relayAnonJoin(
-    electionAddress: string,
-    proof: AnonJoinProof
-): Promise<string> {
-    return callRelay({
+/** Relay an anonymous join (Phase 2, step 1). Returns the transaction hash. */
+export async function relayAnonJoin(electionAddress: string, proof: AnonJoinProof): Promise<string> {
+    const data = await callRelay({
         action: "anonJoin",
         electionAddress,
         pA: proof.pA,
@@ -140,24 +163,12 @@ export async function relayAnonJoin(
         joinNullifier: proof.joinNullifier,
         newCommitment: proof.newCommitment,
     })
+    return data.txHash
 }
 
-/**
- * Relay a vote cast (Phase 2, step 2).
- * Submits the SpectreVote ZK proof + encrypted ballot via relayer.
- * @returns Transaction hash
- */
-export async function relayCastVote(
-    electionAddress: string,
-    proof: SpectreProof,
-    encryptedBlob: Uint8Array | string
-): Promise<string> {
-    // Convert Uint8Array to hex string for JSON serialization
-    const blobHex = typeof encryptedBlob === "string"
-        ? encryptedBlob
-        : "0x" + Array.from(encryptedBlob).map(b => b.toString(16).padStart(2, "0")).join("")
-
-    return callRelay({
+/** Relay a ballot (Phase 2, step 2): the vote proof plus the sealed ballot (hex). Returns the transaction hash. */
+export async function relayCastVote(electionAddress: string, proof: SpectreProof, encryptedBlobHex: string): Promise<string> {
+    const data = await callRelay({
         action: "castVote",
         electionAddress,
         pA: proof.pA,
@@ -167,204 +178,89 @@ export async function relayCastVote(
         baseNullifier: proof.baseNullifier,
         versionedNullifier: proof.versionedNullifier,
         voteCommitment: proof.voteCommitment,
-        encryptedBlob: blobHex,
+        encryptedBlob: encryptedBlobHex,
+    })
+    return data.txHash
+}
+
+// ---------------------------------------------------------------------------
+// Checking what landed on-chain
+// ---------------------------------------------------------------------------
+
+/**
+ * Call `probe` until it returns a value or `timeoutMs` passes. The first call waits a
+ * random delay, so the RPC provider can't line up the check with the submission.
+ */
+export async function pollUntil<T>(
+    probe: () => Promise<T | null>,
+    { minDelayMs = 3_000, maxDelayMs = 10_000, intervalMs = 5_000, timeoutMs = 180_000 } = {},
+): Promise<T | null> {
+    const stopAt = Date.now() + timeoutMs
+    await sleep(minDelayMs + Math.random() * (maxDelayMs - minDelayMs))
+    for (;;) {
+        try {
+            const result = await probe()
+            if (result !== null) return result
+        } catch {
+            // Transient RPC error: keep trying until the timeout
+        }
+        if (Date.now() >= stopAt) return null
+        await sleep(intervalMs)
+    }
+}
+
+/** Wait for this identity's registration to appear on-chain; returns the weight it was registered with. */
+export async function waitForRegistration(
+    electionAddress: string,
+    deployBlock: number,
+    identityCommitment: bigint,
+): Promise<bigint | null> {
+    const provider = new JsonRpcProvider(RPC_URL)
+    return pollUntil(async () => {
+        const mine = (await fetchSignups(electionAddress, provider, deployBlock)).filter(s => s.identityCommitment === identityCommitment)
+        return mine.length > 0 ? mine[mine.length - 1].weight : null
     })
 }
 
-// ---------------------------------------------------------------------------
-// Transaction monitoring
-// ---------------------------------------------------------------------------
+/** A ballot this browser handed to the relay, kept until the browser has seen it on-chain. */
+export interface SentBallot {
+    versionedNullifier: string
+    voteCommitment: string
+    /** keccak256 of the sealed ballot bytes */
+    blobHash: string
+    /** When it was handed to the relay (ms) */
+    sentAt: number
+}
+
+export type BallotStatus = "confirmed" | "altered" | "not-found"
+
+export function sealedBallotHash(encryptedBlobHex: string): string {
+    return keccak256(encryptedBlobHex.toLowerCase())
+}
 
 /**
- * Wait for a relayed transaction to be confirmed on-chain.
- * Polls the public Sepolia RPC (not the relayer) until the tx is mined.
- *
- * @param txHash - Transaction hash from the relay response
- * @param timeoutMs - Max wait time (default 120s)
- * @returns The block number the tx was included in
- * @throws if timeout or tx reverts
+ * Compare ballots this browser sent with what's on-chain, in one scan of every ballot
+ * in the election. "altered" means a ballot with the same versioned nullifier landed
+ * with a different commitment or different sealed bytes.
  */
-export async function waitForRelayTx(
-    txHash: string,
-    timeoutMs: number = 120_000
-): Promise<number> {
+export async function checkSentBallots(
+    electionAddress: string,
+    deployBlock: number,
+    sent: SentBallot[],
+): Promise<Record<string, BallotStatus>> {
     const provider = new JsonRpcProvider(RPC_URL)
-    const start = Date.now()
-    const pollInterval = 3_000 // 3s between polls
-
-    while (Date.now() - start < timeoutMs) {
-        const receipt = await provider.getTransactionReceipt(txHash)
-        if (receipt) {
-            if (receipt.status === 0) {
-                throw new RelayError("Transaction reverted on-chain", 500)
-            }
-            return receipt.blockNumber
-        }
-        await sleep(pollInterval)
+    const latest = await provider.getBlockNumber()
+    const onChain = await fetchBallots(electionAddress, provider, deployBlock, latest)
+    const byNullifier = new Map(onChain.map(b => [b.versionedNullifier, b]))
+    const statuses: Record<string, BallotStatus> = {}
+    for (const ballot of sent) {
+        const found = byNullifier.get(ballot.versionedNullifier)
+        if (!found) statuses[ballot.versionedNullifier] = "not-found"
+        else if (found.voteCommitment === ballot.voteCommitment && sealedBallotHash(found.encryptedBlob) === ballot.blobHash) {
+            statuses[ballot.versionedNullifier] = "confirmed"
+        } else statuses[ballot.versionedNullifier] = "altered"
     }
-
-    throw new RelayError(
-        `Transaction not confirmed after ${Math.round(timeoutMs / 1000)}s — check explorer: ${EXPLORER_URL}/tx/${txHash}`,
-        408
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Anti-censorship verification
-// ---------------------------------------------------------------------------
-
-/**
- * Independently verify that a VoteCast event with the voter's baseNullifier
- * was emitted on-chain. This is the anti-censorship check — the client
- * queries the chain directly via public RPC, not through the relayer.
- *
- * If the relayer claimed success but the event isn't found, the relayer
- * may be censoring votes. The voter should fall back to direct wallet submission.
- *
- * @param electionAddress - The election contract address
- * @param baseNullifier - The voter's base nullifier (from the ZK proof)
- * @param txHash - The transaction hash returned by the relayer
- * @returns true if the VoteCast event was found and matches
- */
-export async function verifyVoteOnChain(
-    electionAddress: string,
-    baseNullifier: string,
-    txHash: string
-): Promise<boolean> {
-    try {
-        const provider = new JsonRpcProvider(RPC_URL)
-        const receipt = await provider.getTransactionReceipt(txHash)
-
-        if (!receipt || receipt.status === 0) {
-            return false
-        }
-
-        // Parse logs from the receipt to find VoteCast event
-        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-        const iface = election.interface
-
-        for (const log of receipt.logs) {
-            try {
-                const parsed = iface.parseLog({
-                    topics: log.topics as string[],
-                    data: log.data,
-                })
-                if (
-                    parsed &&
-                    parsed.name === "VoteCast" &&
-                    parsed.args.baseNullifier.toString() === baseNullifier
-                ) {
-                    return true
-                }
-            } catch {
-                // Not a matching log, skip
-            }
-        }
-
-        return false
-    } catch {
-        return false
-    }
-}
-
-/**
- * Independently verify that an AnonJoined event was emitted on-chain
- * for the voter's join nullifier.
- *
- * @param electionAddress - The election contract address
- * @param joinNullifier - The voter's join nullifier (from the AnonJoin proof)
- * @param txHash - The transaction hash returned by the relayer
- * @returns true if the AnonJoined event was found and matches
- */
-export async function verifyJoinOnChain(
-    electionAddress: string,
-    joinNullifier: string,
-    txHash: string
-): Promise<boolean> {
-    try {
-        const provider = new JsonRpcProvider(RPC_URL)
-        const receipt = await provider.getTransactionReceipt(txHash)
-
-        if (!receipt || receipt.status === 0) {
-            return false
-        }
-
-        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-        const iface = election.interface
-
-        for (const log of receipt.logs) {
-            try {
-                const parsed = iface.parseLog({
-                    topics: log.topics as string[],
-                    data: log.data,
-                })
-                if (
-                    parsed &&
-                    parsed.name === "AnonJoined" &&
-                    parsed.args.joinNullifier.toString() === joinNullifier
-                ) {
-                    return true
-                }
-            } catch {
-                // Not a matching log, skip
-            }
-        }
-
-        return false
-    } catch {
-        return false
-    }
-}
-
-/**
- * Independently verify that a VoterSignedUp event was emitted for the
- * voter's identity commitment.
- *
- * @param electionAddress - The election contract address
- * @param identityCommitment - The voter's identity commitment
- * @param txHash - The transaction hash returned by the relayer
- * @returns true if the signup event was found
- */
-export async function verifySignupOnChain(
-    electionAddress: string,
-    identityCommitment: string,
-    txHash: string
-): Promise<boolean> {
-    try {
-        const provider = new JsonRpcProvider(RPC_URL)
-        const receipt = await provider.getTransactionReceipt(txHash)
-
-        if (!receipt || receipt.status === 0) {
-            return false
-        }
-
-        // VoterSignedUp is emitted by the election contract
-        // It contains the signupGroupId and identityCommitment
-        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-        const iface = election.interface
-
-        for (const log of receipt.logs) {
-            try {
-                const parsed = iface.parseLog({
-                    topics: log.topics as string[],
-                    data: log.data,
-                })
-                if (
-                    parsed &&
-                    parsed.name === "VoterSignedUp" &&
-                    parsed.args.identityCommitment.toString() === identityCommitment
-                ) {
-                    return true
-                }
-            } catch {
-                // Not a matching log, skip
-            }
-        }
-
-        return false
-    } catch {
-        return false
-    }
+    return statuses
 }
 
 // ---------------------------------------------------------------------------
@@ -372,13 +268,12 @@ export async function verifySignupOnChain(
 // ---------------------------------------------------------------------------
 
 /**
- * Random delay between anonJoin and castVote to decorrelate transport-layer
- * timing. Without this, the relayer can trivially link the two calls by
- * IP + timestamp proximity (they come from the same browser session).
+ * Random delay between anonJoin and castVote. It makes the two requests harder to
+ * match for an outside observer of the chain. It doesn't hide anything from the relay
+ * operator, which sees both requests come from the same IP address.
  *
  * @param minMs - Minimum delay (default 5000ms = 5s)
  * @param maxMs - Maximum delay (default 30000ms = 30s)
- * @returns A promise that resolves after the random delay
  */
 export function randomTimingDelay(
     minMs: number = 5_000,
@@ -394,11 +289,4 @@ export function randomTimingDelay(
 
 function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-/**
- * Block explorer link for a transaction hash.
- */
-export function explorerTxUrl(txHash: string): string {
-    return `${EXPLORER_URL}/tx/${txHash}`
 }

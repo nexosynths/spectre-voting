@@ -12,11 +12,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { Resend } from "resend"
 import { createHmac, randomInt } from "crypto"
-import { JsonRpcProvider, Contract, toUtf8String } from "ethers"
-import { CONTRACTS, FACTORY_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
+import { normalizeEmail, emailDomain } from "@/lib/gate"
+import { cachedElectionMetadata } from "@/lib/server"
 
 // ---------------------------------------------------------------------------
-// In-memory code storage (resets on cold start — voter just re-sends)
+// In-memory code storage (resets on cold start — voter just re-sends).
+// Keyed by the normalized address, so aliases of one inbox share one code and one limit.
 // ---------------------------------------------------------------------------
 interface StoredCode {
     code: string
@@ -28,8 +29,8 @@ interface StoredCode {
 
 const verificationCodes = new Map<string, StoredCode>()
 
-function codeKey(email: string, election: string): string {
-    return `${email.toLowerCase().trim()}|${election.toLowerCase()}`
+function codeKey(normalizedEmail: string, election: string): string {
+    return `${normalizedEmail}|${election.toLowerCase()}`
 }
 
 function cleanExpired() {
@@ -40,49 +41,13 @@ function cleanExpired() {
 }
 
 // ---------------------------------------------------------------------------
-// Election metadata cache (shared with relay — but separate instance)
-// ---------------------------------------------------------------------------
-const metadataCache = new Map<string, Record<string, any>>()
-
-async function getElectionMetadata(
-    electionAddress: string,
-    provider: JsonRpcProvider
-): Promise<Record<string, any> | null> {
-    const key = electionAddress.toLowerCase()
-    if (metadataCache.has(key)) return metadataCache.get(key)!
-
-    try {
-        const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
-        const currentBlock = await provider.getBlockNumber()
-        let events: any[] = []
-        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-            const chunk = await factory.queryFilter(
-                factory.filters.ElectionDeployed(electionAddress),
-                from, to
-            )
-            events.push(...chunk)
-            if (events.length > 0) break
-        }
-        if (events.length === 0) return null
-        const args = (events[0] as any).args
-        if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
-        const decoded = toUtf8String(args.metadata)
-        const meta = JSON.parse(decoded)
-        metadataCache.set(key, meta)
-        return meta
-    } catch {
-        return null
-    }
-}
-
-// ---------------------------------------------------------------------------
 // HMAC token generation/verification
 // ---------------------------------------------------------------------------
-function generateEmailToken(email: string, electionAddress: string): string {
+/** Token over the normalized address; the relay recomputes it before registering. */
+function generateEmailToken(normalizedEmail: string, electionAddress: string): string {
     const secret = process.env.EMAIL_HMAC_SECRET
     if (!secret) throw new Error("EMAIL_HMAC_SECRET not configured")
-    const payload = email.toLowerCase().trim() + "|" + electionAddress.toLowerCase()
+    const payload = normalizedEmail + "|" + electionAddress.toLowerCase()
     return createHmac("sha256", secret).update(payload).digest("hex")
 }
 
@@ -127,9 +92,11 @@ async function handleSend(body: any): Promise<NextResponse> {
         )
     }
 
-    // Validate email format
-    const emailLower = email.toLowerCase().trim()
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLower)) {
+    // Validate email format. The code goes to the address as typed; limits and the
+    // token use the normalized address, so +tag aliases of one inbox count once.
+    const emailLower = String(email).toLowerCase().trim()
+    const normalized = normalizeEmail(emailLower)
+    if (!normalized) {
         return NextResponse.json(
             { success: false, error: "Invalid email format" },
             { status: 400 }
@@ -154,8 +121,10 @@ async function handleSend(body: any): Promise<NextResponse> {
     }
 
     // Fetch election metadata to validate domain
-    const provider = new JsonRpcProvider(RPC_URL)
-    const meta = await getElectionMetadata(electionAddress, provider)
+    if (typeof electionAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(electionAddress)) {
+        return NextResponse.json({ success: false, error: "Invalid election address" }, { status: 400 })
+    }
+    const meta = await cachedElectionMetadata(electionAddress)
 
     if (!meta || meta.gateType !== "email-domain" || !meta.emailDomain?.domains) {
         return NextResponse.json(
@@ -165,19 +134,19 @@ async function handleSend(body: any): Promise<NextResponse> {
     }
 
     // Extract domain from email and check against allowed domains
-    const emailDomain = emailLower.split("@")[1]
+    const domain = emailDomain(emailLower)
     const allowedDomains: string[] = meta.emailDomain.domains.map((d: string) => d.toLowerCase().trim())
 
-    if (!allowedDomains.includes(emailDomain)) {
+    if (!allowedDomains.includes(domain)) {
         return NextResponse.json(
-            { success: false, error: `Domain @${emailDomain} is not allowed. Accepted: ${allowedDomains.map(d => "@" + d).join(", ")}` },
+            { success: false, error: `Domain @${domain} is not allowed. Accepted: ${allowedDomains.map(d => "@" + d).join(", ")}` },
             { status: 400 }
         )
     }
 
-    // Rate limit: 3 sends per email per hour
+    // Rate limit: 3 sends per inbox per hour
     cleanExpired()
-    const key = codeKey(emailLower, electionAddress)
+    const key = codeKey(normalized, electionAddress)
     const existing = verificationCodes.get(key)
 
     if (existing) {
@@ -245,8 +214,11 @@ async function handleVerify(body: any): Promise<NextResponse> {
         )
     }
 
-    const emailLower = email.toLowerCase().trim()
-    const key = codeKey(emailLower, electionAddress)
+    const normalized = normalizeEmail(String(email))
+    if (!normalized || typeof electionAddress !== "string") {
+        return NextResponse.json({ success: false, error: "Invalid email or election" }, { status: 400 })
+    }
+    const key = codeKey(normalized, electionAddress)
 
     cleanExpired()
     const stored = verificationCodes.get(key)
@@ -277,7 +249,7 @@ async function handleVerify(body: any): Promise<NextResponse> {
 
     stored.attempts++
 
-    if (stored.code !== code.trim()) {
+    if (stored.code !== String(code).trim()) {
         return NextResponse.json(
             { success: false, error: "Incorrect code" },
             { status: 400 }
@@ -287,7 +259,7 @@ async function handleVerify(body: any): Promise<NextResponse> {
     // Code matches — delete it (single-use) and return HMAC token
     verificationCodes.delete(key)
 
-    const token = generateEmailToken(emailLower, electionAddress)
+    const token = generateEmailToken(normalized, electionAddress)
 
     return NextResponse.json({ success: true, token })
 }

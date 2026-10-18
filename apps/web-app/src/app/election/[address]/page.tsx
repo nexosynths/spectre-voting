@@ -2,49 +2,35 @@
 
 import { useSpectre } from "@/context/SpectreContext"
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { Contract, JsonRpcProvider, toUtf8String, keccak256, toUtf8Bytes } from "ethers"
+import { Contract, JsonRpcProvider, keccak256, toUtf8Bytes, ZeroHash, ZeroAddress, hexlify } from "ethers"
 import { Identity, Group } from "@semaphore-protocol/core"
 import { randomBytes } from "@noble/ciphers/webcrypto"
 import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
-import { secp256k1 } from "@noble/curves/secp256k1"
-import { eciesEncrypt, eciesDecrypt, encodeVotePayload, decodeVotePayload, compressPublicKey } from "@/lib/ecies"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
+import { sealBallot, encodeVotePayload, unsealTime } from "@/lib/ballot"
+import { recountElection, tallyCommitment, type RecountResult } from "@/lib/tally"
+import { fetchElectionMetadata, fetchGroupMembers, fetchSignups } from "@/lib/chain"
+import { tokenGateMessage, isRelayGate, normalizeInviteCode, INVITE_CODE_PATTERN, INVITE_CODE_LENGTH } from "@/lib/gate"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, EXPLORER_URL, FACTORY_CONFIGURED, SUPPORTED_ELECTION_VERSION } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, RelayError } from "@/lib/relayer"
+import { relaySignUp, relayAnonJoin, relayCastVote, waitForRegistration, pollUntil, checkSentBallots, sealedBallotHash, getRelayInfo, randomTimingDelay, RelayError, type RelayInfo, type SentBallot, type BallotStatus } from "@/lib/relayer"
 import { validateCode, validateIdentifier } from "@/lib/inviteCodes"
-import { setupElection, decryptShare, reconstructElectionKey, hexToShare, hexToEncryptedShare, shareToHex, encryptedShareToHex, generateCommitteeKeypair, deserializeShareFromHex, type Share, type CommitteeMember, type ElectionSetup } from "@/lib/threshold"
-import { poseidon2, poseidon3 } from "poseidon-lite"
+import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import ElectionHeader from "@/components/election/ElectionHeader"
 import SignupSection from "@/components/election/SignupSection"
-import VotingSection from "@/components/election/VotingSection"
+import VotingSection, { type BallotCheck } from "@/components/election/VotingSection"
 import ResultsTab from "@/components/election/ResultsTab"
 import ManageTab from "@/components/election/ManageTab"
 
-type Tab = "vote" | "results" | "manage" | "committee"
+type Tab = "vote" | "results" | "manage"
 type Phase = "signup" | "voting" | "closed"
 type VoteStep = "idle" | "fetching-signup-group" | "generating-join-proof" | "submitting-join" | "fetching-voting-group" | "generating-vote-proof" | "encrypting" | "submitting-vote" | "timing-delay" | "verifying" | "done" | "error"
 type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
 
-interface DecryptedVote {
-    baseNullifier: string
-    vote: bigint
-    weight: bigint
-    voteRandomness: bigint
-    commitmentValid: boolean
-}
-
-interface TallyResult {
-    optionCounts: number[]
-    totalValid: number
-    totalInvalid: number
-    duplicatesRemoved: number
-    decryptedVotes: DecryptedVote[]
-}
-
 interface ElectionState {
+    version: bigint
     proposalId: string
     signupOpen: boolean
     votingOpen: boolean
@@ -52,12 +38,15 @@ interface ElectionState {
     signupGroupId: string
     votingGroupId: string
     admin: string
-    electionPubKeyX: string
-    electionPubKeyY: string
+    registrar: string
     signupDeadline: number
     votingDeadline: number
     numOptions: number
     selfSignupAllowed: boolean
+    deployBlock: number
+    maxVoters: number
+    maxWeight: number
+    registrationCount: number
 }
 
 interface ElectionMeta {
@@ -65,81 +54,8 @@ interface ElectionMeta {
     labels: string[]
 }
 
-interface CommitteeState {
-    threshold: number
-    members: string[] // wallet addresses
-    registeredKeyCount: number
-    finalized: boolean
-    submittedShareCount: number
-    // Per-member details (populated lazily)
-    memberPubKeys: { [addr: string]: string } // hex
-    memberHasSubmittedShare: { [addr: string]: boolean }
-}
-
-/** Get members from a Semaphore group by querying events */
-async function fetchGroupMembers(groupId: bigint): Promise<bigint[]> {
-    const provider = new JsonRpcProvider(RPC_URL)
-    const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
-    const currentBlock = await provider.getBlockNumber()
-
-    // Paginate for Base 10k block limit
-    const singles: any[] = []
-    const bulks: any[] = []
-    for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-        const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-        const [s, b] = await Promise.all([
-            sem.queryFilter(sem.filters.MemberAdded(groupId), from, to),
-            sem.queryFilter(sem.filters.MembersAdded(groupId), from, to),
-        ])
-        singles.push(...s)
-        bulks.push(...b)
-    }
-
-    const members: { index: number; commitment: string }[] = []
-    for (const e of singles) {
-        const a = (e as any).args
-        members.push({ index: Number(a.index), commitment: a.identityCommitment.toString() })
-    }
-    for (const e of bulks) {
-        const a = (e as any).args
-        const si = Number(a.startIndex)
-        for (let i = 0; i < a.identityCommitments.length; i++) {
-            members.push({ index: si + i, commitment: a.identityCommitments[i].toString() })
-        }
-    }
-    members.sort((a, b) => a.index - b.index)
-    return members.map(m => BigInt(m.commitment))
-}
-
-/** Fetch election metadata from the factory's ElectionDeployed event */
-async function fetchOnChainMetadata(electionAddress: string): Promise<Record<string, any> | null> {
-    try {
-        const provider = new JsonRpcProvider(RPC_URL)
-        const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
-        const currentBlock = await provider.getBlockNumber()
-
-        // Paginate for Base 10k block limit
-        let events: any[] = []
-        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-            const chunk = await factory.queryFilter(
-                factory.filters.ElectionDeployed(electionAddress),
-                from, to
-            )
-            events.push(...chunk)
-            if (events.length > 0) break
-        }
-
-        if (events.length === 0) return null
-
-        const args = (events[0] as any).args
-        if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
-
-        const decoded = toUtf8String(args.metadata)
-        return JSON.parse(decoded)
-    } catch {
-        return null
-    }
+function publicProvider(): JsonRpcProvider {
+    return new JsonRpcProvider(RPC_URL)
 }
 
 export default function ElectionPage({ params }: { params: { address: string } }) {
@@ -295,8 +211,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [txHash, setTxHash] = useState("")
     const [error, setError] = useState("")
 
-    // Gasless relay state (cont.)
-    const [onChainVerified, setOnChainVerified] = useState<boolean | null>(null) // null = not checked, true/false = result
+    // What this browser found on-chain for the latest ballot it handed to the relay
+    const [ballotCheck, setBallotCheck] = useState<BallotCheck>(null)
+    const [submittedChange, setSubmittedChange] = useState(false)
+
+    // The relay serving this app (gated elections must name it as their registrar)
+    const [relayInfo, setRelayInfo] = useState<RelayInfo | null>(null)
+    useEffect(() => {
+        getRelayInfo().then(setRelayInfo).catch(() => setRelayInfo(null))
+    }, [])
 
     // Vote overwriting state
     const [voteVersion, setVoteVersion] = useState(0)
@@ -326,20 +249,19 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [adminLoading, setAdminLoading] = useState(false)
     const [adminMsg, setAdminMsg] = useState("")
 
-    // Tally state
+    // Tally state (public recount after the deadline)
     const [tallyStep, setTallyStep] = useState<TallyStep>("idle")
     const [tallyMsg, setTallyMsg] = useState("")
-    const [tallyResult, setTallyResult] = useState<TallyResult | null>(null)
+    const [tallyResult, setTallyResult] = useState<RecountResult | null>(null)
     const [tallyError, setTallyError] = useState("")
-    const [manualKeyInput, setManualKeyInput] = useState("")
+    const [closingVoting, setClosingVoting] = useState(false)
+    const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
 
-    // Threshold tally state
-    const [thresholdShareInputs, setThresholdShareInputs] = useState<string[]>([])
-    const [selectedMemberIdx, setSelectedMemberIdx] = useState(-1) // dropdown: "I am: [member]"
-    const [decryptShareInput, setDecryptShareInput] = useState("") // encrypted share hex (auto-filled from dropdown)
-    const [decryptKeyInput, setDecryptKeyInput] = useState("") // member private key hex
-    const [decryptedShareResult, setDecryptedShareResult] = useState("")
-    const [decryptShareError, setDecryptShareError] = useState("")
+    // Tick once a second so deadline-dependent UI (sealed ballots, close voting) updates on its own
+    useEffect(() => {
+        const timer = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000)
+        return () => clearInterval(timer)
+    }, [])
 
     // Tally commitment state
     const [commitStep, setCommitStep] = useState<"idle" | "submitting" | "done" | "error">("idle")
@@ -352,12 +274,6 @@ export default function ElectionPage({ params }: { params: { address: string } }
         totalInvalid: number
         optionCounts: number[]
     } | null>(null)
-
-    // Committee state
-    const [committeeState, setCommitteeState] = useState<CommitteeState | null>(null)
-    const [committeeLoading, setCommitteeLoading] = useState(false)
-    const [committeeMsg, setCommitteeMsg] = useState("")
-    const [committeeError, setCommitteeError] = useState("")
 
     // ── ELECTION METADATA ──
     // Sync init from localStorage/URL params (instant), then async upgrade from on-chain
@@ -396,7 +312,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // Async upgrade: fetch authoritative metadata from on-chain event
     useEffect(() => {
-        fetchOnChainMetadata(electionAddress).then(onChain => {
+        if (!FACTORY_CONFIGURED) { setMetaLoaded(true); return }
+        fetchElectionMetadata(electionAddress, publicProvider()).then(onChain => {
             if (onChain) {
                 // Cache full on-chain metadata in localStorage (includes threshold data)
                 localStorage.setItem(`spectre-election-meta-${electionAddress}`, JSON.stringify(onChain))
@@ -421,7 +338,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     useEffect(() => {
         const urlCode = searchParams.get("code")
         if (urlCode && !inviteCode) {
-            setInviteCode(urlCode.toLowerCase().trim())
+            setInviteCode(normalizeInviteCode(urlCode))
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams])
@@ -437,24 +354,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     const displayTitle = meta.title || (state ? `Proposal #${state.proposalId}` : "Election")
 
-    // Threshold detection from localStorage (reactive to on-chain metadata loading)
-    const thresholdMeta = useMemo(() => {
+    // Gate type from on-chain metadata (cached in localStorage)
+    const gateType = useMemo(() => {
         try {
             const stored = JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}")
-            if (stored.mode === "threshold") {
-                return {
-                    threshold: stored.threshold as number,
-                    totalShares: stored.totalShares as number,
-                    committee: stored.committee as Array<{ id: string; publicKeyHex: string }>,
-                    encryptedShares: stored.encryptedShares as Array<{ memberId: string; shareIndex: string; encryptedDataHex: string }>,
-                }
-            }
-        } catch { /* ignore */ }
-        return null
+            return typeof stored.gateType === "string" ? stored.gateType as string : ""
+        } catch { return "" }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [electionAddress, metaLoaded])
-
-    const isThresholdElection = thresholdMeta !== null
 
     // Invite code metadata detection
     const inviteCodeMeta = useMemo(() => {
@@ -501,6 +408,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     minBalance: string
                     tokenSymbol: string
                     tokenDecimals: number
+                    snapshotBlock?: number
                 }
             }
         } catch { /* ignore */ }
@@ -636,7 +544,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } finally { setEmailVerifying(false) }
     }, [emailCode, voterEmail, electionAddress, addLog])
 
-    // Token balance check
+    // Token balance check (at the election's snapshot block, like the relay's check)
     const [tokenBalance, setTokenBalance] = useState<string | null>(null)
     const [tokenEligible, setTokenEligible] = useState(false)
     const [tokenChecking, setTokenChecking] = useState(false)
@@ -654,7 +562,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const provider = new JsonRpcProvider(RPC_URL)
                 const erc20Abi = ["function balanceOf(address) view returns (uint256)"]
                 const tokenContract = new Contract(tokenGateMeta.tokenAddress, erc20Abi, provider)
-                const rawBalance = await tokenContract.balanceOf(address)
+                let rawBalance: bigint
+                try {
+                    rawBalance = await tokenContract.balanceOf(address, { blockTag: Number(tokenGateMeta.snapshotBlock) || "latest" })
+                } catch {
+                    // The public RPC may not serve old balances. Let the relay (which checks at
+                    // the snapshot) decide instead of blocking signup here.
+                    if (!cancelled) { setTokenBalance(null); setTokenEligible(true) }
+                    return
+                }
                 if (cancelled) return
 
                 if (tokenGateMeta.tokenType === "erc721") {
@@ -701,15 +617,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setCodeError("")
             return
         }
-        const normalized = inviteCode.toLowerCase().trim()
+        const normalized = normalizeInviteCode(inviteCode)
         if (normalized.length === 0) {
             setCodeValid(false)
             setCodeError("")
             return
         }
-        if (!/^[0-9a-f]{8}$/.test(normalized)) {
+        if (!INVITE_CODE_PATTERN.test(normalized)) {
             setCodeValid(false)
-            setCodeError("Code must be 8 characters (letters a-f, numbers 0-9)")
+            setCodeError(`Code must be ${INVITE_CODE_LENGTH} characters (letters a-f, numbers 0-9)`)
             return
         }
         const match = validateCode(normalized, inviteCodeMeta.codeHashes)
@@ -739,12 +655,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }
 
     // ── Determine current phase ──
+    // Signup ends at its deadline even if nobody has closed it on-chain yet: the first
+    // join or vote after the deadline opens voting.
+    const signupEnded = !!state && state.signupOpen && nowSec > state.signupDeadline
     const phase: Phase = useMemo(() => {
         if (!state) return "closed"
-        if (state.signupOpen) return "signup"
-        if (state.votingOpen) return "voting"
+        if (state.signupOpen && !signupEnded) return "signup"
+        if (state.votingOpen || signupEnded) return "voting"
         return "closed"
-    }, [state])
+    }, [state, signupEnded])
 
     // ── Voting identity for this election ──
     // Per-election AND per-wallet/anonymous — each scope gets its own delinked voting identity
@@ -769,18 +688,38 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }, [votingIdentityKey])
 
     // Load election state
+    const [unsupported, setUnsupported] = useState(false)
+    const [notElection, setNotElection] = useState(false)
     const refresh = useCallback(async () => {
+        if (!FACTORY_CONFIGURED) { setLoading(false); return }
         try {
-            const provider = new JsonRpcProvider(RPC_URL)
+            const provider = publicProvider()
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, pkX, pkY, sdl, vdl, numOpt, selfSignup] = await Promise.all([
+
+            // Only elections created by this app's factory are trusted to behave as described.
+            const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
+            if (!(await factory.isElection(electionAddress))) {
+                setNotElection(true)
+                return
+            }
+
+            // Older Spectre contracts have no VERSION(); this frontend can't run them safely.
+            const version: bigint = await c.VERSION().catch(() => 0n)
+            if (version !== SUPPORTED_ELECTION_VERSION) {
+                setUnsupported(true)
+                return
+            }
+
+            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, registrar, sdl, vdl, numOpt, selfSignup, deployBlock, maxVoters, maxWeight, regCount] = await Promise.all([
                 c.proposalId(), c.signupOpen(), c.votingOpen(), c.voteCount(),
                 c.signupGroupId(), c.votingGroupId(),
-                c.admin(), c.electionPubKeyX(), c.electionPubKeyY(),
+                c.admin(), c.registrar(),
                 c.signupDeadline(), c.votingDeadline(), c.numOptions(),
-                c.selfSignupAllowed().catch(() => true), // fallback for old contracts
+                c.selfSignupAllowed(),
+                c.deployBlock(), c.maxVoters(), c.maxWeight(), c.registrationCount(),
             ])
             setState({
+                version,
                 proposalId: pid.toString(),
                 signupOpen: sOpen,
                 votingOpen: vOpen,
@@ -788,12 +727,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 signupGroupId: sgid.toString(),
                 votingGroupId: vgid.toString(),
                 admin,
-                electionPubKeyX: pkX.toString(),
-                electionPubKeyY: pkY.toString(),
+                registrar,
                 signupDeadline: Number(sdl),
                 votingDeadline: Number(vdl),
                 numOptions: Number(numOpt),
                 selfSignupAllowed: selfSignup,
+                deployBlock: Number(deployBlock),
+                maxVoters: Number(maxVoters),
+                maxWeight: Number(maxWeight),
+                registrationCount: Number(regCount),
             })
 
             // Fetch on-chain tally commitment (try/catch for backward compat with old contracts)
@@ -817,47 +759,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     setOnChainTally({ committed: false, poseidonCommitment: "", totalValid: 0, totalInvalid: 0, optionCounts: [] })
                 }
             } catch {
-                setOnChainTally(null) // old contract without commitTallyResult
-            }
-
-            // Fetch on-chain committee state
-            try {
-                const cThreshold = await c.committeeThreshold()
-                const threshold = Number(cThreshold)
-                if (threshold > 0) {
-                    const [members, regCount, finalized, shareCount] = await Promise.all([
-                        c.getCommitteeMembers(),
-                        c.registeredKeyCount(),
-                        c.committeeFinalized(),
-                        c.submittedShareCount(),
-                    ])
-                    // Fetch per-member details (parallel)
-                    const memberPubKeys: { [addr: string]: string } = {}
-                    const memberHasSubmitted: { [addr: string]: boolean } = {}
-                    const memberDetails = await Promise.all(
-                        members.map((m: string) => Promise.all([
-                            c.committeePublicKeys(m),
-                            c.hasSubmittedShare(m),
-                        ]))
-                    )
-                    members.forEach((m: string, i: number) => {
-                        memberPubKeys[m.toLowerCase()] = memberDetails[i][0]
-                        memberHasSubmitted[m.toLowerCase()] = memberDetails[i][1]
-                    })
-                    setCommitteeState({
-                        threshold,
-                        members: members.map((m: string) => m),
-                        registeredKeyCount: Number(regCount),
-                        finalized,
-                        submittedShareCount: Number(shareCount),
-                        memberPubKeys,
-                        memberHasSubmittedShare: memberHasSubmitted,
-                    })
-                } else {
-                    setCommitteeState(null)
-                }
-            } catch {
-                setCommitteeState(null)
+                setOnChainTally(null)
             }
         } catch (err: any) {
             addLog("Failed to load election. Check your connection and try refreshing.")
@@ -866,24 +768,37 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     useEffect(() => { refresh() }, [refresh])
 
+    // ── REGISTRATION (from the chain: whether this identity signed up, and with what weight) ──
+    // The weight comes from the VoterSignedUp event, not from local storage, so it's right
+    // on a new device or after restoring an identity.
+    const lookUpRegistration = useCallback(async (): Promise<bigint | null> => {
+        if (!identity || !state) return null
+        const signups = await fetchSignups(electionAddress, publicProvider(), state.deployBlock)
+        const mine = signups.filter(s => s.identityCommitment === identity.commitment)
+        if (mine.length === 0) return null
+        const weight = mine[mine.length - 1].weight
+        setVoterWeight(weight)
+        if (weightStorageKey) localStorage.setItem(weightStorageKey, weight.toString())
+        return weight
+    }, [identity, state, electionAddress, weightStorageKey])
+
     // ── CHECK SIGNUP STATUS ──
     const checkSignup = useCallback(async () => {
         if (!identity || !state) return
         setSignupStatus("checking")
         try {
-            const members = await fetchGroupMembers(BigInt(state.signupGroupId))
-            const weightedLeaf = poseidon2([identity.commitment, voterWeight])
-            const found = members.some(m => m.toString() === weightedLeaf.toString())
-            setSignupStatus(found ? "signed-up" : "not-signed-up")
+            const weight = await lookUpRegistration()
+            setSignupStatus(weight !== null ? "signed-up" : "not-signed-up")
         } catch (err: any) {
             addLog("Could not check signup status. Try refreshing the page.")
             setSignupStatus("unknown")
         }
-    }, [identity, state, addLog, voterWeight])
+    }, [identity, state, addLog, lookUpRegistration])
 
     useEffect(() => {
-        if (identity && state && phase === "signup") checkSignup()
-    }, [identity, state, phase, checkSignup])
+        if (identity && state && (phase === "signup" || phase === "voting")) checkSignup()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [identity, state?.deployBlock, phase])
 
     // ── CHECK JOIN STATUS ──
     const checkJoinStatus = useCallback(async () => {
@@ -892,7 +807,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         if (!votingId) { setJoinStatus("not-joined"); return }
         setJoinStatus("checking")
         try {
-            const members = await fetchGroupMembers(BigInt(state.votingGroupId))
+            const members = await fetchGroupMembers(publicProvider(), BigInt(state.votingGroupId), state.deployBlock)
             const weightedLeaf = poseidon2([votingId.commitment, voterWeight])
             const found = members.some(m => m.toString() === weightedLeaf.toString())
             setJoinStatus(found ? "joined" : "not-joined")
@@ -933,28 +848,40 @@ export default function ElectionPage({ params }: { params: { address: string } }
             addLog("GitHub authentication required to sign up")
             return
         }
-        const codeToSend = isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined
-        const identifierToSend = isAllowlistElection ? allowlistId.trim() : undefined
-        const voterAddressToSend = isTokenGateElection && address ? address : undefined
-        const emailToSend = isEmailDomainElection ? voterEmail.trim() : undefined
-        const emailTokenToSend = isEmailDomainElection ? emailToken : undefined
-        const githubTokenToSend = isGithubOrgElection ? ghToken : undefined
-        const githubIdToSend = isGithubOrgElection ? ghId : undefined
-        // Gasless mode: relay signup (no wallet needed)
-        if (gaslessEnabled || isTokenGateElection) {
+        // Gated elections and gasless open elections sign up through the relay.
+        // For gated elections the relay checks eligibility and registers the voter
+        // as the election's registrar; the contract rejects self-signup.
+        if (gaslessEnabled || isRelayGate(gateType)) {
             setSignupLoading(true)
             try {
+                let walletSignature: string | undefined
+                if (isTokenGateElection) {
+                    if (!signer || !address) throw new Error("Connect the wallet that holds the tokens")
+                    addLog("Sign the message in your wallet to prove you hold the tokens...")
+                    walletSignature = await signer.signMessage(
+                        tokenGateMessage(electionAddress, identity.commitment.toString(), address)
+                    )
+                }
                 addLog("Relaying signup...")
-                const result = await relaySignUp(electionAddress, identity.commitment, codeToSend, identifierToSend, voterAddressToSend, emailToSend, emailTokenToSend, githubTokenToSend, githubIdToSend)
-                addLog(`Signup relayed — tx: ${result.txHash.slice(0, 10)}...`)
-                await waitForRelayTx(result.txHash)
-                // Store weight from relay response
-                const assignedWeight = result.weight
-                setVoterWeight(assignedWeight)
-                if (weightStorageKey) localStorage.setItem(weightStorageKey, assignedWeight.toString())
-                const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), result.txHash)
-                if (!verified) addLog("Warning: signup event not found on-chain")
-                addLog(assignedWeight > 1n ? `Signed up with weight ${assignedWeight}!` : "Signed up for election!")
+                await relaySignUp(electionAddress, identity.commitment, {
+                    code: isInviteCodeElection ? normalizeInviteCode(inviteCode) : undefined,
+                    identifier: isAllowlistElection ? allowlistId.trim() : undefined,
+                    voterAddress: isTokenGateElection && address ? address : undefined,
+                    walletSignature,
+                    email: isEmailDomainElection ? voterEmail.trim() : undefined,
+                    emailToken: isEmailDomainElection ? emailToken : undefined,
+                    githubToken: isGithubOrgElection ? ghToken : undefined,
+                    githubId: isGithubOrgElection ? ghId : undefined,
+                })
+                addLog("Signup sent. Checking the chain for your registration...")
+                // Read the registration back from the chain; the weight comes from the event
+                const weight = await waitForRegistration(electionAddress, state.deployBlock, identity.commitment)
+                if (weight === null) {
+                    throw new Error("Your registration hasn't appeared on-chain yet. Refresh in a minute to check; if it still isn't there, contact the organizer.")
+                }
+                setVoterWeight(weight)
+                if (weightStorageKey) localStorage.setItem(weightStorageKey, weight.toString())
+                addLog(weight > 1n ? `Signed up with weight ${weight}!` : "Signed up for election!")
                 setSignupStatus("signed-up")
                 await refresh()
             } catch (err: any) {
@@ -962,7 +889,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
             } finally { setSignupLoading(false) }
             return
         }
-        // Wallet mode: direct tx (weight = 1 for non-relay elections)
+        // Open election in wallet mode: the signup is sent from the voter's wallet, so it is
+        // public who signed up. Joining and voting are always relayed, so the ballot isn't linked.
         if (!signer) return
         setSignupLoading(true)
         try {
@@ -977,18 +905,105 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } catch (err: any) {
             addLog(`Signup failed: ${friendlyError(err)}`)
         } finally { setSignupLoading(false) }
-    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken, isGithubOrgElection, ghToken, ghId, weightStorageKey])
+    }, [identity, signer, state, electionAddress, addLog, refresh, gaslessEnabled, gateType, isInviteCodeElection, codeValid, inviteCode, isAllowlistElection, idValid, allowlistId, isTokenGateElection, tokenEligible, address, isEmailDomainElection, emailVerified, voterEmail, emailToken, isGithubOrgElection, ghToken, ghId, weightStorageKey])
+
+    // ── BALLOT CHECKS ──
+    // Every ballot this browser hands to the relay is remembered (nullifier, commitment and a
+    // hash of the sealed bytes, not the vote) and compared with the chain: first after a random
+    // delay, then again whenever this page is opened, until it's found.
+    const sentBallotsKey = useMemo(() => {
+        const scope = address ? address.toLowerCase() : anonymousId ? `anon-${anonymousId}` : ""
+        return scope ? `spectre-sent-ballots-${electionAddress}-${scope}` : ""
+    }, [electionAddress, address, anonymousId])
+
+    type TrackedBallot = SentBallot & { status?: BallotStatus }
+    const BALLOT_MISSING_AFTER_MS = 15 * 60_000
+
+    const loadSentBallots = useCallback((): TrackedBallot[] => {
+        if (!sentBallotsKey) return []
+        try { return JSON.parse(localStorage.getItem(sentBallotsKey) || "[]") } catch { return [] }
+    }, [sentBallotsKey])
+
+    const saveSentBallots = useCallback((list: TrackedBallot[]) => {
+        if (!sentBallotsKey) return
+        try { localStorage.setItem(sentBallotsKey, JSON.stringify(list)) } catch { /* storage unavailable */ }
+    }, [sentBallotsKey])
+
+    const rememberSentBallot = useCallback((ballot: SentBallot) => {
+        saveSentBallots([...loadSentBallots(), ballot])
+    }, [loadSentBallots, saveSentBallots])
+
+    // What to show for the most recent ballot
+    const latestBallotStatus = (list: TrackedBallot[]): BallotCheck => {
+        if (list.length === 0) return null
+        const latest = list.reduce((a, b) => (b.sentAt > a.sentAt ? b : a))
+        if (latest.status === "confirmed" || latest.status === "altered") return latest.status
+        return Date.now() - latest.sentAt > BALLOT_MISSING_AFTER_MS ? "missing" : "pending"
+    }
+
+    const [ballotCheckAt, setBallotCheckAt] = useState<number | null>(null)
+    const scheduleBallotCheck = useCallback((delayMs: number) => setBallotCheckAt(Date.now() + delayMs), [])
+
+    // On load: show the latest ballot's status and look again at any not yet confirmed
+    useEffect(() => {
+        if (!state) return
+        const list = loadSentBallots()
+        setBallotCheck(latestBallotStatus(list))
+        if (list.some(b => b.status !== "confirmed" && b.status !== "altered")) scheduleBallotCheck(5_000 + Math.random() * 15_000)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [state?.deployBlock, sentBallotsKey])
+
+    useEffect(() => {
+        if (ballotCheckAt === null || !state) return
+        let cancelled = false
+        const timer = setTimeout(async () => {
+            try {
+                const list = loadSentBallots()
+                const open = list.filter(b => b.status !== "confirmed" && b.status !== "altered")
+                if (open.length === 0) { setBallotCheckAt(null); return }
+                const statuses = await checkSentBallots(electionAddress, state.deployBlock, open)
+                if (cancelled) return
+                const updated = list.map(b => (statuses[b.versionedNullifier] ? { ...b, status: statuses[b.versionedNullifier] } : b))
+                saveSentBallots(updated)
+                setBallotCheck(latestBallotStatus(updated))
+                if (updated.some(b => b.status === "altered" && !list.find(o => o.versionedNullifier === b.versionedNullifier && o.status === "altered"))) {
+                    addLog("Warning: a ballot reached the chain with different contents than this browser sent")
+                }
+                // Keep looking for recent ballots that haven't shown up yet
+                const waiting = updated.some(b => b.status === "not-found" && Date.now() - b.sentAt < BALLOT_MISSING_AFTER_MS)
+                setBallotCheckAt(waiting ? Date.now() + 30_000 : null)
+            } catch {
+                if (!cancelled) setBallotCheckAt(Date.now() + 30_000)
+            }
+        }, Math.max(0, ballotCheckAt - Date.now()))
+        return () => { cancelled = true; clearTimeout(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ballotCheckAt, state?.deployBlock, electionAddress])
 
     // ── ANONYMOUS JOIN + VOTE (Phase 2) ──
+    // Joins and ballots always go through the relay, in every election mode. Sending them
+    // from the voter's wallet would link the wallet to the ballot on-chain.
     const handleJoinAndVote = useCallback(async () => {
         if (!identity || selectedVote === null || !state) return
-        // Wallet mode requires signer
-        if (!gaslessEnabled && !signer) return
-        setError(""); setTxHash(""); setOnChainVerified(null)
+        setError(""); setTxHash("")
+
+        // A vote version (versioned nullifier) can be used once. It counts as spent as soon as
+        // the ballot goes to the relay, whatever happens next, so a retry never reuses it.
+        const spendVersion = (version: number) => {
+            const next = version + 1
+            setVoteVersion(next)
+            setHasVotedBefore(true)
+            if (versionStorageKey) localStorage.setItem(versionStorageKey, next.toString())
+        }
+
         try {
+            // The registered weight comes from the chain (VoterSignedUp), not local storage
+            const weight = (await lookUpRegistration()) ?? voterWeight
+
             // Step 1: Check if we need to anonymous join first
             let votingId = getVotingIdentity()
             const needsJoin = joinStatus !== "joined"
+            let joinedMembers: bigint[] | null = null
 
             if (needsJoin) {
                 // Create per-election voting identity if not exists
@@ -998,50 +1013,39 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 }
 
                 setVoteStep("fetching-signup-group"); setStepMsg("Fetching signup group...")
-                const signupMembers = await fetchGroupMembers(BigInt(state.signupGroupId))
+                const signupMembers = await fetchGroupMembers(publicProvider(), BigInt(state.signupGroupId), state.deployBlock)
                 const signupGroup = new Group()
                 for (const m of signupMembers) signupGroup.addMember(m)
                 addLog(`Checking registration (${signupMembers.length} registered)`)
 
-                const weightedSignupLeaf = poseidon2([identity.commitment, voterWeight])
+                const weightedSignupLeaf = poseidon2([identity.commitment, weight])
                 if (signupGroup.indexOf(weightedSignupLeaf) === -1) {
                     throw new Error("You're not registered for this election. You need to sign up during the registration phase.")
                 }
 
                 setVoteStep("generating-join-proof"); setStepMsg("Generating anonymous join proof (10-30s)...")
                 addLog("Generating anonymous proof...")
-                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId), voterWeight)
+                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId), weight)
                 addLog("Proof ready")
 
-                if (gaslessEnabled) {
-                    // ── GASLESS: relay anonJoin ──
-                    setVoteStep("submitting-join"); setStepMsg("Relaying anonymous join...")
-                    const joinTxHash = await relayAnonJoin(electionAddress, joinProof)
-                    setStepMsg("Waiting for join confirmation...")
-                    await waitForRelayTx(joinTxHash)
-                    const joinVerified = await verifyJoinOnChain(electionAddress, joinProof.joinNullifier, joinTxHash)
-                    if (!joinVerified) addLog("Warning: join event not verified on-chain")
-                    addLog("Anonymous registration confirmed")
+                setVoteStep("submitting-join"); setStepMsg("Relaying anonymous join...")
+                await relayAnonJoin(electionAddress, joinProof)
 
-                    // IP-timing decorrelation: random delay before castVote
-                    // Only applies in production — on localhost both calls come from same machine
-                    if (window.location.hostname !== "localhost") {
-                        setVoteStep("timing-delay"); setStepMsg("Securing your anonymity...")
-                        addLog("Random delay to protect your identity (a few seconds)...")
-                        await randomTimingDelay()
-                    }
-                } else {
-                    // ── WALLET: direct tx ──
-                    setVoteStep("submitting-join"); setStepMsg("Confirm anonymous join in wallet...")
-                    const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer!)
-                    const joinTx = await c.anonJoin(
-                        joinProof.pA, joinProof.pB, joinProof.pC,
-                        joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
-                    )
-                    setStepMsg("Waiting for join confirmation...")
-                    await joinTx.wait()
-                    addLog("Anonymous registration confirmed")
+                // Random pause before looking for the join and voting, so outside observers can't
+                // easily pair the two. (The relay still sees both come from this IP address.)
+                // Skipped on localhost, where there's nobody to hide from.
+                if (window.location.hostname !== "localhost") {
+                    setVoteStep("timing-delay"); setStepMsg("Waiting a random few seconds before voting...")
+                    await randomTimingDelay()
                 }
+                setVoteStep("fetching-voting-group"); setStepMsg("Waiting for your anonymous registration to appear on-chain...")
+                const myLeaf = poseidon2([votingId.commitment, weight])
+                joinedMembers = await pollUntil(async () => {
+                    const members = await fetchGroupMembers(publicProvider(), BigInt(state.votingGroupId), state.deployBlock)
+                    return members.some(m => m === myLeaf) ? members : null
+                }, { minDelayMs: 0, maxDelayMs: 2_000 })
+                if (!joinedMembers) throw new Error("Your anonymous registration didn't show up on-chain. Try again in a minute.")
+                addLog("Anonymous registration confirmed")
                 setJoinStatus("joined")
             } else {
                 if (!votingId) throw new Error("Something went wrong with your voting identity. Try refreshing the page.")
@@ -1049,12 +1053,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             // Step 2: Cast vote
             setVoteStep("fetching-voting-group"); setStepMsg("Fetching voting group...")
-            const votingMembers = await fetchGroupMembers(BigInt(state.votingGroupId))
+            const votingMembers = joinedMembers ?? await fetchGroupMembers(publicProvider(), BigInt(state.votingGroupId), state.deployBlock)
             const votingGroup = new Group()
             for (const m of votingMembers) votingGroup.addMember(m)
             addLog(`Verified voters: ${votingMembers.length}`)
 
-            const weightedVotingLeaf = poseidon2([votingId!.commitment, voterWeight])
+            const weightedVotingLeaf = poseidon2([votingId!.commitment, weight])
             if (votingGroup.indexOf(weightedVotingLeaf) === -1) {
                 throw new Error("Your anonymous registration hasn't been confirmed yet. Try refreshing the page.")
             }
@@ -1066,65 +1070,55 @@ export default function ElectionPage({ params }: { params: { address: string } }
             let voteRand = 0n
             for (const b of rnd) voteRand = (voteRand << 8n) | BigInt(b)
 
+            const version = voteVersion
             const proof = await generateProofInBrowser(
                 votingId!, votingGroup, BigInt(state.proposalId),
-                BigInt(selectedVote), voteRand, BigInt(state.numOptions), voterWeight, BigInt(voteVersion)
+                BigInt(selectedVote), voteRand, BigInt(state.numOptions), weight, BigInt(version)
             )
             addLog("Proof ready")
 
-            setVoteStep("encrypting"); setStepMsg("Encrypting vote...")
-            const pubKey = compressPublicKey(BigInt(state.electionPubKeyX), BigInt(state.electionPubKeyY))
-            const payload = encodeVotePayload(BigInt(selectedVote), voterWeight, voteRand)
-            const blob = eciesEncrypt(pubKey, payload)
+            // Seal the ballot to a drand round after the voting deadline.
+            // Nobody holds a key; nobody can open it before then, including the organizer.
+            // Seal the ballot (with its version, so the recount knows which is newest) to a drand
+            // round after the voting deadline. Nobody, including the organizer, can open it before then.
+            setVoteStep("encrypting"); setStepMsg("Sealing your ballot until after the deadline...")
+            const payload = encodeVotePayload(BigInt(selectedVote), weight, BigInt(version), voteRand)
+            const blobHex = hexlify(await sealBallot(payload, state.votingDeadline))
 
-            if (gaslessEnabled) {
-                // ── GASLESS: relay castVote ──
-                setVoteStep("submitting-vote"); setStepMsg("Relaying encrypted vote...")
-                const voteTxHash = await relayCastVote(electionAddress, proof, blob)
-                setStepMsg("Waiting for vote confirmation...")
-                const blockNum = await waitForRelayTx(voteTxHash)
-                addLog("Vote submitted successfully")
-
-                // Anti-censorship: independently verify on-chain
-                setVoteStep("verifying"); setStepMsg("Verifying vote on-chain...")
-                const verified = await verifyVoteOnChain(electionAddress, proof.baseNullifier, voteTxHash)
-                setOnChainVerified(verified)
-                if (verified) {
-                    addLog("Vote verified on-chain!")
-                } else {
-                    addLog("Warning: vote not verified on-chain. Try refreshing later to check.")
+            setVoteStep("submitting-vote"); setStepMsg("Relaying sealed ballot...")
+            setSubmittedChange(hasVotedBefore)
+            spendVersion(version)
+            rememberSentBallot({
+                versionedNullifier: proof.versionedNullifier,
+                voteCommitment: proof.voteCommitment,
+                blobHash: sealedBallotHash(blobHex),
+                sentAt: Date.now(),
+            })
+            let voteTxHash: string
+            try {
+                voteTxHash = await relayCastVote(electionAddress, proof, blobHex)
+            } catch (err) {
+                // This version was already used (e.g. from another tab): the next try uses the next one
+                if (err instanceof RelayError && err.status === 409) {
+                    throw new Error("That vote version was already used. Press Try Again to vote with the next one.")
                 }
-
-                setTxHash(voteTxHash); setVoteStep("done"); setStepMsg("")
-            } else {
-                // ── WALLET: direct tx ──
-                setVoteStep("submitting-vote"); setStepMsg("Confirm vote in wallet...")
-                const contract = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer!)
-                const tx = await contract.castVote(
-                    proof.pA, proof.pB, proof.pC,
-                    proof.merkleRoot, proof.baseNullifier, proof.versionedNullifier, proof.voteCommitment, blob
-                )
-                setStepMsg("Waiting for vote confirmation...")
-                const receipt = await tx.wait()
-
-                setTxHash(tx.hash); setVoteStep("done"); setStepMsg("")
-                addLog("Vote confirmed")
-            }
-            // Increment vote version after successful submission
-            const newVersion = voteVersion + 1
-            setVoteVersion(newVersion)
-            setHasVotedBefore(true)
-            if (versionStorageKey) {
-                localStorage.setItem(versionStorageKey, newVersion.toString())
+                throw err
             }
 
+            // The browser checks the chain for this ballot (same versioned nullifier, commitment and
+            // sealed bytes) after a random delay, and again whenever this page is opened.
+            setTxHash(voteTxHash)
+            setBallotCheck("pending")
+            scheduleBallotCheck(30_000 + Math.random() * 60_000)
+            addLog("Ballot sent; checking the chain for it shortly")
+            setVoteStep("done"); setStepMsg("")
             await refresh()
         } catch (err: any) {
             const msg = err instanceof RelayError ? err.message : friendlyError(err)
             setError(msg); setVoteStep("error"); setStepMsg("")
             addLog(`Error: ${msg}`)
         }
-    }, [identity, signer, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, gaslessEnabled, voterWeight, voteVersion, versionStorageKey])
+    }, [identity, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, voterWeight, voteVersion, versionStorageKey, lookUpRegistration, hasVotedBefore, rememberSentBallot, scheduleBallotCheck])
 
     // ── ADMIN LOGIC ──
     const registerVoter = useCallback(async () => {
@@ -1132,7 +1126,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setAdminLoading(true); setAdminMsg("")
         try {
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const tx = await c.registerVoter(commitment.trim())
+            // Admin registrations: weight 1, no gate key
+            const tx = await c.registerVoter(commitment.trim(), 1, ZeroHash)
             await tx.wait()
             setAdminMsg("Voter registered!")
             setCommitment(""); await refresh()
@@ -1166,235 +1161,46 @@ export default function ElectionPage({ params }: { params: { address: string } }
         finally { setAdminLoading(false) }
     }, [signer, electionAddress, refresh])
 
+    // Anyone can close voting once the deadline has passed; nobody can close it earlier.
     const handleCloseVoting = useCallback(async () => {
         if (!signer) return
-        setAdminLoading(true); setAdminMsg("")
+        setClosingVoting(true); setAdminLoading(true); setAdminMsg("")
         try {
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
             const tx = await c.closeVoting()
             await tx.wait()
-            setAdminMsg("Voting closed!"); await refresh()
-        } catch (err: any) { setAdminMsg(`Error: ${friendlyError(err)}`) }
-        finally { setAdminLoading(false) }
-    }, [signer, electionAddress, refresh])
+            setAdminMsg("Voting closed!"); addLog("Voting closed"); await refresh()
+        } catch (err: any) {
+            setAdminMsg(`Error: ${friendlyError(err)}`); addLog(`Close voting failed: ${friendlyError(err)}`)
+        }
+        finally { setClosingVoting(false); setAdminLoading(false) }
+    }, [signer, electionAddress, refresh, addLog])
 
-    // ── TALLY LOGIC ──
-    const hasStoredKey = typeof window !== "undefined" && !!localStorage.getItem(`spectre-election-key-${electionAddress}`)
-
-    const runTally = useCallback(async (privKeyHex?: string) => {
+    // ── PUBLIC RECOUNT ──
+    // Anyone can open the time-locked ballots after the deadline and count them.
+    const runTally = useCallback(async () => {
         if (!state) return
         setTallyError(""); setTallyResult(null)
-        const keyHex = privKeyHex || localStorage.getItem(`spectre-election-key-${electionAddress}`)
-        if (!keyHex) {
-            setTallyError("No election key found. Paste it below or open this page in the browser that created the election.")
-            setTallyStep("error"); return
-        }
-
         try {
-            const electionPrivKey = new Uint8Array(32)
-            for (let i = 0; i < 32; i++) {
-                electionPrivKey[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16)
-            }
-
-            setTallyStep("fetching"); setTallyMsg("Fetching votes from chain...")
-
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const currentBlock = await provider.getBlockNumber()
-            // Paginate for Base 10k block limit
-            const events: any[] = []
-            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
-                events.push(...chunk)
-            }
-
-            if (events.length === 0) {
-                setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
-                setTallyStep("done"); setTallyMsg(""); return
-            }
-
-            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${events.length} vote(s)...`)
-
-            const decryptedVotes: DecryptedVote[] = []
-            for (const event of events) {
-                const args = (event as any).args
-                const baseNullifier = args.baseNullifier.toString()
-                const voteCommitment = args.voteCommitment.toString()
-                const encryptedBlob = args.encryptedBlob
-
-                const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
-                const blob = new Uint8Array(blobHex.length / 2)
-                for (let i = 0; i < blob.length; i++) {
-                    blob[i] = parseInt(blobHex.substring(i * 2, i * 2 + 2), 16)
-                }
-
-                try {
-                    const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon3([vote, weight, voteRandomness])
-                    const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
-                } catch {
-                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
-                }
-            }
-
-            electionPrivKey.fill(0)
-
-            // Dedup by nullifier
-            const byNullifier = new Map<string, DecryptedVote>()
-            let duplicatesRemoved = 0
-            for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
-                byNullifier.set(dv.baseNullifier, dv)
-            }
-
-            const uniqueVotes = Array.from(byNullifier.values())
-            const optionCounts = new Array(state.numOptions).fill(0)
-            let totalInvalid = 0
-
-            for (const dv of uniqueVotes) {
-                if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
-                    totalInvalid++
-                } else {
-                    optionCounts[Number(dv.vote)] += Number(dv.weight)
-                }
-            }
-
-            const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
-
-            setTallyResult({ optionCounts, totalValid, totalInvalid, duplicatesRemoved, decryptedVotes: uniqueVotes })
+            setTallyStep("fetching"); setTallyMsg("Reading every ballot from the chain and opening them with the drand beacon...")
+            // Reads up to one pinned block, checks the ballot count against the contract's
+            // voteCount(), verifies the beacon, then opens and counts.
+            const result = await recountElection(electionAddress, publicProvider(), {
+                numOptions: state.numOptions,
+                votingDeadline: state.votingDeadline,
+                deployBlock: state.deployBlock,
+            })
+            setTallyResult(result)
             setTallyStep("done"); setTallyMsg("")
 
-            const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
-            addLog(`Tally: ${summary}`)
+            const summary = result.optionCounts.map((count: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${count}`).join(", ")
+            addLog(`Count: ${summary}`)
         } catch (err: any) {
-            setTallyError(err.message || "Tally failed. Please try again."); setTallyStep("error"); setTallyMsg("")
+            setTallyError(err.message || "Count failed. Please try again."); setTallyStep("error"); setTallyMsg("")
         }
     }, [electionAddress, addLog, state, optionLabels])
 
-    // ── THRESHOLD TALLY ──
-    const handleDecryptShare = useCallback(() => {
-        setDecryptShareError(""); setDecryptedShareResult("")
-        try {
-            if (!decryptShareInput.trim() || !decryptKeyInput.trim()) {
-                throw new Error("Both encrypted share data and private key are required")
-            }
-            const encData = hexToEncryptedShare(decryptShareInput.trim())
-            const privKeyBuf = new Uint8Array(32)
-            const keyHex = decryptKeyInput.trim()
-            for (let i = 0; i < 32; i++) {
-                privKeyBuf[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16)
-            }
-            const share = decryptShare(privKeyBuf, encData)
-            privKeyBuf.fill(0)
-            const hex = shareToHex(share)
-            setDecryptedShareResult(hex)
-            // Auto-populate this member's slot in Section B
-            if (selectedMemberIdx >= 0) {
-                setThresholdShareInputs(prev => {
-                    const next = [...prev]
-                    next[selectedMemberIdx] = hex
-                    return next
-                })
-            }
-        } catch (err: any) {
-            setDecryptShareError(err.message || "Decryption failed. Check your private key and try again.")
-        }
-    }, [decryptShareInput, decryptKeyInput, selectedMemberIdx])
-
-    const runThresholdTally = useCallback(async () => {
-        if (!state || !thresholdMeta) return
-        setTallyError(""); setTallyResult(null)
-
-        const validShares: Share[] = []
-        for (const hex of thresholdShareInputs) {
-            if (hex.trim().length === 128) {
-                try { validShares.push(hexToShare(hex.trim())) } catch { /* skip invalid */ }
-            }
-        }
-
-        if (validShares.length < thresholdMeta.threshold) {
-            setTallyError(`Need at least ${thresholdMeta.threshold} shares, got ${validShares.length}`)
-            setTallyStep("error"); return
-        }
-
-        try {
-            // Reconstruct the election private key
-            const electionPrivKey = reconstructElectionKey(validShares)
-
-            setTallyStep("fetching"); setTallyMsg("Fetching votes from chain...")
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const currentBlock = await provider.getBlockNumber()
-            // Paginate for Base 10k block limit
-            const events: any[] = []
-            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
-                events.push(...chunk)
-            }
-
-            if (events.length === 0) {
-                setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
-                setTallyStep("done"); setTallyMsg(""); return
-            }
-
-            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${events.length} vote(s)...`)
-
-            const decryptedVotes: DecryptedVote[] = []
-            for (const event of events) {
-                const args = (event as any).args
-                const baseNullifier = args.baseNullifier.toString()
-                const voteCommitment = args.voteCommitment.toString()
-                const encryptedBlob = args.encryptedBlob
-                const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
-                const blob = new Uint8Array(blobHex.length / 2)
-                for (let i = 0; i < blob.length; i++) blob[i] = parseInt(blobHex.substring(i * 2, i * 2 + 2), 16)
-
-                try {
-                    const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon3([vote, weight, voteRandomness])
-                    const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
-                } catch {
-                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
-                }
-            }
-
-            electionPrivKey.fill(0)
-
-            // Dedup by nullifier
-            const byNullifier = new Map<string, DecryptedVote>()
-            let duplicatesRemoved = 0
-            for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
-                byNullifier.set(dv.baseNullifier, dv)
-            }
-
-            const uniqueVotes = Array.from(byNullifier.values())
-            const optionCounts = new Array(state.numOptions).fill(0)
-            let totalInvalid = 0
-            for (const dv of uniqueVotes) {
-                if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
-                    totalInvalid++
-                } else {
-                    optionCounts[Number(dv.vote)] += Number(dv.weight)
-                }
-            }
-            const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
-
-            setTallyResult({ optionCounts, totalValid, totalInvalid, duplicatesRemoved, decryptedVotes: uniqueVotes })
-            setTallyStep("done"); setTallyMsg("")
-
-            const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
-            addLog(`Threshold tally: ${summary}`)
-        } catch (err: any) {
-            setTallyError(err.message || "Threshold tally failed. Check that enough shares were provided."); setTallyStep("error"); setTallyMsg("")
-        }
-    }, [electionAddress, addLog, state, optionLabels, thresholdMeta, thresholdShareInputs])
+    const resetTally = useCallback(() => { setTallyResult(null); setTallyStep("idle") }, [])
 
     // ── COMMIT TALLY ON-CHAIN ──
     const handleCommitTally = useCallback(async () => {
@@ -1403,12 +1209,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         setCommitStep("submitting")
 
         try {
-            // Compute Poseidon commitment off-chain (hash chain)
-            let hash = poseidon2([BigInt(tallyResult.totalValid), BigInt(tallyResult.totalInvalid)])
-            for (const count of tallyResult.optionCounts) {
-                hash = poseidon2([hash, BigInt(count)])
-            }
-
+            const hash = tallyCommitment(tallyResult.optionCounts, tallyResult.totalValid, tallyResult.totalInvalid)
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
             const tx = await c.commitTallyResult(
                 tallyResult.optionCounts,
@@ -1420,266 +1221,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             setCommitTxHash(tx.hash)
             setCommitStep("done")
-            addLog("Tally committed on-chain!")
+            addLog("Results published on-chain")
             await refresh()
         } catch (err: any) {
             setCommitError(friendlyError(err))
             setCommitStep("error")
         }
     }, [signer, tallyResult, state, electionAddress, addLog, refresh])
-
-    // ── COMMITTEE ACTIONS ──
-    const committeeKeyStorageKey = address
-        ? `spectre-committee-key-${electionAddress}-${address.toLowerCase()}`
-        : ""
-
-    const hasStoredCommitteeKey = typeof window !== "undefined" && !!committeeKeyStorageKey && !!localStorage.getItem(committeeKeyStorageKey)
-
-    // Generate key + register on-chain
-    const handleRegisterCommitteeKey = useCallback(async () => {
-        if (!signer || !address || !committeeState) return
-        setCommitteeLoading(true); setCommitteeMsg(""); setCommitteeError("")
-        try {
-            // Generate fresh secp256k1 keypair
-            const kp = generateCommitteeKeypair()
-            addLog("Generated committee keypair")
-
-            // Store private key in localStorage
-            const storageKey = `spectre-committee-key-${electionAddress}-${address.toLowerCase()}`
-            localStorage.setItem(storageKey, kp.privateKeyHex)
-
-            // Convert hex pubkey to bytes for the contract
-            const pubKeyBytes = "0x" + kp.publicKeyHex
-            addLog("Registering public key on-chain...")
-
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const tx = await c.registerCommitteeKey(pubKeyBytes)
-            await tx.wait()
-
-            setCommitteeMsg("Key registered! Your private key is saved in this browser.")
-            addLog("Committee key registered on-chain")
-            await refresh()
-        } catch (err: any) {
-            setCommitteeError(friendlyError(err))
-        } finally { setCommitteeLoading(false) }
-    }, [signer, address, committeeState, electionAddress, addLog, refresh])
-
-    // Admin: run dealer ceremony + finalize committee
-    const handleFinalizeCommittee = useCallback(async () => {
-        if (!signer || !committeeState) return
-        setCommitteeLoading(true); setCommitteeMsg(""); setCommitteeError("")
-        try {
-            // Read all registered public keys from chain
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-
-            const committee: CommitteeMember[] = []
-            for (const memberAddr of committeeState.members) {
-                const pubKeyHex: string = await c.committeePublicKeys(memberAddr)
-                const clean = pubKeyHex.startsWith("0x") ? pubKeyHex.slice(2) : pubKeyHex
-                const pubBuf = new Uint8Array(33)
-                for (let i = 0; i < 33; i++) pubBuf[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16)
-                committee.push({ id: memberAddr, publicKey: pubBuf })
-            }
-
-            addLog(`Running dealer ceremony (${committeeState.threshold}-of-${committee.length})...`)
-            const electionSetup: ElectionSetup = setupElection(committee, committeeState.threshold)
-            addLog("Dealer ceremony complete — master key discarded")
-
-            // Get election pubkey coordinates
-            const point = secp256k1.ProjectivePoint.fromHex(electionSetup.electionPubKey)
-            const pkX = point.x.toString()
-            const pkY = point.y.toString()
-
-            // ABI-encode the encrypted shares as bytes
-            const sharesData = electionSetup.encryptedShares.map(s => ({
-                memberId: s.memberId,
-                shareIndex: s.shareIndex.toString(),
-                encryptedDataHex: encryptedShareToHex(s.encryptedData),
-            }))
-            const encSharesBytes = "0x" + Buffer.from(JSON.stringify(sharesData)).toString("hex")
-
-            addLog("Finalizing committee on-chain...")
-            const cSigner = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const tx = await cSigner.finalizeCommittee(pkX, pkY, encSharesBytes)
-            await tx.wait()
-
-            setCommitteeMsg("Committee finalized! Election public key set. Voting can now be opened.")
-            addLog("Committee finalized on-chain")
-            await refresh()
-        } catch (err: any) {
-            setCommitteeError(friendlyError(err))
-        } finally { setCommitteeLoading(false) }
-    }, [signer, committeeState, electionAddress, addLog, refresh])
-
-    // Committee member: decrypt + submit share on-chain
-    const handleSubmitDecryptedShare = useCallback(async () => {
-        if (!signer || !address || !committeeState) return
-        setCommitteeLoading(true); setCommitteeMsg(""); setCommitteeError("")
-        try {
-            // Get stored private key
-            const storageKey = `spectre-committee-key-${electionAddress}-${address.toLowerCase()}`
-            const privKeyHex = localStorage.getItem(storageKey)
-            if (!privKeyHex) throw new Error("No committee private key found in this browser. Did you generate your key on a different device?")
-
-            // Find our encrypted share from CommitteeFinalized event
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const currentBlock = await provider.getBlockNumber()
-            // Paginate for Base 10k block limit
-            const events: any[] = []
-            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-                const chunk = await c.queryFilter(c.filters.CommitteeFinalized(), from, to)
-                events.push(...chunk)
-                if (events.length > 0) break
-            }
-
-            if (events.length === 0) throw new Error("CommitteeFinalized event not found")
-
-            const args = (events[0] as any).args
-            const encSharesHex = args.encryptedSharesData
-            const clean = encSharesHex.startsWith("0x") ? encSharesHex.slice(2) : encSharesHex
-            const sharesJson = Buffer.from(clean, "hex").toString("utf-8")
-            const shares: Array<{ memberId: string; shareIndex: string; encryptedDataHex: string }> = JSON.parse(sharesJson)
-
-            // Find our share (memberId is the address)
-            const myShare = shares.find(s => s.memberId.toLowerCase() === address.toLowerCase())
-            if (!myShare) throw new Error("Your encrypted share was not found in the finalization data")
-
-            addLog("Decrypting your share...")
-            const encData = hexToEncryptedShare(myShare.encryptedDataHex)
-            const privKeyBuf = new Uint8Array(32)
-            for (let i = 0; i < 32; i++) {
-                privKeyBuf[i] = parseInt(privKeyHex.substring(i * 2, i * 2 + 2), 16)
-            }
-            const share = decryptShare(privKeyBuf, encData)
-            privKeyBuf.fill(0)
-
-            // Serialize share as bytes (64 bytes: x || y)
-            const shareHex = shareToHex(share)
-            const shareBytes = "0x" + shareHex
-
-            addLog("Submitting decrypted share on-chain...")
-            const cSigner = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
-            const tx = await cSigner.submitDecryptedShare(shareBytes)
-            await tx.wait()
-
-            setCommitteeMsg("Share submitted on-chain!")
-            addLog("Decrypted share submitted")
-            await refresh()
-        } catch (err: any) {
-            setCommitteeError(friendlyError(err))
-        } finally { setCommitteeLoading(false) }
-    }, [signer, address, committeeState, electionAddress, addLog, refresh])
-
-    // Auto-tally from on-chain shares (for committee elections)
-    const runOnChainCommitteeTally = useCallback(async () => {
-        if (!state || !committeeState) return
-        setTallyError(""); setTallyResult(null)
-
-        try {
-            setTallyStep("fetching"); setTallyMsg("Reading shares from chain...")
-
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-
-            // Read submitted shares
-            const validShares: Share[] = []
-            for (const memberAddr of committeeState.members) {
-                if (committeeState.memberHasSubmittedShare[memberAddr.toLowerCase()]) {
-                    const shareBytes: string = await c.getDecryptedShare(memberAddr)
-                    if (shareBytes && shareBytes !== "0x") {
-                        try {
-                            validShares.push(deserializeShareFromHex(shareBytes))
-                        } catch { /* skip malformed share */ }
-                    }
-                }
-            }
-
-            if (validShares.length < committeeState.threshold) {
-                setTallyError(`Need ${committeeState.threshold} shares, only ${validShares.length} submitted`)
-                setTallyStep("error"); return
-            }
-
-            setTallyMsg("Reconstructing election key...")
-            const electionPrivKey = reconstructElectionKey(validShares)
-
-            setTallyMsg("Fetching votes from chain...")
-            const currentBlock3 = await provider.getBlockNumber()
-            // Paginate for Base 10k block limit
-            const voteEvents: any[] = []
-            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock3; from += MAX_LOG_RANGE) {
-                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock3)
-                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
-                voteEvents.push(...chunk)
-            }
-
-            if (voteEvents.length === 0) {
-                setTallyResult({ optionCounts: new Array(state.numOptions).fill(0), totalValid: 0, totalInvalid: 0, duplicatesRemoved: 0, decryptedVotes: [] })
-                setTallyStep("done"); setTallyMsg(""); return
-            }
-
-            setTallyStep("decrypting"); setTallyMsg(`Decrypting ${voteEvents.length} vote(s)...`)
-
-            const decryptedVotes: DecryptedVote[] = []
-            for (const event of voteEvents) {
-                const args = (event as any).args
-                const baseNullifier = args.baseNullifier.toString()
-                const voteCommitment = args.voteCommitment.toString()
-                const encryptedBlob = args.encryptedBlob
-                const blobHex = encryptedBlob.startsWith("0x") ? encryptedBlob.slice(2) : encryptedBlob
-                const blob = new Uint8Array(blobHex.length / 2)
-                for (let i = 0; i < blob.length; i++) blob[i] = parseInt(blobHex.substring(i * 2, i * 2 + 2), 16)
-
-                try {
-                    const plaintext = eciesDecrypt(electionPrivKey, blob)
-                    const { vote, weight, voteRandomness } = decodeVotePayload(plaintext)
-                    const recomputed = poseidon3([vote, weight, voteRandomness])
-                    const commitmentValid = recomputed.toString() === voteCommitment
-                    decryptedVotes.push({ baseNullifier, vote, weight, voteRandomness, commitmentValid })
-                } catch {
-                    decryptedVotes.push({ baseNullifier, vote: -1n, weight: 0n, voteRandomness: 0n, commitmentValid: false })
-                }
-            }
-
-            electionPrivKey.fill(0)
-
-            const byNullifier = new Map<string, DecryptedVote>()
-            let duplicatesRemoved = 0
-            for (const dv of decryptedVotes) {
-                if (byNullifier.has(dv.baseNullifier)) duplicatesRemoved++
-                byNullifier.set(dv.baseNullifier, dv)
-            }
-
-            const uniqueVotes = Array.from(byNullifier.values())
-            const optionCounts = new Array(state.numOptions).fill(0)
-            let totalInvalid = 0
-            for (const dv of uniqueVotes) {
-                if (!dv.commitmentValid || dv.vote < 0n || Number(dv.vote) >= state.numOptions) {
-                    totalInvalid++
-                } else {
-                    optionCounts[Number(dv.vote)] += Number(dv.weight)
-                }
-            }
-            const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
-
-            setTallyResult({ optionCounts, totalValid, totalInvalid, duplicatesRemoved, decryptedVotes: uniqueVotes })
-            setTallyStep("done"); setTallyMsg("")
-
-            const summary = optionCounts.map((c: number, i: number) => `${optionLabels[i] || `Option ${i}`}: ${c}`).join(", ")
-            addLog(`Committee tally: ${summary}`)
-        } catch (err: any) {
-            setTallyError(err.message || "Committee tally failed. Ensure enough shares have been submitted."); setTallyStep("error"); setTallyMsg("")
-        }
-    }, [electionAddress, addLog, state, optionLabels, committeeState])
-
-    // Initialize threshold share inputs when meta loads
-    useEffect(() => {
-        if (thresholdMeta && thresholdShareInputs.length === 0) {
-            setThresholdShareInputs(new Array(thresholdMeta.totalShares).fill(""))
-        }
-    }, [thresholdMeta, thresholdShareInputs.length])
 
     // ── SHARE (clean URL — metadata is on-chain) ──
     const shareUrl = useMemo(() => {
@@ -1689,49 +1237,79 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // Derived
     const isAdmin = address && state?.admin && address.toLowerCase() === state.admin.toLowerCase()
-    const hasPubKey = state ? (state.electionPubKeyX !== "0" || state.electionPubKeyY !== "0") : false
     const isProcessing = !["idle", "done", "error"].includes(voteStep)
+    const deadlinePassed = !!state && state.votingDeadline > 0 && nowSec > state.votingDeadline
+    const unsealAt = useMemo(() => {
+        if (!state || state.votingDeadline <= 0) return 0
+        try { return unsealTime(state.votingDeadline) } catch { return 0 }
+    }, [state])
 
     const stepInfo = useMemo(() => {
         if (!isProcessing) return null
-        const gasless = gaslessEnabled
-        const steps: Record<string, { step: number; total: number; label: string }> = gasless ? {
+        const steps: Record<string, { step: number; total: number; label: string }> = {
             "fetching-signup-group":  { step: 1, total: 6, label: "Preparing..." },
             "generating-join-proof":  { step: 2, total: 6, label: "Proving your eligibility (~15s)" },
             "submitting-join":        { step: 3, total: 6, label: "Submitting anonymous registration" },
-            "timing-delay":           { step: 3, total: 6, label: "Securing your anonymity..." },
+            "timing-delay":           { step: 3, total: 6, label: "Waiting a random few seconds..." },
             "fetching-voting-group":  { step: 4, total: 6, label: "Preparing your ballot..." },
-            "generating-vote-proof":  { step: 5, total: 6, label: "Sealing your vote (~15s)" },
-            "encrypting":             { step: 5, total: 6, label: "Encrypting your ballot" },
-            "submitting-vote":        { step: 6, total: 6, label: "Submitting your encrypted vote" },
-            "verifying":              { step: 6, total: 6, label: "Confirming on-chain..." },
-        } : {
-            "fetching-signup-group":  { step: 1, total: 5, label: "Preparing..." },
-            "generating-join-proof":  { step: 2, total: 5, label: "Proving your eligibility (~15s)" },
-            "submitting-join":        { step: 3, total: 5, label: "Confirm in wallet (1 of 2: delink identity)" },
-            "fetching-voting-group":  { step: 3, total: 5, label: "Preparing your ballot..." },
-            "generating-vote-proof":  { step: 4, total: 5, label: "Sealing your vote (~15s)" },
-            "encrypting":             { step: 4, total: 5, label: "Encrypting your ballot" },
-            "submitting-vote":        { step: 5, total: 5, label: "Confirm in wallet (2 of 2: submit vote)" },
+            "generating-vote-proof":  { step: 5, total: 6, label: "Proving your vote (~15s)" },
+            "encrypting":             { step: 5, total: 6, label: "Sealing your ballot" },
+            "submitting-vote":        { step: 6, total: 6, label: "Submitting your sealed ballot" },
+            "verifying":              { step: 6, total: 6, label: "Checking your ballot on-chain..." },
         }
         return steps[voteStep] || null
-    }, [voteStep, isProcessing, gaslessEnabled])
-    const isOnChainCommittee = committeeState !== null && committeeState.threshold > 0
-    const canVote = isOnChainCommittee ? (committeeState?.finalized ?? false) : hasPubKey
-    const isMyCommitteeMember = !!(address && committeeState?.members.some(m => m.toLowerCase() === address.toLowerCase()))
-    const myKeyRegistered = !!(address && committeeState?.memberPubKeys && (committeeState.memberPubKeys[address.toLowerCase()]?.length ?? 0) > 2) // "0x" means empty
-    const myShareSubmitted = !!(address && committeeState?.memberHasSubmittedShare?.[address.toLowerCase()])
-    const committeeSharesReady = !!(committeeState && committeeState.submittedShareCount >= committeeState.threshold)
+    }, [voteStep, isProcessing])
+    // Voting needs a deadline to seal ballots to; every v9 election has one.
+    const canVote = !!state && state.votingDeadline > 0 && !deadlinePassed
+    // Gated elections: voters sign up on this page and this app's relay registers them as
+    // the election's registrar. Another registrar (e.g. a different deployment's relay)
+    // won't accept registrations from this relay.
+    const gatedByRegistrar = !!state && !state.selfSignupAllowed && isRelayGate(gateType) && state.registrar !== ZeroAddress
+    const registrarIsThisRelay = !!state && !!relayInfo && state.registrar.toLowerCase() === relayInfo.relayerAddress.toLowerCase()
+    const relayGated = gatedByRegistrar && registrarIsThisRelay
+    const registrarMismatch = gatedByRegistrar && !!relayInfo && !registrarIsThisRelay
+    // Metadata claims a gate but the contract allows open signup: the gate isn't enforced.
+    const gateNotEnforced = !!state && state.selfSignupAllowed && isRelayGate(gateType)
 
     // Phase badge color
     const phaseBadge = phase === "signup" ? { text: "SIGNUP", cls: "status-open" }
-        : phase === "voting" ? { text: "VOTING", cls: "status-open" }
+        : phase === "voting" ? { text: deadlinePassed ? "VOTING ENDED" : "VOTING", cls: deadlinePassed ? "status-closed" : "status-open" }
         : { text: "CLOSED", cls: "status-closed" }
+
+    if (!FACTORY_CONFIGURED) return (
+        <div className="card" style={{ textAlign: "center" }}>
+            <p style={{ fontWeight: 600, marginBottom: 6 }}>This deployment isn&apos;t configured yet</p>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                The contracts this version of Spectre needs haven&apos;t been deployed.
+            </p>
+            <Link href="/" style={{ display: "inline-block", marginTop: 12 }}>Back to elections</Link>
+        </div>
+    )
 
     if (loading) return (
         <div style={{ textAlign: "center", padding: 48 }}>
             <div className="spinner" style={{ margin: "0 auto 12px" }} />
             <p style={{ color: "var(--text-muted)" }}>Loading election...</p>
+        </div>
+    )
+
+    if (notElection) return (
+        <div className="card" style={{ textAlign: "center" }}>
+            <p style={{ fontWeight: 600, marginBottom: 6 }}>This isn&apos;t a Spectre election</p>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                The address wasn&apos;t created by this app&apos;s election factory, so this app won&apos;t use it.
+            </p>
+            <Link href="/" style={{ display: "inline-block", marginTop: 12 }}>Back to elections</Link>
+        </div>
+    )
+
+    if (unsupported) return (
+        <div className="card" style={{ textAlign: "center" }}>
+            <p style={{ fontWeight: 600, marginBottom: 6 }}>This election uses an older version of Spectre</p>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                It was created with contracts that had known privacy problems, and this app can&apos;t run it.
+            </p>
+            <Link href="/" style={{ display: "inline-block", marginTop: 12 }}>Back to elections</Link>
         </div>
     )
 
@@ -1758,12 +1336,10 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 tokenGateMeta={tokenGateMeta ? { tokenSymbol: tokenGateMeta.tokenSymbol, tokenType: tokenGateMeta.tokenType } : null}
                 inviteCodeCount={inviteCodeMeta?.totalCodes ?? null}
                 allowlistEntryCount={allowlistMeta?.totalEntries ?? null}
-                isThresholdElection={isThresholdElection}
-                thresholdMeta={thresholdMeta ? { threshold: thresholdMeta.threshold, totalShares: thresholdMeta.totalShares } : null}
                 signupDeadline={state.signupDeadline}
                 votingDeadline={state.votingDeadline}
+                unsealAt={unsealAt}
                 shareUrl={shareUrl}
-                isOnChainCommittee={isOnChainCommittee}
                 isAdmin={!!isAdmin}
                 tab={tab}
                 setTab={setTab}
@@ -1774,6 +1350,24 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 copyToClipboard={copyToClipboard}
                 copied={copied}
             />
+
+            {gateNotEnforced && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+                    <p style={{ fontSize: "0.85rem", color: "var(--warning)", lineHeight: 1.5 }}>
+                        This election lists a signup requirement, but its contract lets anyone sign up directly,
+                        so the requirement isn&apos;t enforced. Treat it as an open election.
+                    </p>
+                </div>
+            )}
+
+            {registrarMismatch && phase === "signup" && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+                    <p style={{ fontSize: "0.85rem", color: "var(--warning)", lineHeight: 1.5 }}>
+                        This election&apos;s signups are handled by a different relay ({state.registrar.slice(0, 10)}...),
+                        not the one behind this site, so you can&apos;t sign up here. Use the link the organizer shared.
+                    </p>
+                </div>
+            )}
 
             {/* ═══ VOTE / SIGNUP TAB ═══ */}
             {tab === "vote" && (
@@ -1787,7 +1381,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         createIdentity={createIdentity}
                         signupStatus={signupStatus}
                         signupLoading={signupLoading}
-                        selfSignupAllowed={state.selfSignupAllowed}
+                        selfSignupAllowed={state.selfSignupAllowed || relayGated}
                         isInviteCodeElection={isInviteCodeElection}
                         isAllowlistElection={isAllowlistElection}
                         isTokenGateElection={isTokenGateElection}
@@ -1840,9 +1434,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
                     <VotingSection
                         phase={phase}
-                        gaslessEnabled={gaslessEnabled}
                         address={address}
                         identity={identity}
+                        gaslessEnabled={gaslessEnabled}
                         optionLabels={optionLabels}
                         selectedVote={selectedVote}
                         setSelectedVote={setSelectedVote}
@@ -1851,9 +1445,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         stepInfo={stepInfo}
                         isProcessing={isProcessing}
                         canVote={canVote}
+                        deadlinePassed={deadlinePassed}
+                        unsealAt={unsealAt}
                         txHash={txHash}
                         error={error}
-                        onChainVerified={onChainVerified}
+                        ballotCheck={ballotCheck}
+                        submittedChange={submittedChange}
+                        weighted={state.maxWeight > 1}
+                        tokenGated={isTokenGateElection}
                         joinStatus={joinStatus}
                         handleJoinAndVote={handleJoinAndVote}
                         setVoteStep={setVoteStep}
@@ -1871,248 +1470,27 @@ export default function ElectionPage({ params }: { params: { address: string } }
             {tab === "results" && (
                 <ResultsTab
                     phase={phase}
-                    state={{ voteCount: state.voteCount, selfSignupAllowed: state.selfSignupAllowed }}
+                    voteCount={state.voteCount}
                     optionLabels={optionLabels}
                     isAdmin={!!isAdmin}
-                    isOnChainCommittee={isOnChainCommittee}
-                    isThresholdElection={isThresholdElection}
-                    committeeState={committeeState}
-                    committeeSharesReady={committeeSharesReady}
-                    thresholdMeta={thresholdMeta}
-                    hasStoredKey={hasStoredKey}
-                    electionKeyHex={typeof window !== "undefined" ? localStorage.getItem(`spectre-election-key-${electionAddress}`) || "" : ""}
+                    unsealAt={unsealAt}
+                    nowSec={nowSec}
                     tallyStep={tallyStep}
                     tallyMsg={tallyMsg}
                     tallyResult={tallyResult}
                     tallyError={tallyError}
-                    manualKeyInput={manualKeyInput}
-                    setManualKeyInput={setManualKeyInput}
-                    selectedMemberIdx={selectedMemberIdx}
-                    setSelectedMemberIdx={setSelectedMemberIdx}
-                    decryptShareInput={decryptShareInput}
-                    setDecryptShareInput={setDecryptShareInput}
-                    decryptKeyInput={decryptKeyInput}
-                    setDecryptKeyInput={setDecryptKeyInput}
-                    decryptedShareResult={decryptedShareResult}
-                    decryptShareError={decryptShareError}
-                    handleDecryptShare={handleDecryptShare}
-                    thresholdShareInputs={thresholdShareInputs}
-                    setThresholdShareInputs={setThresholdShareInputs}
                     runTally={runTally}
-                    runThresholdTally={runThresholdTally}
-                    runOnChainCommitteeTally={runOnChainCommitteeTally}
-                    setTallyResult={setTallyResult}
-                    setTallyStep={setTallyStep}
+                    resetTally={resetTally}
                     onChainTally={onChainTally}
                     commitStep={commitStep}
                     commitTxHash={commitTxHash}
                     commitError={commitError}
                     handleCommitTally={handleCommitTally}
-                    copyToClipboard={copyToClipboard}
-                    copied={copied}
+                    canCloseVoting={phase === "voting" && deadlinePassed}
+                    closingVoting={closingVoting}
+                    handleCloseVoting={handleCloseVoting}
+                    walletConnected={!!signer}
                 />
-            )}
-
-            {/* ═══ COMMITTEE TAB (Advanced only, stays inline) ═══ */}
-            {tab === "committee" && committeeState && (
-                <>
-                    {/* Committee status header */}
-                    <div className="card" style={{ marginBottom: 16 }}>
-                        <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>
-                            Committee ({committeeState.threshold}-of-{committeeState.members.length})
-                        </h4>
-                        <div style={{ display: "flex", gap: 16, fontSize: "0.8rem", color: "var(--text-muted)", flexWrap: "wrap" }}>
-                            <span>Keys: {committeeState.registeredKeyCount}/{committeeState.members.length}</span>
-                            <span>Finalized: {committeeState.finalized ? "Yes" : "No"}</span>
-                            <span>Shares submitted: {committeeState.submittedShareCount}/{committeeState.members.length}</span>
-                        </div>
-                    </div>
-
-                    {/* Member status list */}
-                    <div className="card" style={{ marginBottom: 16 }}>
-                        <h4 style={{ fontSize: "0.85rem", fontWeight: 600, marginBottom: 10 }}>Members</h4>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            {committeeState.members.map((memberAddr, i) => {
-                                const addrLower = memberAddr.toLowerCase()
-                                const hasKey = committeeState.memberPubKeys[addrLower]?.length > 2
-                                const hasShare = committeeState.memberHasSubmittedShare[addrLower]
-                                const isMe = address?.toLowerCase() === addrLower
-                                // Look up name from on-chain metadata
-                                const metaStored = typeof window !== "undefined" ? JSON.parse(localStorage.getItem(`spectre-election-meta-${electionAddress}`) || "{}") : {}
-                                const memberName = metaStored.committee?.find((c: any) => c.address?.toLowerCase() === addrLower)?.name || ""
-
-                                return (
-                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: isMe ? "var(--purple-bg)" : "var(--bg)", borderRadius: 8, border: `1px solid ${isMe ? "var(--purple-border)" : "var(--border)"}` }}>
-                                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                                            <span className="mono" style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                                                {memberName ? `${memberName} ` : ""}{memberAddr.slice(0, 6)}...{memberAddr.slice(-4)}
-                                            </span>
-                                            {isMe && <span style={{ fontSize: "0.65rem", color: "var(--purple)", fontWeight: 600 }}>YOU</span>}
-                                        </div>
-                                        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                                            <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasKey ? "var(--success-bg-medium)" : "var(--warning-bg)", color: hasKey ? "var(--success)" : "var(--warning)" }}>
-                                                {hasKey ? "Key ✓" : "No key"}
-                                            </span>
-                                            {phase === "closed" && (
-                                                <span style={{ fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4, background: hasShare ? "var(--success-bg-medium)" : "var(--slate-bg)", color: hasShare ? "var(--success)" : "var(--text-muted)" }}>
-                                                    {hasShare ? "Share ✓" : "Pending"}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
-                                )
-                            })}
-                        </div>
-                    </div>
-
-                    {/* Phase 1: Key registration (during signup, before finalization) */}
-                    {phase === "signup" && !committeeState.finalized && isMyCommitteeMember && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--purple-border-strong)" }}>
-                            {!myKeyRegistered ? (
-                                <>
-                                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Register Your Key</h4>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                        Generate a fresh secp256k1 keypair. Your private key stays in this browser — only the public key goes on-chain.
-                                    </p>
-                                    <button className="btn-primary" onClick={handleRegisterCommitteeKey} disabled={committeeLoading}>
-                                        {committeeLoading ? "Generating & Registering..." : "Generate My Key"}
-                                    </button>
-                                </>
-                            ) : (
-                                <>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                        <span style={{ fontSize: "1.2rem", color: "var(--success)" }}>&#10003;</span>
-                                        <div style={{ flex: 1 }}>
-                                            <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>Key registered!</p>
-                                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                                {hasStoredCommitteeKey
-                                                    ? "Waiting for admin to finalize."
-                                                    : "Registered from another browser."}
-                                            </p>
-                                        </div>
-                                        {!hasStoredCommitteeKey && (
-                                            <button
-                                                className="btn-secondary"
-                                                style={{ padding: "6px 12px", fontSize: "0.75rem", whiteSpace: "nowrap" }}
-                                                onClick={() => {
-                                                    const key = prompt("Paste your 64-character hex private key:")
-                                                    if (key && key.trim().length === 64 && /^[0-9a-fA-F]+$/.test(key.trim()) && committeeKeyStorageKey) {
-                                                        localStorage.setItem(committeeKeyStorageKey, key.trim())
-                                                        window.location.reload()
-                                                    }
-                                                }}
-                                            >
-                                                Import Key
-                                            </button>
-                                        )}
-                                    </div>
-                                    {hasStoredCommitteeKey && (
-                                        <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                                                <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Private Key</span>
-                                                <button
-                                                    className="btn-secondary"
-                                                    style={{ padding: "2px 8px", fontSize: "0.7rem" }}
-                                                    onClick={() => {
-                                                        const k = localStorage.getItem(committeeKeyStorageKey)
-                                                        if (k) { navigator.clipboard.writeText(k); setCopied("committee-key"); setTimeout(() => setCopied(""), 2000) }
-                                                    }}
-                                                >
-                                                    {copied === "committee-key" ? "Copied!" : "Copy"}
-                                                </button>
-                                            </div>
-                                            <p className="mono" style={{ fontSize: "0.6rem", color: "var(--text-muted)", wordBreak: "break-all", lineHeight: 1.4 }}>
-                                                {localStorage.getItem(committeeKeyStorageKey) || ""}
-                                            </p>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    {/* Admin: Finalize committee (all keys registered, not yet finalized) */}
-                    {phase === "signup" && !committeeState.finalized && isAdmin && committeeState.registeredKeyCount === committeeState.members.length && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Finalize Committee</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                All {committeeState.members.length} keys registered. Run the dealer ceremony to generate the election key and encrypted shares.
-                                The master key is discarded after splitting — only the committee can reconstruct it.
-                            </p>
-                            <button className="btn-primary" onClick={handleFinalizeCommittee} disabled={committeeLoading}>
-                                {committeeLoading ? "Running Dealer Ceremony..." : "Run Dealer & Finalize"}
-                            </button>
-                        </div>
-                    )}
-
-                    {/* Waiting message: finalized but signup still open */}
-                    {phase === "signup" && committeeState.finalized && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
-                                <div>
-                                    <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>Committee finalized!</p>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                        Election key is set. Admin can close signup to open voting.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Phase 3: Submit share (after voting closed) */}
-                    {phase === "closed" && isMyCommitteeMember && !myShareSubmitted && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--purple-border-strong)" }}>
-                            <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Decrypt & Submit Your Share</h4>
-                            <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                Voting is closed. Decrypt your share using the private key stored in this browser and submit it on-chain.
-                                {committeeState.submittedShareCount >= committeeState.threshold
-                                    ? " Threshold already met — submitting is optional."
-                                    : ` Need ${committeeState.threshold - committeeState.submittedShareCount} more share(s) to reach threshold.`}
-                            </p>
-                            <button className="btn-primary" onClick={handleSubmitDecryptedShare} disabled={committeeLoading}>
-                                {committeeLoading ? "Decrypting & Submitting..." : "Decrypt & Submit My Share"}
-                            </button>
-                        </div>
-                    )}
-
-                    {phase === "closed" && isMyCommitteeMember && myShareSubmitted && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)", background: "var(--success-bg)" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <span style={{ fontSize: "1.2rem" }}>&#10003;</span>
-                                <div>
-                                    <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>Share submitted!</p>
-                                    <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                        {committeeSharesReady
-                                            ? "Threshold reached — results can be tallied on the Results tab."
-                                            : `${committeeState.submittedShareCount} of ${committeeState.threshold} shares submitted. Waiting for more committee members.`}
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Threshold status */}
-                    {phase === "closed" && committeeSharesReady && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)", background: "var(--accent-bg)" }}>
-                            <p style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--accent)", textAlign: "center" }}>
-                                Threshold met ({committeeState.submittedShareCount} ≥ {committeeState.threshold}) — go to Results tab to tally!
-                            </p>
-                        </div>
-                    )}
-
-                    {/* Error / success messages */}
-                    {committeeMsg && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--success-border)" }}>
-                            <p style={{ fontSize: "0.85rem", color: "var(--success)" }}>{committeeMsg}</p>
-                        </div>
-                    )}
-                    {committeeError && (
-                        <div className="card" style={{ marginBottom: 16, borderColor: "var(--error)" }}>
-                            <p style={{ fontSize: "0.85rem", color: "var(--error)" }}>{committeeError}</p>
-                        </div>
-                    )}
-                </>
             )}
 
             {/* ═══ MANAGE TAB ═══ */}
@@ -2136,6 +1514,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     registerBulk={registerBulk}
                     handleCloseSignup={handleCloseSignup}
                     handleCloseVoting={handleCloseVoting}
+                    deadlinePassed={deadlinePassed}
+                    votingDeadline={state.votingDeadline}
                     copyToClipboard={copyToClipboard}
                     copied={copied}
                     setCopied={setCopied}

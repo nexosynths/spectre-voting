@@ -45,6 +45,29 @@ export default function StepAccess({ state, dispatch, effectiveGasless, gaslessL
                 disabled={creating}
             />
 
+            {/* Registration cap (codes and allowlists use their own size) */}
+            {gateType !== "invite-codes" && gateType !== "allowlist" && (
+                <div>
+                    <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
+                        Maximum voters
+                    </label>
+                    <input
+                        type="number"
+                        min={1}
+                        placeholder="100"
+                        value={state.maxVoters}
+                        onChange={e => dispatch({ type: "SET_FIELD", field: "maxVoters", value: e.target.value.replace(/[^0-9]/g, "") })}
+                        disabled={creating}
+                        style={{ maxWidth: 160 }}
+                    />
+                    <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 4, lineHeight: 1.4 }}>
+                        The contract won&apos;t register more voters than this, whoever asks. It also limits how many fake
+                        voters could be added if the relay&apos;s key ever leaked. It can&apos;t be raised later.
+                        {gateType === "open" && " In an open election anyone can take a slot, so set it well above the turnout you expect."}
+                    </p>
+                </div>
+            )}
+
             {/* Gasless toggle */}
             <div
                 onClick={() => !toggleDisabled && dispatch({ type: "SET_FIELD", field: "gaslessMode", value: !gaslessMode })}
@@ -79,13 +102,13 @@ export default function StepAccess({ state, dispatch, effectiveGasless, gaslessL
                                 ? "This gate type uses a server-side relayer \u2014 no wallet needed"
                                 : effectiveGasless
                                     ? "No wallet needed \u2014 votes are submitted automatically"
-                                    : "Voters need a crypto wallet with ETH to submit votes"}
+                                    : "Voters sign up from their own wallet (a little ETH for gas). Joining and voting are always relayed"}
                     </p>
                 </div>
             </div>
             {effectiveGasless && (
                 <TrustCallout
-                    text="Server-side relayer submits transactions on behalf of voters. Trust assumptions: liveness (relayer will submit), timeliness (relayer submits promptly), transport privacy (relayer won't correlate IPs with proofs). Voters independently verify their vote landed on-chain."
+                    text="A server-side relay submits transactions for voters. It has to stay up and submit promptly. It sees voters' IP addresses, so once ballots are public its operator could match an IP address to a ballot. Each voter's browser checks that their ballot reached the chain unchanged."
                     variant="info"
                 />
             )}

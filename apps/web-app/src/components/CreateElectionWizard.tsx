@@ -1,6 +1,6 @@
 "use client"
 
-import { ElectionFormState, ElectionFormDispatch, CommitteeMember } from "@/hooks/useElectionForm"
+import { ElectionFormState, ElectionFormDispatch } from "@/hooks/useElectionForm"
 import StepBasics from "@/components/wizard/StepBasics"
 import StepAccess from "@/components/wizard/StepAccess"
 import StepSecurity from "@/components/wizard/StepSecurity"
@@ -13,7 +13,6 @@ interface Props {
     gaslessLocked: boolean
     walletForced: boolean
     gaslessForced: boolean
-    validCommitteeMembers: CommitteeMember[]
     canProceedFromStep: boolean[]
     canCreate: boolean
     onCreateElection: () => void
@@ -22,14 +21,14 @@ interface Props {
 const STEPS = [
     { label: "Basics", title: "What are you voting on?" },
     { label: "Access", title: "Who can vote?" },
-    { label: "Security", title: "Results security" },
+    { label: "Security", title: "How ballots are protected" },
     { label: "Review", title: "Review & create" },
 ]
 
 export default function CreateElectionWizard({
     state, dispatch,
     effectiveGasless, gaslessLocked, walletForced, gaslessForced,
-    validCommitteeMembers, canProceedFromStep, canCreate,
+    canProceedFromStep, canCreate,
     onCreateElection,
 }: Props) {
     const { currentStep, creating } = state
@@ -86,13 +85,12 @@ export default function CreateElectionWizard({
                 />
             )}
             {currentStep === 2 && (
-                <StepSecurity state={state} dispatch={dispatch} />
+                <StepSecurity state={state} effectiveGasless={effectiveGasless} />
             )}
             {currentStep === 3 && (
                 <StepReview
                     state={state} dispatch={dispatch}
                     effectiveGasless={effectiveGasless}
-                    validCommitteeMembers={validCommitteeMembers}
                     canCreate={canCreate}
                     onCreateElection={onCreateElection}
                 />

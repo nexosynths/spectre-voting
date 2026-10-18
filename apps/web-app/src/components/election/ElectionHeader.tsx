@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react"
 import Link from "next/link"
 
-type Tab = "vote" | "results" | "manage" | "committee"
+type Tab = "vote" | "results" | "manage"
 type Phase = "signup" | "voting" | "closed"
 
 interface ElectionHeaderProps {
@@ -24,12 +24,11 @@ interface ElectionHeaderProps {
     emailDomainMeta: { domains: string[] } | null
     isGithubOrgElection: boolean
     githubOrgMeta: { org: string } | null
-    isThresholdElection: boolean
-    thresholdMeta: { threshold: number; totalShares: number } | null
     signupDeadline: number
     votingDeadline: number
+    /** Unix seconds when ballots can be opened (drand round after the deadline) */
+    unsealAt: number
     shareUrl: string
-    isOnChainCommittee: boolean
     isAdmin: boolean
     tab: Tab
     setTab: (t: Tab) => void
@@ -43,8 +42,8 @@ export default function ElectionHeader({
     isTokenGateElection, tokenGateMeta,
     isEmailDomainElection, emailDomainMeta,
     isGithubOrgElection, githubOrgMeta,
-    inviteCodeCount, allowlistEntryCount, isThresholdElection, thresholdMeta,
-    signupDeadline, votingDeadline, shareUrl, isOnChainCommittee, isAdmin,
+    inviteCodeCount, allowlistEntryCount,
+    signupDeadline, votingDeadline, unsealAt, shareUrl, isAdmin,
     tab, setTab, copyToClipboard, copied,
 }: ElectionHeaderProps) {
     const gateLabel = isGithubOrgElection ? `GitHub Org (${githubOrgMeta?.org || "?"})` : isEmailDomainElection ? `Email domain (${emailDomainMeta?.domains.map(d => "@" + d).join(", ") || "?"})` : isTokenGateElection ? `Token gate (${tokenGateMeta?.tokenSymbol || tokenGateMeta?.tokenType?.toUpperCase() || "?"})` : isAllowlistElection ? `Allowlist (${allowlistEntryCount || "?"})` : isInviteCodeElection ? `Invite codes (${inviteCodeCount || "?"})` : selfSignupAllowed ? "Open signup" : "Admin only"
@@ -89,9 +88,9 @@ export default function ElectionHeader({
                             &#9889; No wallet needed
                         </span>
                     )}
-                    {isThresholdElection && thresholdMeta && (
-                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }}>
-                            {thresholdMeta.threshold}-of-{thresholdMeta.totalShares} committee
+                    {unsealAt > 0 && Date.now() / 1000 < unsealAt && (
+                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }} title="Ballots are time-locked with drand. Nobody, including the organizer, can read them until hours after the deadline.">
+                            Ballots sealed until after the deadline
                         </span>
                     )}
                     {phase === "signup" && signupDeadline > 0 && (
@@ -123,9 +122,6 @@ export default function ElectionHeader({
                     {phase === "signup" ? "Sign Up" : "Vote"}
                 </button>
                 <button onClick={() => setTab("results")} className={tab === "results" ? "active" : ""}>Results</button>
-                {isOnChainCommittee && (
-                    <button onClick={() => setTab("committee")} className={tab === "committee" ? "active" : ""}>Committee</button>
-                )}
                 {isAdmin && (
                     <button onClick={() => setTab("manage")} className={tab === "manage" ? "active" : ""}>Manage</button>
                 )}

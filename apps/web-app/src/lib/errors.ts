@@ -13,7 +13,7 @@ import { SPECTRE_VOTING_ABI } from "./contracts"
 const ERROR_MESSAGES: Record<string, string> = {
     NotAdmin: "Only the election admin can perform this action",
     SignupNotOpen: "Signup is not open",
-    VotingNotOpen: "Voting is not open yet (or has already closed)",
+    VotingNotOpen: "Voting is not open (it hasn't started or it has closed)",
     VotingAlreadyOpen: "Voting is already open",
     SignupAlreadyClosed: "Signup has already been closed",
     NullifierAlreadyUsed: "You've already voted in this election",
@@ -23,24 +23,22 @@ const ERROR_MESSAGES: Record<string, string> = {
     InvalidCommitment: "Your voter identity could not be verified. Try refreshing or re-registering",
     VotingDeadlinePassed: "The voting deadline has passed",
     SignupDeadlinePassed: "The signup deadline has passed",
-    SignupStillOpen: "Signup must be closed before opening voting",
+    SignupStillOpen: "Signup must be closed before publishing results",
     InvalidNumOptions: "Invalid number of voting options",
-    SelfSignupNotAllowed: "Self-signup is disabled — only the admin can register voters",
+    SelfSignupNotAllowed: "This election doesn't allow open signup. Sign up through the election page so your eligibility can be checked",
     TallyAlreadyCommitted: "The tally has already been committed for this election",
     VotingStillOpen: "Voting must be closed before committing the tally",
     InvalidOptionCount: "The results don't match the number of options in this election",
-    // Committee errors
-    CommitteeAlreadySetup: "Committee has already been configured for this election",
-    CommitteeNotSetup: "No committee has been configured — set up a committee first",
-    NotCommitteeMember: "Only committee members can perform this action",
-    KeyAlreadyRegistered: "You've already registered your committee key",
-    CommitteeAlreadyFinalized: "Committee has already been finalized",
-    NotAllKeysRegistered: "All committee members must register their keys before finalizing",
-    InvalidThreshold: "Threshold must be at least 2 and at most the number of members",
-    ShareAlreadySubmitted: "You've already submitted your share for this election",
-    InvalidPublicKey: "The encryption key format is invalid. Please regenerate your key",
-    ElectionKeyNotSet: "Committee must be finalized before voting can start",
-    CommitteeNotFinalized: "Committee must be finalized before this action is allowed",
+    // v9: registrar-enforced gates, fixed deadlines
+    NotAuthorized: "Only the organizer or the relay can register voters in this election",
+    InvalidWeight: "Voting weight must be between 1 and this election's maximum",
+    GateKeyAlreadyUsed: "This invite code, email, account or wallet has already been used to sign up",
+    InvalidGateKey: "The relay must include a signup credential when registering a voter",
+    InvalidDeadlines: "The signup deadline must be in the future, and the voting deadline after it",
+    VotingNotEnded: "Voting can't be closed before the deadline",
+    InvalidMaxVoters: "The maximum number of voters must be between 1 and 1,048,576",
+    TooManyVoters: "This election has reached its maximum number of voters",
+    BallotTooLarge: "The sealed ballot is too large",
 }
 
 // Lazy-init interface for manual selector decoding
@@ -108,6 +106,10 @@ export function friendlyError(err: any): string {
     if (err?.code === "ACTION_REJECTED" || err?.code === 4001 || msg.includes("user rejected")) {
         return "Transaction was rejected in your wallet"
     }
+
+    // Strategy 5b: errors raised by this app (plain Error, no ethers error code) already
+    // carry a message written for the voter
+    if (err instanceof Error && !(err as any).code && err.message) return err.message
 
     // Strategy 6: cleaned-up fallback
     if (err?.reason) {

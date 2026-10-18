@@ -1,6 +1,7 @@
 "use client"
 
 import { ElectionFormState, ElectionFormDispatch } from "@/hooks/useElectionForm"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 
 interface Props {
     state: ElectionFormState
@@ -70,7 +71,7 @@ export default function StepBasics({ state, dispatch }: Props) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ flex: 1 }}>
                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                        Signup duration (hours)
+                        Signup duration (hours, required)
                     </label>
                     <input
                         type="number"
@@ -82,7 +83,7 @@ export default function StepBasics({ state, dispatch }: Props) {
                 </div>
                 <div style={{ flex: 1 }}>
                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                        Voting duration (hours)
+                        Voting duration (hours, required)
                     </label>
                     <input
                         type="number"
@@ -93,6 +94,10 @@ export default function StepBasics({ state, dispatch }: Props) {
                     />
                 </div>
             </div>
+            <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", lineHeight: 1.4, marginTop: -6 }}>
+                Voting opens when signup ends (you can end signup early). The voting deadline is fixed when you create the
+                election: ballots stay sealed until {SEAL_DELAY_SECONDS / 3600} hours after it, and voting can&apos;t be ended early.
+            </p>
         </div>
     )
 }

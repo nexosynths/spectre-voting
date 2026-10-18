@@ -1,17 +1,12 @@
 "use client"
 
 import { useReducer, useEffect, useMemo } from "react"
-import { Contract, JsonRpcProvider, isAddress } from "ethers"
+import { Contract, JsonRpcProvider } from "ethers"
 import { RPC_URL } from "@/lib/contracts"
 
 // ─── Types ───────────────────────────────────────────────────────
 
 export type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-gate" | "email-domain" | "github-org"
-
-export interface CommitteeMember {
-    name: string
-    address: string
-}
 
 export interface ElectionFormState {
     // Wizard
@@ -23,6 +18,8 @@ export interface ElectionFormState {
     optionLabels: string[]
     signupHours: string
     votingHours: string
+    /** Cap on registrations (invite codes and allowlists use their own size) */
+    maxVoters: string
 
     // Step 2: Access
     gateType: GateType
@@ -39,12 +36,8 @@ export interface ElectionFormState {
     githubOrg: string
     gaslessMode: boolean
 
-    // Step 3: Security
-    encryptionMode: "single" | "threshold"
-    committeeMembers: CommitteeMember[]
-    threshold: number
-
     // Post-creation (modals)
+    createdElection: string
     generatedCodes: string[]
     showCodesModal: boolean
     allowlistIdentifiers: string[]
@@ -56,19 +49,15 @@ export interface ElectionFormState {
 type Action =
     | { type: "SET_FIELD"; field: keyof ElectionFormState; value: any }
     | { type: "SET_GATE_TYPE"; gateType: GateType }
-    | { type: "SET_ENCRYPTION_MODE"; mode: "single" | "threshold" }
     | { type: "ADD_OPTION" }
     | { type: "REMOVE_OPTION"; index: number }
     | { type: "UPDATE_OPTION"; index: number; value: string }
-    | { type: "ADD_COMMITTEE_MEMBER" }
-    | { type: "REMOVE_COMMITTEE_MEMBER"; index: number }
-    | { type: "UPDATE_COMMITTEE_MEMBER"; index: number; field: "name" | "address"; value: string }
     | { type: "SET_TOKEN_INFO"; symbol: string; decimals: number }
     | { type: "NEXT_STEP" }
     | { type: "PREV_STEP" }
     | { type: "GO_TO_STEP"; step: number }
     | { type: "SET_CREATING"; creating: boolean }
-    | { type: "POST_CREATE"; codes?: string[]; identifiers?: string[] }
+    | { type: "POST_CREATE"; election: string; codes?: string[]; identifiers?: string[] }
     | { type: "CLOSE_MODAL"; modal: "codes" | "allowlist" }
     | { type: "RESET" }
 
@@ -81,6 +70,7 @@ const initialState: ElectionFormState = {
     optionLabels: ["Yes", "No"],
     signupHours: "24",
     votingHours: "72",
+    maxVoters: "100",
     gateType: "open",
     codeCount: "20",
     allowlistInput: "",
@@ -94,13 +84,7 @@ const initialState: ElectionFormState = {
     emailDomains: "",
     githubOrg: "",
     gaslessMode: false,
-    encryptionMode: "single",
-    committeeMembers: [
-        { name: "", address: "" },
-        { name: "", address: "" },
-        { name: "", address: "" },
-    ],
-    threshold: 2,
+    createdElection: "",
     generatedCodes: [],
     showCodesModal: false,
     allowlistIdentifiers: [],
@@ -132,18 +116,6 @@ function reducer(state: ElectionFormState, action: Action): ElectionFormState {
                 githubOrg: action.gateType === "github-org" ? state.githubOrg : "",
             }
 
-        case "SET_ENCRYPTION_MODE":
-            return {
-                ...state,
-                encryptionMode: action.mode,
-                committeeMembers: action.mode === "threshold" ? state.committeeMembers : [
-                    { name: "", address: "" },
-                    { name: "", address: "" },
-                    { name: "", address: "" },
-                ],
-                threshold: action.mode === "threshold" ? state.threshold : 2,
-            }
-
         case "ADD_OPTION":
             if (state.optionLabels.length >= 10) return state
             return { ...state, optionLabels: [...state.optionLabels, ""] }
@@ -156,26 +128,6 @@ function reducer(state: ElectionFormState, action: Action): ElectionFormState {
             const labels = [...state.optionLabels]
             labels[action.index] = action.value
             return { ...state, optionLabels: labels }
-        }
-
-        case "ADD_COMMITTEE_MEMBER":
-            if (state.committeeMembers.length >= 10) return state
-            return { ...state, committeeMembers: [...state.committeeMembers, { name: "", address: "" }] }
-
-        case "REMOVE_COMMITTEE_MEMBER": {
-            if (state.committeeMembers.length <= 2) return state
-            const next = state.committeeMembers.filter((_, i) => i !== action.index)
-            return {
-                ...state,
-                committeeMembers: next,
-                threshold: state.threshold > next.length ? next.length : state.threshold,
-            }
-        }
-
-        case "UPDATE_COMMITTEE_MEMBER": {
-            const members = [...state.committeeMembers]
-            members[action.index] = { ...members[action.index], [action.field]: action.value }
-            return { ...state, committeeMembers: members }
         }
 
         case "SET_TOKEN_INFO":
@@ -196,6 +148,7 @@ function reducer(state: ElectionFormState, action: Action): ElectionFormState {
         case "POST_CREATE":
             return {
                 ...state,
+                createdElection: action.election,
                 generatedCodes: action.codes || [],
                 showCodesModal: (action.codes?.length || 0) > 0,
                 allowlistIdentifiers: action.identifiers || [],
@@ -220,22 +173,27 @@ export function useElectionForm() {
     const [state, dispatch] = useReducer(reducer, initialState)
 
     // Derived values
-    const selfSignup = state.gateType !== "admin-only"
+    // Only open elections allow self-signup on-chain. Every other gate is enforced by the
+    // contract: voters are registered by the relay (acting as registrar) or by the admin.
+    const selfSignup = state.gateType === "open"
 
     const walletForced = state.gateType === "token-gate"
     const gaslessForced = ["invite-codes", "allowlist", "email-domain", "github-org"].includes(state.gateType)
     const effectiveGasless = walletForced ? false : gaslessForced ? true : state.gaslessMode
     const gaslessLocked = walletForced || gaslessForced
 
-    const validCommitteeMembers = useMemo(
-        () => state.committeeMembers.filter(m => m.name.trim() && isAddress(m.address.trim())),
-        [state.committeeMembers],
-    )
-
     // Per-step validation
     const canProceedFromStep = useMemo(() => {
-        const step0 = state.electionTitle.trim().length > 0 && state.optionLabels.filter(l => l.trim()).length >= 2
-        const step1 = (() => {
+        // Every election needs a signup deadline (voting then opens on its own) and a voting
+        // deadline (ballots are time-locked to it).
+        const votingHours = Number(state.votingHours)
+        const signupHours = Number(state.signupHours)
+        const durationsValid = Number.isFinite(votingHours) && votingHours > 0 && Number.isFinite(signupHours) && signupHours > 0
+        const step0 = state.electionTitle.trim().length > 0 && state.optionLabels.filter(l => l.trim()).length >= 2 && durationsValid
+        const maxVoters = Number(state.maxVoters)
+        const maxVotersValid = state.gateType === "invite-codes" || state.gateType === "allowlist"
+            || (Number.isInteger(maxVoters) && maxVoters >= 1 && maxVoters <= 1 << 20)
+        const step1 = maxVotersValid && (() => {
             switch (state.gateType) {
                 case "token-gate":
                     return /^0x[0-9a-fA-F]{40}$/.test(state.tokenAddress)
@@ -253,9 +211,8 @@ export function useElectionForm() {
                     return true
             }
         })()
-        const step2 = state.encryptionMode === "single" || validCommitteeMembers.length >= 2
-        return [step0, step1, step2, true] // step 3 (review) always valid
-    }, [state.electionTitle, state.optionLabels, state.gateType, state.tokenAddress, state.allowlistInput, state.codeCount, state.emailDomains, state.githubOrg, state.encryptionMode, validCommitteeMembers])
+        return [step0, step1, true, true] // step 2 (ballot security) is informational; step 3 (review) always valid
+    }, [state.electionTitle, state.optionLabels, state.signupHours, state.votingHours, state.maxVoters, state.gateType, state.tokenAddress, state.allowlistInput, state.codeCount, state.emailDomains, state.githubOrg])
 
     const canCreate = canProceedFromStep.every(Boolean) && !state.creating
 
@@ -291,7 +248,6 @@ export function useElectionForm() {
         gaslessLocked,
         walletForced,
         gaslessForced,
-        validCommitteeMembers,
         canProceedFromStep,
         canCreate,
     }

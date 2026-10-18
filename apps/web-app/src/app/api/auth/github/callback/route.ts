@@ -8,45 +8,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createHmac } from "crypto"
-import { JsonRpcProvider, Contract, toUtf8String } from "ethers"
-import { CONTRACTS, FACTORY_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK } from "@/lib/contracts"
-
-// ---------------------------------------------------------------------------
-// Election metadata cache
-// ---------------------------------------------------------------------------
-const metadataCache = new Map<string, Record<string, any>>()
-
-async function getElectionMetadata(
-    electionAddress: string,
-    provider: JsonRpcProvider
-): Promise<Record<string, any> | null> {
-    const key = electionAddress.toLowerCase()
-    if (metadataCache.has(key)) return metadataCache.get(key)!
-
-    try {
-        const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
-        const currentBlock = await provider.getBlockNumber()
-        let events: any[] = []
-        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-            const chunk = await factory.queryFilter(
-                factory.filters.ElectionDeployed(electionAddress),
-                from, to
-            )
-            events.push(...chunk)
-            if (events.length > 0) break
-        }
-        if (events.length === 0) return null
-        const args = (events[0] as any).args
-        if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
-        const decoded = toUtf8String(args.metadata)
-        const meta = JSON.parse(decoded)
-        metadataCache.set(key, meta)
-        return meta
-    } catch {
-        return null
-    }
-}
+import { cachedElectionMetadata } from "@/lib/server"
 
 // ---------------------------------------------------------------------------
 // Main callback handler
@@ -158,8 +120,7 @@ export async function GET(request: NextRequest) {
     // ---------------------------------------------------------------------------
     // 4. Fetch election metadata to get org name
     // ---------------------------------------------------------------------------
-    const provider = new JsonRpcProvider(RPC_URL)
-    const meta = await getElectionMetadata(electionAddress, provider)
+    const meta = await cachedElectionMetadata(electionAddress)
 
     if (!meta || meta.gateType !== "github-org" || !meta.githubOrg?.org) {
         return redirectWithError(request, electionAddress, "This election does not use GitHub org verification")

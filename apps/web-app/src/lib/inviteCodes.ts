@@ -4,26 +4,28 @@
  * Pure utility functions for generating, hashing, validating, and managing
  * one-time invite codes for the invite-code signup gate (v7.0).
  *
- * Code format: 8-char lowercase hex (4 random bytes). 2^32 possibilities.
- * For 250 codes, guessing probability is ~0.000006%.
+ * Code format: 32 lowercase hex characters (16 random bytes, 128 bits). The codes'
+ * keccak256 hashes are published in the election's metadata, so shorter codes could
+ * be recovered by trying every possibility; at 128 bits that's infeasible.
  *
  * No React, no side effects.
  */
 
 import { keccak256, toUtf8Bytes } from "ethers"
+import { normalizeInviteCode } from "@/lib/gate"
 
 // ---------------------------------------------------------------------------
 // Code generation
 // ---------------------------------------------------------------------------
 
 /**
- * Generate N unique random 8-char lowercase hex codes.
+ * Generate N unique random codes (32 lowercase hex characters each).
  * Uses crypto.getRandomValues for secure randomness.
  */
 export function generateCodes(count: number): string[] {
     const codes = new Set<string>()
     while (codes.size < count) {
-        const bytes = new Uint8Array(4)
+        const bytes = new Uint8Array(16)
         crypto.getRandomValues(bytes)
         const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("")
         codes.add(hex)
@@ -43,6 +45,11 @@ export function hashCode(code: string): string {
     return keccak256(toUtf8Bytes(code.toLowerCase().trim()))
 }
 
+/** Hash an invite code as typed or pasted (spaces, dashes and capitals ignored). */
+export function hashInviteCode(code: string): string {
+    return keccak256(toUtf8Bytes(normalizeInviteCode(code)))
+}
+
 /**
  * Hash an array of codes. Returns parallel array of hashes.
  */
@@ -55,11 +62,11 @@ export function hashCodes(codes: string[]): string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate a code against a list of code hashes.
+ * Validate an invite code against a list of code hashes.
  * @returns The matching hash if valid, or null if invalid.
  */
 export function validateCode(code: string, codeHashes: string[]): string | null {
-    const h = hashCode(code)
+    const h = hashInviteCode(code)
     return codeHashes.includes(h) ? h : null
 }
 
@@ -141,7 +148,8 @@ export function hashIdentifiers(identifiers: string[]): string[] {
  * @returns The matching hash if valid, or null if invalid.
  */
 export function validateIdentifier(identifier: string, allowlistHashes: string[]): string | null {
-    return validateCode(identifier, allowlistHashes)
+    const h = hashIdentifier(identifier)
+    return allowlistHashes.includes(h) ? h : null
 }
 
 // ---------------------------------------------------------------------------

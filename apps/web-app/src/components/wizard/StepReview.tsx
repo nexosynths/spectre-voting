@@ -1,15 +1,14 @@
 "use client"
 
-import { ElectionFormState, ElectionFormDispatch, CommitteeMember } from "@/hooks/useElectionForm"
-import { isAddress } from "ethers"
+import { ElectionFormState, ElectionFormDispatch } from "@/hooks/useElectionForm"
 import ContextualWarnings from "@/components/ContextualWarning"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 import TrustSummary from "@/components/TrustSummary"
 
 interface Props {
     state: ElectionFormState
     dispatch: ElectionFormDispatch
     effectiveGasless: boolean
-    validCommitteeMembers: CommitteeMember[]
     canCreate: boolean
     onCreateElection: () => void
 }
@@ -24,7 +23,7 @@ const gateLabels: Record<string, string> = {
     "github-org": "GitHub org",
 }
 
-export default function StepReview({ state, dispatch, effectiveGasless, validCommitteeMembers, canCreate, onCreateElection }: Props) {
+export default function StepReview({ state, dispatch, effectiveGasless, canCreate, onCreateElection }: Props) {
     const { creating } = state
 
     return (
@@ -33,9 +32,15 @@ export default function StepReview({ state, dispatch, effectiveGasless, validCom
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <SummaryRow label="Title" value={state.electionTitle || "(empty)"} />
                 <SummaryRow label="Options" value={state.optionLabels.filter(l => l.trim()).join(", ") || "(none)"} />
-                <SummaryRow label="Signup" value={`${state.signupHours || 24} hours`} />
-                <SummaryRow label="Voting" value={`${state.votingHours || 72} hours`} />
+                <SummaryRow label="Signup" value={`${state.signupHours} hours (or until you end it)`} />
+                <SummaryRow label="Voting ends" value={`${Number(state.signupHours) + Number(state.votingHours)} hours after creation (fixed)`} />
                 <SummaryRow label="Access" value={gateLabels[state.gateType] || state.gateType} />
+                <SummaryRow
+                    label="Max voters"
+                    value={state.gateType === "invite-codes" ? `${state.codeCount} (one per code)`
+                        : state.gateType === "allowlist" ? "One per allowlist entry"
+                        : state.maxVoters}
+                />
                 {state.gateType === "invite-codes" && (
                     <SummaryRow label="Codes" value={`${state.codeCount} invite codes`} />
                 )}
@@ -48,40 +53,30 @@ export default function StepReview({ state, dispatch, effectiveGasless, validCom
                 {state.gateType === "github-org" && (
                     <SummaryRow label="Org" value={state.githubOrg} />
                 )}
-                <SummaryRow label="Wallet" value={effectiveGasless ? "Not required (gasless)" : "Required"} />
-                <SummaryRow
-                    label="Security"
-                    value={state.encryptionMode === "threshold"
-                        ? `${state.threshold}-of-${validCommitteeMembers.length} committee`
-                        : "Single key (you)"}
-                />
+                <SummaryRow label="Wallet" value={effectiveGasless ? "Not required (gasless)" : "Needed to sign up"} />
+                <SummaryRow label="Ballots" value={`Sealed until ${SEAL_DELAY_SECONDS / 3600} hours after the deadline; then anyone can recount`} />
             </div>
 
             {/* Contextual warnings */}
             <ContextualWarnings config={{
                 gateType: state.gateType,
                 gaslessMode: effectiveGasless,
-                encryptionMode: state.encryptionMode,
-                signupHours: Number(state.signupHours) || 24,
-                votingHours: Number(state.votingHours) || 72,
+                signupHours: Number(state.signupHours) || 0,
+                votingHours: Number(state.votingHours) || 0,
                 numOptions: state.optionLabels.length,
-                threshold: state.encryptionMode === "threshold" ? state.threshold : undefined,
-                totalMembers: state.encryptionMode === "threshold" ? validCommitteeMembers.length : undefined,
+                weightedVoting: state.gateType === "token-gate" && state.weightedVoting,
             }} />
 
             {/* Trust summary */}
             <TrustSummary
                 gateType={state.gateType}
                 gaslessMode={effectiveGasless}
-                encryptionMode={state.encryptionMode}
-                threshold={state.encryptionMode === "threshold" ? state.threshold : undefined}
-                totalMembers={state.encryptionMode === "threshold" ? validCommitteeMembers.length : undefined}
             />
 
             {/* Create button */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                 <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                    Signup: {state.signupHours || 24}h · Voting: {state.votingHours || 72}h · Share link auto-copied
+                    Signup: {state.signupHours}h · Voting: {state.votingHours}h · Share link auto-copied
                 </p>
                 <button
                     className="btn-primary"
