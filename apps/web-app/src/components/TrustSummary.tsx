@@ -22,16 +22,22 @@ function getIndicators(props: TrustSummaryProps): Indicator[] {
         "invite-codes": { value: "One per code (relay checks)", color: "var(--success)" },
         "allowlist": { value: "One per entry (relay checks)", color: "var(--success)" },
         "admin-only": { value: "You register each voter", color: "var(--success)" },
-        "token-gate": { value: "One per wallet (relay checks)", color: "var(--accent)" },
-        "email-domain": { value: "One per email (relay checks)", color: "var(--accent)" },
+        "token-gate": { value: "One per wallet, balance at creation (relay checks)", color: "var(--accent)" },
+        "email-domain": { value: "One per email address (relay checks)", color: "var(--accent)" },
         "github-org": { value: "One per account (relay checks)", color: "var(--success)" },
     }
     const sybil = sybilMap[props.gateType]
     indicators.push({ label: "Sybil resistance", value: sybil.value, color: sybil.color })
 
-    indicators.push({ label: "Ballot secrecy", value: "Sealed until the deadline (drand)", color: "var(--success)" })
-    indicators.push({ label: "Results", value: "Anyone can recount after the deadline", color: "var(--success)" })
+    indicators.push({ label: "Ballot secrecy", value: "Sealed until after the deadline (drand)", color: "var(--success)" })
+    indicators.push({ label: "Results", value: "Anyone can recount once ballots unseal", color: "var(--success)" })
     indicators.push({ label: "Election key", value: "None: nobody can decrypt early", color: "var(--success)" })
+    const gated = props.gateType !== "open" && props.gateType !== "admin-only"
+    indicators.push({
+        label: "Relay operator",
+        value: gated ? "Sees IPs and credentials; could link them to opened ballots" : "Sees IPs; could link them to opened ballots",
+        color: "var(--warning)",
+    })
 
     if (props.gaslessMode) {
         indicators.push({ label: "Voter access", value: "No wallet needed", color: "var(--success)" })

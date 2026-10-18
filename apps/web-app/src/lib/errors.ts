@@ -23,7 +23,7 @@ const ERROR_MESSAGES: Record<string, string> = {
     InvalidCommitment: "Your voter identity could not be verified. Try refreshing or re-registering",
     VotingDeadlinePassed: "The voting deadline has passed",
     SignupDeadlinePassed: "The signup deadline has passed",
-    SignupStillOpen: "Signup must be closed before opening voting",
+    SignupStillOpen: "Signup must be closed before publishing results",
     InvalidNumOptions: "Invalid number of voting options",
     SelfSignupNotAllowed: "This election doesn't allow open signup. Sign up through the election page so your eligibility can be checked",
     TallyAlreadyCommitted: "The tally has already been committed for this election",
@@ -31,11 +31,14 @@ const ERROR_MESSAGES: Record<string, string> = {
     InvalidOptionCount: "The results don't match the number of options in this election",
     // v9: registrar-enforced gates, fixed deadlines
     NotAuthorized: "Only the organizer or the relay can register voters in this election",
-    InvalidWeight: "Voting weight must be between 1 and 255",
+    InvalidWeight: "Voting weight must be between 1 and this election's maximum",
     GateKeyAlreadyUsed: "This invite code, email, account or wallet has already been used to sign up",
     InvalidGateKey: "The relay must include a signup credential when registering a voter",
-    InvalidDeadlines: "The voting deadline must be in the future and after the signup deadline",
+    InvalidDeadlines: "The signup deadline must be in the future, and the voting deadline after it",
     VotingNotEnded: "Voting can't be closed before the deadline",
+    InvalidMaxVoters: "The maximum number of voters must be between 1 and 1,048,576",
+    TooManyVoters: "This election has reached its maximum number of voters",
+    BallotTooLarge: "The sealed ballot is too large",
 }
 
 // Lazy-init interface for manual selector decoding
@@ -103,6 +106,10 @@ export function friendlyError(err: any): string {
     if (err?.code === "ACTION_REJECTED" || err?.code === 4001 || msg.includes("user rejected")) {
         return "Transaction was rejected in your wallet"
     }
+
+    // Strategy 5b: errors raised by this app (plain Error, no ethers error code) already
+    // carry a message written for the voter
+    if (err instanceof Error && !(err as any).code && err.message) return err.message
 
     // Strategy 6: cleaned-up fallback
     if (err?.reason) {

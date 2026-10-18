@@ -31,7 +31,7 @@ function getWarnings(config: WarningConfig): Warning[] {
 
     if (config.gateType === "token-gate") {
         warnings.push({
-            text: "Token balances are checked at signup, not at a snapshot. Tokens moved to another wallet during signup can qualify it too.",
+            text: "Balances count at the block when you create the election, so tokens bought or moved later don't qualify. The relay needs an archive RPC (RELAY_RPC_URL) to read those balances.",
             severity: "medium",
         })
     }

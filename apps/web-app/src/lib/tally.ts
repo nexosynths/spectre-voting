@@ -1,18 +1,16 @@
 /**
- * Public recount: anyone can open the time-locked ballots after the deadline,
+ * Public recount: anyone can open the time-locked ballots after they unseal,
  * check each one against its on-chain vote commitment, and count.
  */
 
+import { Contract, JsonRpcProvider } from "ethers"
 import { poseidon2, poseidon3 } from "poseidon-lite"
 import { openBallots, decodeVotePayload, hexToBytes, type BeaconFetcher } from "@/lib/ballot"
+import { fetchBallots, type BallotRecord } from "@/lib/chain"
+import { SPECTRE_VOTING_ABI } from "@/lib/contracts"
 import type { ChainInfo } from "tlock-js"
 
-/** One VoteCast event, as read from the chain. */
-export interface BallotRecord {
-    baseNullifier: string
-    voteCommitment: string
-    encryptedBlob: string // hex
-}
+export type { BallotRecord } from "@/lib/chain"
 
 export interface CountedBallot {
     baseNullifier: string
@@ -24,21 +22,37 @@ export interface CountedBallot {
 
 export interface TallyResult {
     optionCounts: number[]
+    /** Sum of the weights counted */
     totalValid: number
+    /** Voters with no valid ballot */
     totalInvalid: number
+    /** Submissions that didn't count because the same voter has another one that does (or none valid) */
     duplicatesRemoved: number
+    /** Submissions that didn't open or didn't match their on-chain commitment */
+    invalidSubmissions: number
+    /** Distinct voters (base nullifiers) */
+    voters: number
+    /** The ballot that counted for each voter, or that voter's last invalid one */
     ballots: CountedBallot[]
 }
 
+type CountOptions = { chain?: ChainInfo; fetchBeacon?: BeaconFetcher; now?: number }
+
+function isCountable(ballot: CountedBallot, numOptions: number): boolean {
+    return ballot.commitmentValid && ballot.vote >= 0n && ballot.vote < BigInt(numOptions) && ballot.weight >= 1n
+}
+
 /**
- * Open and count ballots. Records must be in chain order: for each voter
- * (baseNullifier) the last submission counts.
+ * Open and count ballots. Records must be in chain order. For each voter (base
+ * nullifier), their latest ballot that opens and matches its commitment counts. A
+ * later ballot that doesn't open (for example, one whose contents were replaced on
+ * the way to the chain) doesn't cancel an earlier valid one.
  */
 export async function countBallots(
     records: BallotRecord[],
     numOptions: number,
     votingDeadline: number,
-    options: { chain?: ChainInfo; fetchBeacon?: BeaconFetcher; now?: number } = {},
+    options: CountOptions = {},
 ): Promise<TallyResult> {
     const opened = records.length > 0
         ? await openBallots(records.map(r => hexToBytes(r.encryptedBlob)), votingDeadline, options)
@@ -67,27 +81,90 @@ export async function countBallots(
         }
     })
 
-    // Last submission per voter wins (vote overwriting)
-    const latest = new Map<string, CountedBallot>()
-    let duplicatesRemoved = 0
+    const byVoter = new Map<string, { counts: CountedBallot | null; lastInvalid: CountedBallot | null }>()
+    let invalidSubmissions = 0
     for (const ballot of counted) {
-        if (latest.has(ballot.baseNullifier)) duplicatesRemoved++
-        latest.set(ballot.baseNullifier, ballot)
+        const entry = byVoter.get(ballot.baseNullifier) ?? { counts: null, lastInvalid: null }
+        if (isCountable(ballot, numOptions)) {
+            entry.counts = ballot // a later valid ballot replaces an earlier one (vote changes)
+        } else {
+            entry.lastInvalid = ballot
+            invalidSubmissions++
+        }
+        byVoter.set(ballot.baseNullifier, entry)
     }
 
-    const ballots = Array.from(latest.values())
     const optionCounts = new Array(numOptions).fill(0)
+    const ballots: CountedBallot[] = []
     let totalInvalid = 0
-    for (const ballot of ballots) {
-        if (!ballot.commitmentValid || ballot.vote < 0n || ballot.vote >= BigInt(numOptions) || ballot.weight < 1n) {
-            totalInvalid++
+    for (const { counts, lastInvalid } of byVoter.values()) {
+        if (counts) {
+            optionCounts[Number(counts.vote)] += Number(counts.weight)
+            ballots.push(counts)
         } else {
-            optionCounts[Number(ballot.vote)] += Number(ballot.weight)
+            totalInvalid++
+            ballots.push(lastInvalid!)
         }
     }
     const totalValid = optionCounts.reduce((a: number, b: number) => a + b, 0)
 
-    return { optionCounts, totalValid, totalInvalid, duplicatesRemoved, ballots }
+    return {
+        optionCounts,
+        totalValid,
+        totalInvalid,
+        duplicatesRemoved: records.length - byVoter.size,
+        invalidSubmissions,
+        voters: byVoter.size,
+        ballots,
+    }
+}
+
+export interface RecountResult extends TallyResult {
+    /** Block the ballots were read at */
+    blockNumber: number
+    /** Whether the chain's finalized block is past the deadline (null if the RPC can't say) */
+    finalized: boolean | null
+}
+
+/**
+ * Recount an election from the chain. Reads every ballot up to one pinned block after
+ * the voting deadline and refuses to count unless the number found equals the
+ * contract's voteCount() at that block, so a lagging or incomplete RPC can't produce
+ * a short count.
+ */
+export async function recountElection(
+    electionAddress: string,
+    provider: JsonRpcProvider,
+    election: { numOptions: number; votingDeadline: number; deployBlock: number },
+    options: CountOptions = {},
+): Promise<RecountResult> {
+    const latest = await provider.getBlock("latest")
+    if (!latest) throw new Error("Couldn't read the latest block. Try again.")
+    if (latest.timestamp <= election.votingDeadline) {
+        throw new Error("The chain hasn't reached the voting deadline yet.")
+    }
+    // No ballot can be added after the deadline, so any later block holds the final set.
+    const blockNumber = latest.number
+    const contract = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
+    const expected = Number(await contract.voteCount({ blockTag: blockNumber }))
+    const records = await fetchBallots(electionAddress, provider, election.deployBlock, blockNumber)
+    if (records.length !== expected) {
+        throw new Error(
+            `Found ${records.length} ballot(s), but the contract recorded ${expected} by block ${blockNumber}. ` +
+            "The RPC may be behind or incomplete. Nothing was counted; try again in a minute.",
+        )
+    }
+
+    let finalized: boolean | null = null
+    try {
+        const fin = await provider.getBlock("finalized")
+        finalized = !!fin && fin.timestamp > election.votingDeadline
+    } catch {
+        finalized = null
+    }
+
+    const result = await countBallots(records, election.numOptions, election.votingDeadline, options)
+    return { ...result, blockNumber, finalized }
 }
 
 /** Poseidon hash chain stored by commitTallyResult: h = P(valid, invalid); h = P(h, count_i). */

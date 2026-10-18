@@ -18,6 +18,8 @@ export interface ElectionFormState {
     optionLabels: string[]
     signupHours: string
     votingHours: string
+    /** Cap on registrations (invite codes and allowlists use their own size) */
+    maxVoters: string
 
     // Step 2: Access
     gateType: GateType
@@ -35,6 +37,7 @@ export interface ElectionFormState {
     gaslessMode: boolean
 
     // Post-creation (modals)
+    createdElection: string
     generatedCodes: string[]
     showCodesModal: boolean
     allowlistIdentifiers: string[]
@@ -54,7 +57,7 @@ type Action =
     | { type: "PREV_STEP" }
     | { type: "GO_TO_STEP"; step: number }
     | { type: "SET_CREATING"; creating: boolean }
-    | { type: "POST_CREATE"; codes?: string[]; identifiers?: string[] }
+    | { type: "POST_CREATE"; election: string; codes?: string[]; identifiers?: string[] }
     | { type: "CLOSE_MODAL"; modal: "codes" | "allowlist" }
     | { type: "RESET" }
 
@@ -67,6 +70,7 @@ const initialState: ElectionFormState = {
     optionLabels: ["Yes", "No"],
     signupHours: "24",
     votingHours: "72",
+    maxVoters: "100",
     gateType: "open",
     codeCount: "20",
     allowlistInput: "",
@@ -80,6 +84,7 @@ const initialState: ElectionFormState = {
     emailDomains: "",
     githubOrg: "",
     gaslessMode: false,
+    createdElection: "",
     generatedCodes: [],
     showCodesModal: false,
     allowlistIdentifiers: [],
@@ -143,6 +148,7 @@ function reducer(state: ElectionFormState, action: Action): ElectionFormState {
         case "POST_CREATE":
             return {
                 ...state,
+                createdElection: action.election,
                 generatedCodes: action.codes || [],
                 showCodesModal: (action.codes?.length || 0) > 0,
                 allowlistIdentifiers: action.identifiers || [],
@@ -178,12 +184,16 @@ export function useElectionForm() {
 
     // Per-step validation
     const canProceedFromStep = useMemo(() => {
-        // Every election needs a voting deadline: ballots are time-locked to it.
+        // Every election needs a signup deadline (voting then opens on its own) and a voting
+        // deadline (ballots are time-locked to it).
         const votingHours = Number(state.votingHours)
-        const signupHours = state.signupHours.trim() === "" ? 0 : Number(state.signupHours)
-        const durationsValid = Number.isFinite(votingHours) && votingHours > 0 && Number.isFinite(signupHours) && signupHours >= 0
+        const signupHours = Number(state.signupHours)
+        const durationsValid = Number.isFinite(votingHours) && votingHours > 0 && Number.isFinite(signupHours) && signupHours > 0
         const step0 = state.electionTitle.trim().length > 0 && state.optionLabels.filter(l => l.trim()).length >= 2 && durationsValid
-        const step1 = (() => {
+        const maxVoters = Number(state.maxVoters)
+        const maxVotersValid = state.gateType === "invite-codes" || state.gateType === "allowlist"
+            || (Number.isInteger(maxVoters) && maxVoters >= 1 && maxVoters <= 1 << 20)
+        const step1 = maxVotersValid && (() => {
             switch (state.gateType) {
                 case "token-gate":
                     return /^0x[0-9a-fA-F]{40}$/.test(state.tokenAddress)
@@ -202,7 +212,7 @@ export function useElectionForm() {
             }
         })()
         return [step0, step1, true, true] // step 2 (ballot security) is informational; step 3 (review) always valid
-    }, [state.electionTitle, state.optionLabels, state.signupHours, state.votingHours, state.gateType, state.tokenAddress, state.allowlistInput, state.codeCount, state.emailDomains, state.githubOrg])
+    }, [state.electionTitle, state.optionLabels, state.signupHours, state.votingHours, state.maxVoters, state.gateType, state.tokenAddress, state.allowlistInput, state.codeCount, state.emailDomains, state.githubOrg])
 
     const canCreate = canProceedFromStep.every(Boolean) && !state.creating
 

@@ -112,7 +112,8 @@ export default function SignupSection({
                         Step 1: Connect Wallet
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                        Connect to submit transactions on-chain. Your wallet is only for gas — your vote stays anonymous.
+                        Your wallet signs you up, so it&apos;s public that this wallet registered. Joining and voting are
+                        submitted by the relay, so nothing on-chain links your wallet to your ballot.
                     </p>
                     <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>Connect Wallet</button>
                 </div>
@@ -242,7 +243,7 @@ export default function SignupSection({
                             <div>
                                 <p style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--success)" }}>You&apos;re signed up!</p>
                                 <p style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                                    Wait for the admin to close signup. Once voting opens, you&apos;ll anonymously join and cast your vote.
+                                    Voting opens when signup ends (at its deadline, or earlier if the organizer closes it). Then you&apos;ll anonymously join and cast your vote.
                                 </p>
                             </div>
                         </div>
@@ -292,13 +293,15 @@ export default function SignupSection({
                             </p>
                             <input
                                 type="text"
-                                placeholder="8-character code"
+                                placeholder="32-character code"
                                 value={inviteCode}
                                 onChange={e => setInviteCode(e.target.value.toLowerCase().replace(/[^0-9a-f]/g, ""))}
-                                maxLength={8}
+                                maxLength={32}
                                 className="mono"
                                 disabled={signupLoading}
-                                style={{ textAlign: "center", fontSize: "1.1rem", letterSpacing: "0.15em", marginBottom: 8 }}
+                                spellCheck={false}
+                                autoComplete="off"
+                                style={{ textAlign: "center", fontSize: "0.95rem", letterSpacing: "0.05em", marginBottom: 8 }}
                             />
                             {inviteCode.length > 0 && (
                                 <p style={{ fontSize: "0.8rem", marginBottom: 8, color: codeValid ? "var(--success)" : codeError ? "var(--error)" : "var(--text-muted)" }}>
@@ -354,7 +357,7 @@ export default function SignupSection({
                                 Token Gate
                             </h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                {`This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}...`}
+                                {`This election requires ${tokenGateMeta?.tokenType === "erc721" ? "ownership of an NFT" : `a minimum balance of ${tokenGateMeta?.minBalance || "1"} ${tokenGateMeta?.tokenSymbol || "tokens"}`} at contract ${tokenGateMeta?.tokenAddress?.slice(0, 10)}..., counted at the block when the election was created. Tokens received after that don't count.`}
                             </p>
                             {!address ? (
                                 <p style={{ fontSize: "0.8rem", color: "var(--warning)", marginBottom: 8 }}>
@@ -368,8 +371,12 @@ export default function SignupSection({
                             ) : tokenBalance !== null ? (
                                 <p style={{ fontSize: "0.8rem", marginBottom: 8, color: tokenEligible ? "var(--success)" : "var(--error)" }}>
                                     {tokenEligible
-                                        ? `Eligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"}`
-                                        : `Ineligible — you hold ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} (need ${tokenGateMeta?.minBalance || "1"})`}
+                                        ? `Eligible — this wallet held ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} at the snapshot`
+                                        : `Ineligible — this wallet held ${tokenBalance} ${tokenGateMeta?.tokenSymbol || "tokens"} at the snapshot (need ${tokenGateMeta?.minBalance || "1"})`}
+                                </p>
+                            ) : tokenEligible ? (
+                                <p style={{ fontSize: "0.8rem", marginBottom: 8, color: "var(--text-muted)" }}>
+                                    Couldn&apos;t check your balance at the snapshot from here. The relay checks it when you sign up.
                                 </p>
                             ) : null}
                             <button

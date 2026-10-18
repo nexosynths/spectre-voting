@@ -31,9 +31,15 @@ export default function StepReview({ state, dispatch, effectiveGasless, canCreat
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <SummaryRow label="Title" value={state.electionTitle || "(empty)"} />
                 <SummaryRow label="Options" value={state.optionLabels.filter(l => l.trim()).join(", ") || "(none)"} />
-                <SummaryRow label="Signup" value={Number(state.signupHours) > 0 ? `${state.signupHours} hours` : "Until you close it"} />
-                <SummaryRow label="Voting ends" value={`${state.votingHours} hours after signup${Number(state.signupHours) > 0 ? " ends" : " opens (fixed at creation)"}`} />
+                <SummaryRow label="Signup" value={`${state.signupHours} hours (or until you end it)`} />
+                <SummaryRow label="Voting ends" value={`${Number(state.signupHours) + Number(state.votingHours)} hours after creation (fixed)`} />
                 <SummaryRow label="Access" value={gateLabels[state.gateType] || state.gateType} />
+                <SummaryRow
+                    label="Max voters"
+                    value={state.gateType === "invite-codes" ? `${state.codeCount} (one per code)`
+                        : state.gateType === "allowlist" ? "One per allowlist entry"
+                        : state.maxVoters}
+                />
                 {state.gateType === "invite-codes" && (
                     <SummaryRow label="Codes" value={`${state.codeCount} invite codes`} />
                 )}
@@ -47,7 +53,7 @@ export default function StepReview({ state, dispatch, effectiveGasless, canCreat
                     <SummaryRow label="Org" value={state.githubOrg} />
                 )}
                 <SummaryRow label="Wallet" value={effectiveGasless ? "Not required (gasless)" : "Needed to sign up"} />
-                <SummaryRow label="Ballots" value="Sealed until the deadline; anyone can recount after" />
+                <SummaryRow label="Ballots" value="Sealed until 30 min after the deadline; then anyone can recount" />
             </div>
 
             {/* Contextual warnings */}
@@ -69,7 +75,7 @@ export default function StepReview({ state, dispatch, effectiveGasless, canCreat
             {/* Create button */}
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
                 <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", flex: 1 }}>
-                    Signup: {Number(state.signupHours) > 0 ? `${state.signupHours}h` : "manual close"} · Voting: {state.votingHours}h · Share link auto-copied
+                    Signup: {state.signupHours}h · Voting: {state.votingHours}h · Share link auto-copied
                 </p>
                 <button
                     className="btn-primary"

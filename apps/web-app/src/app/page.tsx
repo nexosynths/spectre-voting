@@ -3,9 +3,13 @@
 import { useSpectre } from "@/context/SpectreContext"
 import { useState, useEffect, useCallback } from "react"
 import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, ZeroAddress } from "ethers"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK, FACTORY_CONFIGURED } from "@/lib/contracts"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK, FACTORY_CONFIGURED, type ElectionConfig } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { getRelayerAddress } from "@/lib/relayer"
+import { getRelayInfo } from "@/lib/relayer"
+import { SEAL_DELAY_SECONDS } from "@/lib/ballot"
+
+// SpectreVoting.MAX_VOTERS_LIMIT
+const MAX_VOTERS_LIMIT = 1 << 20
 import { isRelayGate } from "@/lib/gate"
 import { generateCodes, hashCodes, storeAdminCodes, hashIdentifiers, storeAdminAllowlist } from "@/lib/inviteCodes"
 import { useElectionForm } from "@/hooks/useElectionForm"
@@ -100,12 +104,13 @@ export default function HomePage() {
             for (const addr of addresses) {
                 try {
                     const election = new Contract(addr, SPECTRE_VOTING_ABI, provider)
-                    const [pid, sOpen, vOpen, vc, admin] = await Promise.all([
+                    const [pid, sOpen, vOpen, vc, admin, sdl] = await Promise.all([
                         election.proposalId(),
                         election.signupOpen(),
                         election.votingOpen(),
                         election.voteCount(),
                         election.admin(),
+                        election.signupDeadline(),
                     ])
 
                     // Priority: on-chain event > localStorage > fallback
@@ -117,7 +122,9 @@ export default function HomePage() {
                     }
                     const title = meta?.title || "Untitled Election"
 
-                    const phase = sOpen ? "signup" : vOpen ? "voting" : "closed"
+                    // Signup ends at its deadline; voting opens on-chain with the first join after it
+                    const signupEnded = sOpen && Date.now() / 1000 > Number(sdl)
+                    const phase = sOpen && !signupEnded ? "signup" : (vOpen || signupEnded) ? "voting" : "closed"
 
                     infos.push({
                         address: addr,
@@ -154,16 +161,25 @@ export default function HomePage() {
 
             // Deadlines. The voting deadline is required: ballots are time-locked to it,
             // and nobody (including the admin) can close voting before it.
+            // Signup ends at its deadline (you can end it earlier); voting then opens on its own.
             const now = Math.floor(Date.now() / 1000)
-            const signupHours = Number(formState.signupHours) > 0 ? Number(formState.signupHours) : 0
+            const signupHours = Number(formState.signupHours)
             const votingHours = Number(formState.votingHours)
+            if (!(signupHours > 0)) throw new Error("Set a signup duration")
             if (!(votingHours > 0)) throw new Error("Set a voting duration")
-            const signupDeadline = signupHours > 0 ? BigInt(Math.floor(now + signupHours * 3600)) : 0n
+            const signupDeadline = BigInt(Math.floor(now + signupHours * 3600))
             const votingDeadline = BigInt(Math.floor(now + signupHours * 3600 + votingHours * 3600))
 
             // Gated elections: the relay registers eligible voters as the election's registrar.
             // Open and admin-only elections have no registrar.
-            const registrar = isRelayGate(formState.gateType) ? await getRelayerAddress() : ZeroAddress
+            let registrar = ZeroAddress
+            if (isRelayGate(formState.gateType)) {
+                const relay = await getRelayInfo()
+                if (!relay.gatedElections) {
+                    throw new Error("This site's relay isn't set up for gated elections yet (it needs a GATE_KEY_SECRET). Use an open or admin-only election.")
+                }
+                registrar = relay.relayerAddress
+            }
 
             const numOptions = formState.optionLabels.length
             const labels = formState.optionLabels.map((l, i) => l.trim() || `Option ${i}`)
@@ -185,7 +201,10 @@ export default function HomePage() {
             // Allowlist gate: parse identifiers, hash them, add to metadata
             let parsedAllowlist: string[] = []
             if (formState.gateType === "allowlist") {
-                parsedAllowlist = [...new Set(formState.allowlistInput.split("\n").map(s => s.trim()).filter(Boolean))]
+                // Entries match case-insensitively, so dedupe the same way
+                const seen = new Set<string>()
+                parsedAllowlist = formState.allowlistInput.split("\n").map(s => s.trim()).filter(Boolean)
+                    .filter(s => { const k = s.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true })
                 if (parsedAllowlist.length < 2) throw new Error("Need at least 2 allowlist entries")
                 const allowlistHashes = hashIdentifiers(parsedAllowlist)
                 metaObj.gateType = "allowlist"
@@ -205,11 +224,14 @@ export default function HomePage() {
                 metaObj.gateType = "github-org"
                 metaObj.githubOrg = { org }
             }
-            // Token gate: store token contract info in metadata
+            // Token gate: store token contract info in metadata. Balances count at a snapshot
+            // block taken now, so tokens passed between wallets later can't register again.
             if (formState.gateType === "token-gate") {
                 if (!formState.tokenAddress || !/^0x[0-9a-fA-F]{40}$/.test(formState.tokenAddress)) throw new Error("Invalid token contract address")
+                const snapshotBlock = await new JsonRpcProvider(RPC_URL).getBlockNumber()
                 metaObj.gateType = "token-gate"
                 metaObj.tokenGate = {
+                    snapshotBlock,
                     tokenAddress: formState.tokenAddress.toLowerCase(),
                     tokenType: formState.tokenType,
                     minBalance: formState.tokenMinBalance || "1",
@@ -219,13 +241,33 @@ export default function HomePage() {
                     ...(formState.weightedVoting && formState.tokenType === "erc20" && formState.voteThreshold ? { voteThreshold: formState.voteThreshold } : {}),
                 }
             }
-            metaObj.ballots = "drand-tlock-quicknet"
+            // Informational: clients seal and open ballots with the rule built into the app
+            metaObj.ballots = `drand-tlock-quicknet/seal+${SEAL_DELAY_SECONDS}s`
             const metadataBytes = toUtf8Bytes(JSON.stringify(metaObj))
+
+            // Registration limits, enforced by the contract: they also bound what a leaked
+            // relay key could add. Codes and allowlists set their own cap.
+            const maxVoters = formState.gateType === "invite-codes" ? inviteCodes.length
+                : formState.gateType === "allowlist" ? parsedAllowlist.length
+                : Math.floor(Number(formState.maxVoters))
+            if (!(maxVoters >= 1 && maxVoters <= MAX_VOTERS_LIMIT)) throw new Error(`Set a maximum number of voters between 1 and ${MAX_VOTERS_LIMIT}`)
+            const maxWeight = formState.gateType === "token-gate" && formState.weightedVoting ? 255 : 1
+
+            const config: ElectionConfig = {
+                proposalId: BigInt(proposalId),
+                signupDeadline,
+                votingDeadline,
+                numOptions: BigInt(numOptions),
+                maxVoters: BigInt(maxVoters),
+                maxWeight: BigInt(maxWeight),
+                selfSignupAllowed: selfSignup,
+                registrar,
+            }
 
             addLog("Creating election via factory...")
             const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, signer)
             const fee = await factory.creationFee()
-            const tx = await factory.createElection(proposalId, signupDeadline, votingDeadline, numOptions, selfSignup, registrar, metadataBytes, { value: fee })
+            const tx = await factory.createElection(config, metadataBytes, { value: fee })
             addLog(`Tx sent: ${tx.hash.slice(0, 16)}...`)
 
             const receipt = await tx.wait()
@@ -264,6 +306,7 @@ export default function HomePage() {
             // Show post-creation modals
             dispatch({
                 type: "POST_CREATE",
+                election: electionAddr,
                 codes: formState.gateType === "invite-codes" ? inviteCodes : undefined,
                 identifiers: formState.gateType === "allowlist" ? parsedAllowlist : undefined,
             })
@@ -298,14 +341,14 @@ export default function HomePage() {
                     Private voting,<br />verified results
                 </h2>
                 <p style={{ fontSize: "1.1rem", color: "var(--text-muted)", lineHeight: 1.5, maxWidth: 400, margin: "0 auto 32px" }}>
-                    Anonymous ballots, sealed until the deadline, that anyone can recount. A research prototype.
+                    Anonymous ballots, sealed until after the deadline, that anyone can recount. A research prototype.
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
                     {[
-                        { icon: "\u{1F6E1}", title: "Anonymous", desc: "A zero-knowledge proof separates your vote from your signup, and a relay submits it instead of your wallet" },
-                        { icon: "\u{1F512}", title: "Sealed until the deadline", desc: "Ballots are time-locked with drand. Nobody holds a key, so nobody, including the organizer, can read them early" },
-                        { icon: "\u2705", title: "Anyone can recount", desc: "After the deadline, anyone can open the ballots and check the count. Opened ballots are public but anonymous" },
+                        { icon: "\u{1F6E1}", title: "Unlinked on-chain", desc: "A zero-knowledge proof separates your vote from your signup, and a relay submits it instead of your wallet. The relay's operator sees IP addresses" },
+                        { icon: "\u{1F512}", title: "Sealed until after the deadline", desc: "Ballots are time-locked with drand. Nobody holds a key, so nobody, including the organizer, can read them early" },
+                        { icon: "\u2705", title: "Anyone can recount", desc: "Once ballots unseal, anyone can open them and check the count. Opened ballots are public, listed by anonymous tags" },
                         { icon: "\u26A0\uFE0F", title: "Not coercion-resistant", desc: "You can change your vote before the deadline, but that doesn't stop someone pressuring you. Unaudited; don't use it for votes that matter" },
                     ].map(g => (
                         <div key={g.title} style={{
@@ -379,6 +422,7 @@ export default function HomePage() {
             {formState.showCodesModal && formState.generatedCodes.length > 0 && (
                 <CodesModal
                     codes={formState.generatedCodes}
+                    electionAddress={formState.createdElection}
                     onClose={() => dispatch({ type: "CLOSE_MODAL", modal: "codes" })}
                     copied={copied}
                     onCopy={copyToClipboard}
@@ -388,6 +432,7 @@ export default function HomePage() {
             {formState.showAllowlistModal && formState.allowlistIdentifiers.length > 0 && (
                 <AllowlistModal
                     identifiers={formState.allowlistIdentifiers}
+                    electionAddress={formState.createdElection}
                     onClose={() => dispatch({ type: "CLOSE_MODAL", modal: "allowlist" })}
                     copied={copied}
                     onCopy={copyToClipboard}

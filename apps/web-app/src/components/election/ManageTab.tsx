@@ -78,7 +78,7 @@ export default function ManageTab({
                                         const codeShareUrl = `${shareUrl}?code=${code}`
                                         return (
                                             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: i < adminCodes.length - 1 ? "1px solid var(--border)" : "none" }}>
-                                                <code className="mono" style={{ fontSize: "0.8rem" }}>{code}</code>
+                                                <code className="mono" style={{ fontSize: "0.75rem", wordBreak: "break-all" }}>{code}</code>
                                                 <button
                                                     onClick={() => { navigator.clipboard.writeText(codeShareUrl); setCopied(`clink-${i}`); setTimeout(() => setCopied(""), 2000) }}
                                                     style={{ background: "none", border: "none", color: "var(--accent)", fontSize: "0.7rem", cursor: "pointer" }}
@@ -196,12 +196,13 @@ export default function ManageTab({
             {/* Close signup */}
             {phase === "signup" && (
                 <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)" }}>
-                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Close Signup &amp; Open Voting</h4>
+                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>End Signup Early</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                        Close registration and open the anonymous join + voting phase. Voters who signed up can now anonymously re-key and vote.
+                        Signup ends on its own at its deadline, and voting then opens automatically. You can end it
+                        sooner to open voting now; the voting deadline stays the same.
                     </p>
                     <button className="btn-primary" onClick={handleCloseSignup} disabled={adminLoading}>
-                        {adminLoading ? "Closing..." : "Close Signup"}
+                        {adminLoading ? "Closing..." : "End Signup and Open Voting"}
                     </button>
                 </div>
             )}

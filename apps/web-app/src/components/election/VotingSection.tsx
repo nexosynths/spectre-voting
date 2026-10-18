@@ -1,6 +1,7 @@
 "use client"
 
-import { explorerTxUrl } from "@/lib/relayer"
+/** What the voter's browser found on-chain after the relay submitted the ballot */
+export type BallotCheck = "confirmed" | "altered" | "missing" | null
 
 type Phase = "signup" | "voting" | "closed"
 type VoteStep = "idle" | "fetching-signup-group" | "generating-join-proof" | "submitting-join" | "fetching-voting-group" | "generating-vote-proof" | "encrypting" | "submitting-vote" | "timing-delay" | "verifying" | "done" | "error"
@@ -22,7 +23,7 @@ interface VotingSectionProps {
     unsealAt: number
     txHash: string
     error: string
-    onChainVerified: boolean | null
+    ballotCheck: BallotCheck
     joinStatus: "unknown" | "checking" | "joined" | "not-joined"
     handleJoinAndVote: () => void
     setVoteStep: (v: VoteStep) => void
@@ -38,7 +39,7 @@ export default function VotingSection({
     phase, gaslessEnabled, address, identity,
     optionLabels, selectedVote, setSelectedVote,
     voteStep, stepMsg, stepInfo, isProcessing, canVote, deadlinePassed, unsealAt,
-    txHash, error, onChainVerified, joinStatus,
+    txHash, error, ballotCheck, joinStatus,
     handleJoinAndVote, setVoteStep, setTxHash, setError,
     hasVotedBefore, voteVersion, maxOverwrites,
 }: VotingSectionProps) {
@@ -52,7 +53,7 @@ export default function VotingSection({
                 <div className="card" style={{ marginBottom: 16 }}>
                     <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "12px 0" }}>
                         The voting deadline has passed. {unsealAt > 0 && Date.now() / 1000 < unsealAt
-                            ? "Ballots unseal in a few seconds; then anyone can count them on the Results tab."
+                            ? `Ballots unseal at ${new Date(unsealAt * 1000).toLocaleTimeString()}; then anyone can count them on the Results tab.`
                             : "Anyone can count the votes on the Results tab."}
                     </p>
                 </div>
@@ -80,10 +81,15 @@ export default function VotingSection({
                     {voteStep === "idle" && joinStatus === "not-joined" && (
                         <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                                When you vote, a zero-knowledge proof separates your vote from your signup, and both
-                                steps are submitted by the relay rather than your wallet. Your ballot is sealed until
-                                the voting deadline: nobody, including the organizer, can read it before then. After
-                                the deadline, ballots are public but not linked to who cast them.
+                                When you vote, a zero-knowledge proof separates your vote from your signup, and the relay
+                                submits both steps instead of your wallet, so nothing on-chain links your ballot to you.
+                                Your ballot is sealed until shortly after the voting deadline: nobody, including the
+                                organizer, can read it before then. After that, every ballot is public.
+                                <br /><br />
+                                The relay operator sees your IP address when you sign up and when you vote, and in gated
+                                elections it saw your code, email or account at signup. Once ballots are public, it could
+                                match those to your vote. If that matters to you, vote from a different network than the
+                                one you signed up from (for example a VPN or Tor).
                             </p>
                         </div>
                     )}
@@ -137,9 +143,9 @@ export default function VotingSection({
                                     <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                                         {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
                                         {voteStep === "submitting-join" && "This separates your vote from your signup"}
-                                        {voteStep === "encrypting" && "Time-locked with drand until the voting deadline"}
-                                        {voteStep === "timing-delay" && "Random delay protects your identity"}
-                                        {voteStep === "verifying" && "Independently checking the blockchain"}
+                                        {voteStep === "encrypting" && "Time-locked with drand until shortly after the voting deadline"}
+                                        {voteStep === "timing-delay" && "Makes your join and vote harder to pair for outside observers (not for the relay)"}
+                                        {voteStep === "verifying" && "Comparing what reached the chain with what you sent"}
                                     </p>
                                 </div>
                             </div>
@@ -148,18 +154,15 @@ export default function VotingSection({
                         {voteStep === "done" && txHash && (
                             <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                 <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
-                                    {hasVotedBefore ? "Vote changed!" : "Vote submitted anonymously!"}
-                                    {onChainVerified === true && " \u2713 Verified on-chain"}
+                                    {ballotCheck === "confirmed" ? "\u2713 Your sealed ballot is on-chain, exactly as you sent it" : "Ballot sent"}
                                 </p>
-                                {onChainVerified === false && (
+                                {ballotCheck === "missing" && (
                                     <p style={{ color: "var(--warning)", fontSize: "0.8rem", marginBottom: 6 }}>
-                                        \u26a0 Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
+                                        {"\u26a0"} Your ballot hasn&apos;t shown up on-chain yet. It may still arrive: refresh in a few minutes.
+                                        If it doesn&apos;t, vote again; the relay may not have submitted it.
                                     </p>
                                 )}
                                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                                    <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                        View on Basescan &rarr;
-                                    </a>
                                     {canOverwrite && (
                                         <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ fontSize: "0.75rem", padding: "4px 10px" }}>
                                             Change your vote

@@ -4,12 +4,14 @@ import { allowlistToCsv, downloadCsv } from "@/lib/inviteCodes"
 
 interface AllowlistModalProps {
     identifiers: string[]
+    /** The new election, so CSV share links point at it */
+    electionAddress: string
     onClose: () => void
     copied: string
     onCopy: (text: string, label: string) => void
 }
 
-export default function AllowlistModal({ identifiers, onClose, copied, onCopy }: AllowlistModalProps) {
+export default function AllowlistModal({ identifiers, electionAddress, onClose, copied, onCopy }: AllowlistModalProps) {
     if (identifiers.length === 0) return null
 
     return (
@@ -46,7 +48,7 @@ export default function AllowlistModal({ identifiers, onClose, copied, onCopy }:
                 <button
                     className="btn-secondary"
                     onClick={() => {
-                        const csv = allowlistToCsv(identifiers, typeof window !== "undefined" ? window.location.origin + "/election/" : undefined)
+                        const csv = allowlistToCsv(identifiers, typeof window !== "undefined" ? `${window.location.origin}/election/${electionAddress}` : undefined)
                         downloadCsv(csv, `allowlist-${new Date().toISOString().slice(0, 10)}.csv`)
                     }}
                     style={{ flex: 1, fontSize: "0.8rem" }}

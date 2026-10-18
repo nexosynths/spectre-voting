@@ -17,11 +17,23 @@ export const EXPLORER_URL = "https://basescan.org"
 
 // Base RPC limits eth_getLogs to 10,000 blocks per call
 export const MAX_LOG_RANGE = 9500
-// Factory deployment block on Base mainnet (lower bound for event scans). Update with FACTORY.
+// Factory deployment block on Base mainnet (lower bound for scans of the factory's events). Update with FACTORY.
 export const FACTORY_DEPLOY_BLOCK = 0
 
 // The contract version this frontend understands (SpectreVoting.VERSION).
 export const SUPPORTED_ELECTION_VERSION = 9n
+
+/** SpectreVoting.Config, as passed to createElection */
+export interface ElectionConfig {
+    proposalId: bigint
+    signupDeadline: bigint
+    votingDeadline: bigint
+    numOptions: bigint
+    maxVoters: bigint
+    maxWeight: bigint
+    selfSignupAllowed: boolean
+    registrar: string
+}
 
 // SpectreVotingFactory ABI (v9)
 export const FACTORY_ABI = [
@@ -34,7 +46,7 @@ export const FACTORY_ABI = [
     "function elections(uint256) view returns (address)",
     "function isElection(address) view returns (bool)",
     "function getElections(uint256 offset, uint256 limit) view returns (address[])",
-    "function createElection(uint256 _proposalId, uint256 _signupDeadline, uint256 _votingDeadline, uint256 _numOptions, bool _selfSignupAllowed, address _registrar, bytes _metadata) payable returns (address)",
+    "function createElection(tuple(uint256 proposalId, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions, uint256 maxVoters, uint256 maxWeight, bool selfSignupAllowed, address registrar) _config, bytes _metadata) payable returns (address)",
     "event ElectionDeployed(address indexed election, address indexed admin, uint256 proposalId, uint256 signupDeadline, uint256 votingDeadline, uint256 numOptions, bool selfSignupAllowed, address registrar, bytes metadata)",
 ]
 
@@ -43,6 +55,12 @@ export const SPECTRE_VOTING_ABI = [
     // View functions
     "function VERSION() view returns (uint256)",
     "function MAX_WEIGHT() view returns (uint256)",
+    "function MAX_VOTERS_LIMIT() view returns (uint256)",
+    "function MAX_BALLOT_BYTES() view returns (uint256)",
+    "function maxVoters() view returns (uint256)",
+    "function maxWeight() view returns (uint256)",
+    "function registrationCount() view returns (uint256)",
+    "function deployBlock() view returns (uint256)",
     "function admin() view returns (address)",
     "function registrar() view returns (address)",
     "function signupGroupId() view returns (uint256)",
@@ -112,6 +130,9 @@ export const SPECTRE_VOTING_ABI = [
     "error TallyAlreadyCommitted()",
     "error VotingStillOpen()",
     "error InvalidOptionCount()",
+    "error InvalidMaxVoters()",
+    "error TooManyVoters()",
+    "error BallotTooLarge()",
 ]
 
 // Semaphore V4 contract ABI (events for querying group members)

@@ -2,24 +2,25 @@
 
 import { useSpectre } from "@/context/SpectreContext"
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { Contract, JsonRpcProvider, toUtf8String, keccak256, toUtf8Bytes, ZeroHash, ZeroAddress, hexlify } from "ethers"
+import { Contract, JsonRpcProvider, keccak256, toUtf8Bytes, ZeroHash, ZeroAddress, hexlify } from "ethers"
 import { Identity, Group } from "@semaphore-protocol/core"
 import { randomBytes } from "@noble/ciphers/webcrypto"
 import { generateProofInBrowser } from "@/lib/proof"
 import { generateAnonJoinProof } from "@/lib/anonJoinProof"
 import { sealBallot, encodeVotePayload, unsealTime } from "@/lib/ballot"
-import { countBallots, tallyCommitment, type TallyResult, type BallotRecord } from "@/lib/tally"
-import { tokenGateMessage, isRelayGate } from "@/lib/gate"
-import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, SEMAPHORE_ABI, RPC_URL, EXPLORER_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK, FACTORY_CONFIGURED, SUPPORTED_ELECTION_VERSION } from "@/lib/contracts"
+import { recountElection, tallyCommitment, type RecountResult } from "@/lib/tally"
+import { fetchElectionMetadata, fetchGroupMembers, fetchSignups } from "@/lib/chain"
+import { tokenGateMessage, isRelayGate, normalizeInviteCode, INVITE_CODE_PATTERN, INVITE_CODE_LENGTH } from "@/lib/gate"
+import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, EXPLORER_URL, FACTORY_CONFIGURED, SUPPORTED_ELECTION_VERSION } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
-import { relaySignUp, relayAnonJoin, relayCastVote, waitForRelayTx, verifyVoteOnChain, verifyJoinOnChain, verifySignupOnChain, randomTimingDelay, RelayError } from "@/lib/relayer"
+import { relaySignUp, relayAnonJoin, relayCastVote, blockBeforeRelay, confirmSignup, confirmJoin, confirmBallot, getRelayInfo, randomTimingDelay, RelayError, type RelayInfo } from "@/lib/relayer"
 import { validateCode, validateIdentifier } from "@/lib/inviteCodes"
 import { poseidon2 } from "poseidon-lite"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import ElectionHeader from "@/components/election/ElectionHeader"
 import SignupSection from "@/components/election/SignupSection"
-import VotingSection from "@/components/election/VotingSection"
+import VotingSection, { type BallotCheck } from "@/components/election/VotingSection"
 import ResultsTab from "@/components/election/ResultsTab"
 import ManageTab from "@/components/election/ManageTab"
 
@@ -42,6 +43,10 @@ interface ElectionState {
     votingDeadline: number
     numOptions: number
     selfSignupAllowed: boolean
+    deployBlock: number
+    maxVoters: number
+    maxWeight: number
+    registrationCount: number
 }
 
 interface ElectionMeta {
@@ -49,71 +54,8 @@ interface ElectionMeta {
     labels: string[]
 }
 
-/** Get members from a Semaphore group by querying events */
-async function fetchGroupMembers(groupId: bigint): Promise<bigint[]> {
-    const provider = new JsonRpcProvider(RPC_URL)
-    const sem = new Contract(CONTRACTS.SEMAPHORE, SEMAPHORE_ABI, provider)
-    const currentBlock = await provider.getBlockNumber()
-
-    // Paginate for Base 10k block limit
-    const singles: any[] = []
-    const bulks: any[] = []
-    for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-        const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-        const [s, b] = await Promise.all([
-            sem.queryFilter(sem.filters.MemberAdded(groupId), from, to),
-            sem.queryFilter(sem.filters.MembersAdded(groupId), from, to),
-        ])
-        singles.push(...s)
-        bulks.push(...b)
-    }
-
-    const members: { index: number; commitment: string }[] = []
-    for (const e of singles) {
-        const a = (e as any).args
-        members.push({ index: Number(a.index), commitment: a.identityCommitment.toString() })
-    }
-    for (const e of bulks) {
-        const a = (e as any).args
-        const si = Number(a.startIndex)
-        for (let i = 0; i < a.identityCommitments.length; i++) {
-            members.push({ index: si + i, commitment: a.identityCommitments[i].toString() })
-        }
-    }
-    members.sort((a, b) => a.index - b.index)
-    return members.map(m => BigInt(m.commitment))
-}
-
-/** Fetch election metadata from the factory's ElectionDeployed event */
-async function fetchOnChainMetadata(electionAddress: string): Promise<Record<string, any> | null> {
-    if (!FACTORY_CONFIGURED) return null
-    try {
-        const provider = new JsonRpcProvider(RPC_URL)
-        const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
-        const currentBlock = await provider.getBlockNumber()
-
-        // Paginate for Base 10k block limit
-        let events: any[] = []
-        for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-            const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-            const chunk = await factory.queryFilter(
-                factory.filters.ElectionDeployed(electionAddress),
-                from, to
-            )
-            events.push(...chunk)
-            if (events.length > 0) break
-        }
-
-        if (events.length === 0) return null
-
-        const args = (events[0] as any).args
-        if (!args.metadata || args.metadata === "0x" || args.metadata.length <= 2) return null
-
-        const decoded = toUtf8String(args.metadata)
-        return JSON.parse(decoded)
-    } catch {
-        return null
-    }
+function publicProvider(): JsonRpcProvider {
+    return new JsonRpcProvider(RPC_URL)
 }
 
 export default function ElectionPage({ params }: { params: { address: string } }) {
@@ -269,8 +211,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const [txHash, setTxHash] = useState("")
     const [error, setError] = useState("")
 
-    // Gasless relay state (cont.)
-    const [onChainVerified, setOnChainVerified] = useState<boolean | null>(null) // null = not checked, true/false = result
+    // What the client found on-chain after the relay submitted the ballot
+    const [ballotCheck, setBallotCheck] = useState<BallotCheck>(null)
+
+    // The relay serving this app (gated elections must name it as their registrar)
+    const [relayInfo, setRelayInfo] = useState<RelayInfo | null>(null)
+    useEffect(() => {
+        getRelayInfo().then(setRelayInfo).catch(() => setRelayInfo(null))
+    }, [])
 
     // Vote overwriting state
     const [voteVersion, setVoteVersion] = useState(0)
@@ -303,7 +251,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // Tally state (public recount after the deadline)
     const [tallyStep, setTallyStep] = useState<TallyStep>("idle")
     const [tallyMsg, setTallyMsg] = useState("")
-    const [tallyResult, setTallyResult] = useState<TallyResult | null>(null)
+    const [tallyResult, setTallyResult] = useState<RecountResult | null>(null)
     const [tallyError, setTallyError] = useState("")
     const [closingVoting, setClosingVoting] = useState(false)
     const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
@@ -363,7 +311,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // Async upgrade: fetch authoritative metadata from on-chain event
     useEffect(() => {
-        fetchOnChainMetadata(electionAddress).then(onChain => {
+        if (!FACTORY_CONFIGURED) { setMetaLoaded(true); return }
+        fetchElectionMetadata(electionAddress, publicProvider()).then(onChain => {
             if (onChain) {
                 // Cache full on-chain metadata in localStorage (includes threshold data)
                 localStorage.setItem(`spectre-election-meta-${electionAddress}`, JSON.stringify(onChain))
@@ -388,7 +337,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
     useEffect(() => {
         const urlCode = searchParams.get("code")
         if (urlCode && !inviteCode) {
-            setInviteCode(urlCode.toLowerCase().trim())
+            setInviteCode(normalizeInviteCode(urlCode))
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams])
@@ -458,6 +407,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     minBalance: string
                     tokenSymbol: string
                     tokenDecimals: number
+                    snapshotBlock?: number
                 }
             }
         } catch { /* ignore */ }
@@ -593,7 +543,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         } finally { setEmailVerifying(false) }
     }, [emailCode, voterEmail, electionAddress, addLog])
 
-    // Token balance check
+    // Token balance check (at the election's snapshot block, like the relay's check)
     const [tokenBalance, setTokenBalance] = useState<string | null>(null)
     const [tokenEligible, setTokenEligible] = useState(false)
     const [tokenChecking, setTokenChecking] = useState(false)
@@ -611,7 +561,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 const provider = new JsonRpcProvider(RPC_URL)
                 const erc20Abi = ["function balanceOf(address) view returns (uint256)"]
                 const tokenContract = new Contract(tokenGateMeta.tokenAddress, erc20Abi, provider)
-                const rawBalance = await tokenContract.balanceOf(address)
+                let rawBalance: bigint
+                try {
+                    rawBalance = await tokenContract.balanceOf(address, { blockTag: Number(tokenGateMeta.snapshotBlock) || "latest" })
+                } catch {
+                    // The public RPC may not serve old balances. Let the relay (which checks at
+                    // the snapshot) decide instead of blocking signup here.
+                    if (!cancelled) { setTokenBalance(null); setTokenEligible(true) }
+                    return
+                }
                 if (cancelled) return
 
                 if (tokenGateMeta.tokenType === "erc721") {
@@ -658,15 +616,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
             setCodeError("")
             return
         }
-        const normalized = inviteCode.toLowerCase().trim()
+        const normalized = normalizeInviteCode(inviteCode)
         if (normalized.length === 0) {
             setCodeValid(false)
             setCodeError("")
             return
         }
-        if (!/^[0-9a-f]{8}$/.test(normalized)) {
+        if (!INVITE_CODE_PATTERN.test(normalized)) {
             setCodeValid(false)
-            setCodeError("Code must be 8 characters (letters a-f, numbers 0-9)")
+            setCodeError(`Code must be ${INVITE_CODE_LENGTH} characters (letters a-f, numbers 0-9)`)
             return
         }
         const match = validateCode(normalized, inviteCodeMeta.codeHashes)
@@ -696,12 +654,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
     }
 
     // ── Determine current phase ──
+    // Signup ends at its deadline even if nobody has closed it on-chain yet: the first
+    // join or vote after the deadline opens voting.
+    const signupEnded = !!state && state.signupOpen && nowSec > state.signupDeadline
     const phase: Phase = useMemo(() => {
         if (!state) return "closed"
-        if (state.signupOpen) return "signup"
-        if (state.votingOpen) return "voting"
+        if (state.signupOpen && !signupEnded) return "signup"
+        if (state.votingOpen || signupEnded) return "voting"
         return "closed"
-    }, [state])
+    }, [state, signupEnded])
 
     // ── Voting identity for this election ──
     // Per-election AND per-wallet/anonymous — each scope gets its own delinked voting identity
@@ -727,11 +688,19 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     // Load election state
     const [unsupported, setUnsupported] = useState(false)
+    const [notElection, setNotElection] = useState(false)
     const refresh = useCallback(async () => {
         if (!FACTORY_CONFIGURED) { setLoading(false); return }
         try {
-            const provider = new JsonRpcProvider(RPC_URL)
+            const provider = publicProvider()
             const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
+
+            // Only elections created by this app's factory are trusted to behave as described.
+            const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
+            if (!(await factory.isElection(electionAddress))) {
+                setNotElection(true)
+                return
+            }
 
             // Older Spectre contracts have no VERSION(); this frontend can't run them safely.
             const version: bigint = await c.VERSION().catch(() => 0n)
@@ -740,12 +709,13 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 return
             }
 
-            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, registrar, sdl, vdl, numOpt, selfSignup] = await Promise.all([
+            const [pid, sOpen, vOpen, vc, sgid, vgid, admin, registrar, sdl, vdl, numOpt, selfSignup, deployBlock, maxVoters, maxWeight, regCount] = await Promise.all([
                 c.proposalId(), c.signupOpen(), c.votingOpen(), c.voteCount(),
                 c.signupGroupId(), c.votingGroupId(),
                 c.admin(), c.registrar(),
                 c.signupDeadline(), c.votingDeadline(), c.numOptions(),
                 c.selfSignupAllowed(),
+                c.deployBlock(), c.maxVoters(), c.maxWeight(), c.registrationCount(),
             ])
             setState({
                 version,
@@ -761,6 +731,10 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 votingDeadline: Number(vdl),
                 numOptions: Number(numOpt),
                 selfSignupAllowed: selfSignup,
+                deployBlock: Number(deployBlock),
+                maxVoters: Number(maxVoters),
+                maxWeight: Number(maxWeight),
+                registrationCount: Number(regCount),
             })
 
             // Fetch on-chain tally commitment (try/catch for backward compat with old contracts)
@@ -793,24 +767,37 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
     useEffect(() => { refresh() }, [refresh])
 
+    // ── REGISTRATION (from the chain: whether this identity signed up, and with what weight) ──
+    // The weight comes from the VoterSignedUp event, not from local storage, so it's right
+    // on a new device or after restoring an identity.
+    const lookUpRegistration = useCallback(async (): Promise<bigint | null> => {
+        if (!identity || !state) return null
+        const signups = await fetchSignups(electionAddress, publicProvider(), state.deployBlock)
+        const mine = signups.filter(s => s.identityCommitment === identity.commitment)
+        if (mine.length === 0) return null
+        const weight = mine[mine.length - 1].weight
+        setVoterWeight(weight)
+        if (weightStorageKey) localStorage.setItem(weightStorageKey, weight.toString())
+        return weight
+    }, [identity, state, electionAddress, weightStorageKey])
+
     // ── CHECK SIGNUP STATUS ──
     const checkSignup = useCallback(async () => {
         if (!identity || !state) return
         setSignupStatus("checking")
         try {
-            const members = await fetchGroupMembers(BigInt(state.signupGroupId))
-            const weightedLeaf = poseidon2([identity.commitment, voterWeight])
-            const found = members.some(m => m.toString() === weightedLeaf.toString())
-            setSignupStatus(found ? "signed-up" : "not-signed-up")
+            const weight = await lookUpRegistration()
+            setSignupStatus(weight !== null ? "signed-up" : "not-signed-up")
         } catch (err: any) {
             addLog("Could not check signup status. Try refreshing the page.")
             setSignupStatus("unknown")
         }
-    }, [identity, state, addLog, voterWeight])
+    }, [identity, state, addLog, lookUpRegistration])
 
     useEffect(() => {
-        if (identity && state && phase === "signup") checkSignup()
-    }, [identity, state, phase, checkSignup])
+        if (identity && state && (phase === "signup" || phase === "voting")) checkSignup()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [identity, state?.deployBlock, phase])
 
     // ── CHECK JOIN STATUS ──
     const checkJoinStatus = useCallback(async () => {
@@ -819,7 +806,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
         if (!votingId) { setJoinStatus("not-joined"); return }
         setJoinStatus("checking")
         try {
-            const members = await fetchGroupMembers(BigInt(state.votingGroupId))
+            const members = await fetchGroupMembers(publicProvider(), BigInt(state.votingGroupId), state.deployBlock)
             const weightedLeaf = poseidon2([votingId.commitment, voterWeight])
             const found = members.some(m => m.toString() === weightedLeaf.toString())
             setJoinStatus(found ? "joined" : "not-joined")
@@ -875,8 +862,9 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     )
                 }
                 addLog("Relaying signup...")
-                const result = await relaySignUp(electionAddress, identity.commitment, {
-                    code: isInviteCodeElection ? inviteCode.toLowerCase().trim() : undefined,
+                const fromBlock = await blockBeforeRelay()
+                await relaySignUp(electionAddress, identity.commitment, {
+                    code: isInviteCodeElection ? normalizeInviteCode(inviteCode) : undefined,
                     identifier: isAllowlistElection ? allowlistId.trim() : undefined,
                     voterAddress: isTokenGateElection && address ? address : undefined,
                     walletSignature,
@@ -885,15 +873,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     githubToken: isGithubOrgElection ? ghToken : undefined,
                     githubId: isGithubOrgElection ? ghId : undefined,
                 })
-                addLog(`Signup relayed — tx: ${result.txHash.slice(0, 10)}...`)
-                await waitForRelayTx(result.txHash)
-                // Store weight from relay response
-                const assignedWeight = result.weight
-                setVoterWeight(assignedWeight)
-                if (weightStorageKey) localStorage.setItem(weightStorageKey, assignedWeight.toString())
-                const verified = await verifySignupOnChain(electionAddress, identity.commitment.toString(), result.txHash)
-                if (!verified) addLog("Warning: signup event not found on-chain")
-                addLog(assignedWeight > 1n ? `Signed up with weight ${assignedWeight}!` : "Signed up for election!")
+                addLog("Signup sent. Checking the chain for your registration...")
+                // Read the registration back from the chain; the weight comes from the event
+                const check = await confirmSignup(electionAddress, identity.commitment.toString(), fromBlock)
+                if (check.status !== "confirmed") {
+                    throw new Error("Your registration hasn't appeared on-chain yet. Refresh in a minute to check; if it still isn't there, contact the organizer.")
+                }
+                setVoterWeight(check.weight)
+                if (weightStorageKey) localStorage.setItem(weightStorageKey, check.weight.toString())
+                addLog(check.weight > 1n ? `Signed up with weight ${check.weight}!` : "Signed up for election!")
                 setSignupStatus("signed-up")
                 await refresh()
             } catch (err: any) {
@@ -924,8 +912,21 @@ export default function ElectionPage({ params }: { params: { address: string } }
     // from the voter's wallet would link the wallet to the ballot on-chain.
     const handleJoinAndVote = useCallback(async () => {
         if (!identity || selectedVote === null || !state) return
-        setError(""); setTxHash(""); setOnChainVerified(null)
+        setError(""); setTxHash(""); setBallotCheck(null)
+
+        // A vote version (versioned nullifier) can be used once. Once a ballot has been handed
+        // to the relay its version counts as spent, whatever happens next.
+        const spendVersion = (version: number) => {
+            const next = version + 1
+            setVoteVersion(next)
+            setHasVotedBefore(true)
+            if (versionStorageKey) localStorage.setItem(versionStorageKey, next.toString())
+        }
+
         try {
+            // The registered weight comes from the chain (VoterSignedUp), not local storage
+            const weight = (await lookUpRegistration()) ?? voterWeight
+
             // Step 1: Check if we need to anonymous join first
             let votingId = getVotingIdentity()
             const needsJoin = joinStatus !== "joined"
@@ -938,34 +939,36 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 }
 
                 setVoteStep("fetching-signup-group"); setStepMsg("Fetching signup group...")
-                const signupMembers = await fetchGroupMembers(BigInt(state.signupGroupId))
+                const signupMembers = await fetchGroupMembers(publicProvider(), BigInt(state.signupGroupId), state.deployBlock)
                 const signupGroup = new Group()
                 for (const m of signupMembers) signupGroup.addMember(m)
                 addLog(`Checking registration (${signupMembers.length} registered)`)
 
-                const weightedSignupLeaf = poseidon2([identity.commitment, voterWeight])
+                const weightedSignupLeaf = poseidon2([identity.commitment, weight])
                 if (signupGroup.indexOf(weightedSignupLeaf) === -1) {
                     throw new Error("You're not registered for this election. You need to sign up during the registration phase.")
                 }
 
                 setVoteStep("generating-join-proof"); setStepMsg("Generating anonymous join proof (10-30s)...")
                 addLog("Generating anonymous proof...")
-                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId), voterWeight)
+                const joinProof = await generateAnonJoinProof(identity, votingId, signupGroup, BigInt(state.proposalId), weight)
                 addLog("Proof ready")
 
                 setVoteStep("submitting-join"); setStepMsg("Relaying anonymous join...")
-                const joinTxHash = await relayAnonJoin(electionAddress, joinProof)
-                setStepMsg("Waiting for join confirmation...")
-                await waitForRelayTx(joinTxHash)
-                const joinVerified = await verifyJoinOnChain(electionAddress, joinProof.joinNullifier, joinTxHash)
-                if (!joinVerified) addLog("Warning: join event not verified on-chain")
+                const joinFrom = await blockBeforeRelay()
+                await relayAnonJoin(electionAddress, joinProof)
+                setStepMsg("Checking the chain for your anonymous registration...")
+                const joined = await confirmJoin(electionAddress, joinProof, joinFrom)
+                if (joined.status !== "confirmed") {
+                    throw new Error("Your anonymous registration didn't show up on-chain. Try again in a minute.")
+                }
                 addLog("Anonymous registration confirmed")
 
-                // IP-timing decorrelation: random delay before castVote
-                // Only applies in production — on localhost both calls come from same machine
+                // Random pause before castVote, so outside observers can't easily pair the join
+                // with the ballot. (The relay still sees both come from this IP address.)
+                // Skipped on localhost, where there's nobody to hide from.
                 if (window.location.hostname !== "localhost") {
-                    setVoteStep("timing-delay"); setStepMsg("Securing your anonymity...")
-                    addLog("Random delay to protect your identity (a few seconds)...")
+                    setVoteStep("timing-delay"); setStepMsg("Waiting a random few seconds before voting...")
                     await randomTimingDelay()
                 }
                 setJoinStatus("joined")
@@ -975,12 +978,12 @@ export default function ElectionPage({ params }: { params: { address: string } }
 
             // Step 2: Cast vote
             setVoteStep("fetching-voting-group"); setStepMsg("Fetching voting group...")
-            const votingMembers = await fetchGroupMembers(BigInt(state.votingGroupId))
+            const votingMembers = await fetchGroupMembers(publicProvider(), BigInt(state.votingGroupId), state.deployBlock)
             const votingGroup = new Group()
             for (const m of votingMembers) votingGroup.addMember(m)
             addLog(`Verified voters: ${votingMembers.length}`)
 
-            const weightedVotingLeaf = poseidon2([votingId!.commitment, voterWeight])
+            const weightedVotingLeaf = poseidon2([votingId!.commitment, weight])
             if (votingGroup.indexOf(weightedVotingLeaf) === -1) {
                 throw new Error("Your anonymous registration hasn't been confirmed yet. Try refreshing the page.")
             }
@@ -992,50 +995,65 @@ export default function ElectionPage({ params }: { params: { address: string } }
             let voteRand = 0n
             for (const b of rnd) voteRand = (voteRand << 8n) | BigInt(b)
 
+            const version = voteVersion
             const proof = await generateProofInBrowser(
                 votingId!, votingGroup, BigInt(state.proposalId),
-                BigInt(selectedVote), voteRand, BigInt(state.numOptions), voterWeight, BigInt(voteVersion)
+                BigInt(selectedVote), voteRand, BigInt(state.numOptions), weight, BigInt(version)
             )
             addLog("Proof ready")
 
-            // Seal the ballot to the drand round right after the voting deadline.
+            // Seal the ballot to a drand round after the voting deadline.
             // Nobody holds a key; nobody can open it before then, including the organizer.
-            setVoteStep("encrypting"); setStepMsg("Sealing your ballot until the deadline...")
-            const payload = encodeVotePayload(BigInt(selectedVote), voterWeight, voteRand)
-            const blob = await sealBallot(payload, state.votingDeadline)
+            setVoteStep("encrypting"); setStepMsg("Sealing your ballot until after the deadline...")
+            const payload = encodeVotePayload(BigInt(selectedVote), weight, voteRand)
+            const blobHex = hexlify(await sealBallot(payload, state.votingDeadline))
 
             setVoteStep("submitting-vote"); setStepMsg("Relaying sealed ballot...")
-            const voteTxHash = await relayCastVote(electionAddress, proof, hexlify(blob))
-            setStepMsg("Waiting for vote confirmation...")
-            await waitForRelayTx(voteTxHash)
-            addLog("Vote submitted successfully")
+            const voteFrom = await blockBeforeRelay()
+            let voteTxHash: string
+            try {
+                voteTxHash = await relayCastVote(electionAddress, proof, blobHex)
+            } catch (err) {
+                // This version was already used (e.g. from another tab): move past it
+                if (err instanceof RelayError && err.status === 409) {
+                    spendVersion(version)
+                    throw new Error("That vote version was already used. Press Try Again to vote with the next one.")
+                }
+                throw err
+            }
+            spendVersion(version)
 
-            // Anti-censorship: independently verify on-chain
-            setVoteStep("verifying"); setStepMsg("Verifying vote on-chain...")
-            const verified = await verifyVoteOnChain(electionAddress, proof.baseNullifier, voteTxHash)
-            setOnChainVerified(verified)
-            if (verified) {
-                addLog("Vote verified on-chain!")
+            // Check what landed: the same versioned nullifier, commitment and sealed bytes we sent.
+            setVoteStep("verifying"); setStepMsg("Checking your ballot on-chain...")
+            const landed = await confirmBallot(electionAddress, {
+                versionedNullifier: proof.versionedNullifier,
+                voteCommitment: proof.voteCommitment,
+                encryptedBlobHex: blobHex,
+            }, voteFrom)
+            setBallotCheck(landed.status)
+            setTxHash(voteTxHash)
+
+            if (landed.status === "altered") {
+                addLog("Warning: your ballot reached the chain with different contents than you sent")
+                throw new Error(
+                    "Your ballot reached the chain with different contents than the ones you sealed, so it won't count. " +
+                    "Your previous ballot, if you had one, still counts. You can vote again; if this happens again, " +
+                    "the relay may be interfering, so tell the organizer."
+                )
+            }
+            if (landed.status === "confirmed") {
+                addLog("Ballot found on-chain, exactly as sent")
             } else {
-                addLog("Warning: vote not verified on-chain. Try refreshing later to check.")
+                addLog("Warning: ballot not found on-chain yet")
             }
-
-            setTxHash(voteTxHash); setVoteStep("done"); setStepMsg("")
-            // Increment vote version after successful submission
-            const newVersion = voteVersion + 1
-            setVoteVersion(newVersion)
-            setHasVotedBefore(true)
-            if (versionStorageKey) {
-                localStorage.setItem(versionStorageKey, newVersion.toString())
-            }
-
+            setVoteStep("done"); setStepMsg("")
             await refresh()
         } catch (err: any) {
             const msg = err instanceof RelayError ? err.message : friendlyError(err)
             setError(msg); setVoteStep("error"); setStepMsg("")
             addLog(`Error: ${msg}`)
         }
-    }, [identity, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, voterWeight, voteVersion, versionStorageKey])
+    }, [identity, selectedVote, state, electionAddress, addLog, refresh, joinStatus, getVotingIdentity, createVotingIdentity, voterWeight, voteVersion, versionStorageKey, lookUpRegistration])
 
     // ── ADMIN LOGIC ──
     const registerVoter = useCallback(async () => {
@@ -1099,25 +1117,14 @@ export default function ElectionPage({ params }: { params: { address: string } }
         if (!state) return
         setTallyError(""); setTallyResult(null)
         try {
-            setTallyStep("fetching"); setTallyMsg("Fetching ballots from chain...")
-            const provider = new JsonRpcProvider(RPC_URL)
-            const c = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-            const currentBlock = await provider.getBlockNumber()
-            // Paginate for Base 10k block limit; results stay in chain order
-            const events: any[] = []
-            for (let from = FACTORY_DEPLOY_BLOCK; from <= currentBlock; from += MAX_LOG_RANGE) {
-                const to = Math.min(from + MAX_LOG_RANGE - 1, currentBlock)
-                const chunk = await c.queryFilter(c.filters.VoteCast(), from, to)
-                events.push(...chunk)
-            }
-            const records: BallotRecord[] = events.map((event: any) => ({
-                baseNullifier: event.args.baseNullifier.toString(),
-                voteCommitment: event.args.voteCommitment.toString(),
-                encryptedBlob: event.args.encryptedBlob,
-            }))
-
-            setTallyStep("decrypting"); setTallyMsg(`Opening ${records.length} ballot(s) with the drand beacon...`)
-            const result = await countBallots(records, state.numOptions, state.votingDeadline)
+            setTallyStep("fetching"); setTallyMsg("Reading every ballot from the chain and opening them with the drand beacon...")
+            // Reads up to one pinned block, checks the ballot count against the contract's
+            // voteCount(), verifies the beacon, then opens and counts.
+            const result = await recountElection(electionAddress, publicProvider(), {
+                numOptions: state.numOptions,
+                votingDeadline: state.votingDeadline,
+                deployBlock: state.deployBlock,
+            })
             setTallyResult(result)
             setTallyStep("done"); setTallyMsg("")
 
@@ -1178,19 +1185,24 @@ export default function ElectionPage({ params }: { params: { address: string } }
             "fetching-signup-group":  { step: 1, total: 6, label: "Preparing..." },
             "generating-join-proof":  { step: 2, total: 6, label: "Proving your eligibility (~15s)" },
             "submitting-join":        { step: 3, total: 6, label: "Submitting anonymous registration" },
-            "timing-delay":           { step: 3, total: 6, label: "Securing your anonymity..." },
+            "timing-delay":           { step: 3, total: 6, label: "Waiting a random few seconds..." },
             "fetching-voting-group":  { step: 4, total: 6, label: "Preparing your ballot..." },
             "generating-vote-proof":  { step: 5, total: 6, label: "Proving your vote (~15s)" },
-            "encrypting":             { step: 5, total: 6, label: "Sealing your ballot until the deadline" },
+            "encrypting":             { step: 5, total: 6, label: "Sealing your ballot" },
             "submitting-vote":        { step: 6, total: 6, label: "Submitting your sealed ballot" },
-            "verifying":              { step: 6, total: 6, label: "Confirming on-chain..." },
+            "verifying":              { step: 6, total: 6, label: "Checking your ballot on-chain..." },
         }
         return steps[voteStep] || null
     }, [voteStep, isProcessing])
     // Voting needs a deadline to seal ballots to; every v9 election has one.
     const canVote = !!state && state.votingDeadline > 0 && !deadlinePassed
-    // Gated elections: voters sign up on this page and the relay registers them as registrar.
-    const relayGated = !!state && !state.selfSignupAllowed && isRelayGate(gateType) && state.registrar !== ZeroAddress
+    // Gated elections: voters sign up on this page and this app's relay registers them as
+    // the election's registrar. Another registrar (e.g. a different deployment's relay)
+    // won't accept registrations from this relay.
+    const gatedByRegistrar = !!state && !state.selfSignupAllowed && isRelayGate(gateType) && state.registrar !== ZeroAddress
+    const registrarIsThisRelay = !!state && !!relayInfo && state.registrar.toLowerCase() === relayInfo.relayerAddress.toLowerCase()
+    const relayGated = gatedByRegistrar && registrarIsThisRelay
+    const registrarMismatch = gatedByRegistrar && !!relayInfo && !registrarIsThisRelay
     // Metadata claims a gate but the contract allows open signup: the gate isn't enforced.
     const gateNotEnforced = !!state && state.selfSignupAllowed && isRelayGate(gateType)
 
@@ -1213,6 +1225,16 @@ export default function ElectionPage({ params }: { params: { address: string } }
         <div style={{ textAlign: "center", padding: 48 }}>
             <div className="spinner" style={{ margin: "0 auto 12px" }} />
             <p style={{ color: "var(--text-muted)" }}>Loading election...</p>
+        </div>
+    )
+
+    if (notElection) return (
+        <div className="card" style={{ textAlign: "center" }}>
+            <p style={{ fontWeight: 600, marginBottom: 6 }}>This isn&apos;t a Spectre election</p>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                The address wasn&apos;t created by this app&apos;s election factory, so this app won&apos;t use it.
+            </p>
+            <Link href="/" style={{ display: "inline-block", marginTop: 12 }}>Back to elections</Link>
         </div>
     )
 
@@ -1269,6 +1291,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                     <p style={{ fontSize: "0.85rem", color: "var(--warning)", lineHeight: 1.5 }}>
                         This election lists a signup requirement, but its contract lets anyone sign up directly,
                         so the requirement isn&apos;t enforced. Treat it as an open election.
+                    </p>
+                </div>
+            )}
+
+            {registrarMismatch && phase === "signup" && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+                    <p style={{ fontSize: "0.85rem", color: "var(--warning)", lineHeight: 1.5 }}>
+                        This election&apos;s signups are handled by a different relay ({state.registrar.slice(0, 10)}...),
+                        not the one behind this site, so you can&apos;t sign up here. Use the link the organizer shared.
                     </p>
                 </div>
             )}
@@ -1353,7 +1384,7 @@ export default function ElectionPage({ params }: { params: { address: string } }
                         unsealAt={unsealAt}
                         txHash={txHash}
                         error={error}
-                        onChainVerified={onChainVerified}
+                        ballotCheck={ballotCheck}
                         joinStatus={joinStatus}
                         handleJoinAndVote={handleJoinAndVote}
                         setVoteStep={setVoteStep}

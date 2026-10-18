@@ -1,7 +1,7 @@
 "use client"
 
 import { EXPLORER_URL } from "@/lib/contracts"
-import { commitmentMatches, type TallyResult } from "@/lib/tally"
+import { commitmentMatches, type RecountResult } from "@/lib/tally"
 
 type Phase = "signup" | "voting" | "closed"
 type TallyStep = "idle" | "fetching" | "decrypting" | "done" | "error"
@@ -24,7 +24,7 @@ interface ResultsTabProps {
     nowSec: number
     tallyStep: TallyStep
     tallyMsg: string
-    tallyResult: TallyResult | null
+    tallyResult: RecountResult | null
     tallyError: string
     runTally: () => void
     resetTally: () => void
@@ -57,9 +57,9 @@ export default function ResultsTab({
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Ballots are sealed</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                        Every ballot is time-locked to the voting deadline with drand. Nobody, including the organizer,
-                        can read any ballot before {new Date(unsealAt * 1000).toLocaleString()}. After that, anyone can
-                        open them and count.
+                        Every ballot is time-locked with drand until shortly after the voting deadline. Nobody, including
+                        the organizer, can read any ballot before {new Date(unsealAt * 1000).toLocaleString()}. After that,
+                        anyone can open them and count.
                     </p>
                 </div>
             )}
@@ -68,8 +68,9 @@ export default function ResultsTab({
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Count the votes</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 14, lineHeight: 1.5 }}>
-                        Anyone can do this. Your browser opens every ballot with the public drand beacon for the deadline,
-                        checks each one against its on-chain commitment, and counts the latest ballot from each voter.
+                        Anyone can do this. Your browser reads every ballot from the chain, checks it found as many as the
+                        contract recorded, opens them with the public drand beacon (verified against drand&apos;s public key),
+                        checks each against its on-chain commitment, and counts each voter&apos;s latest valid ballot.
                     </p>
 
                     {busy && (
@@ -159,8 +160,10 @@ export default function ResultsTab({
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: "0.85rem" }}>
                             {[
                                 { label: "Valid (weighted)", value: tallyResult.totalValid, color: "var(--success)" },
-                                { label: "Invalid", value: tallyResult.totalInvalid, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" },
-                                { label: "Replaced by a later ballot", value: tallyResult.duplicatesRemoved },
+                                { label: "Voters with no valid ballot", value: tallyResult.totalInvalid, color: tallyResult.totalInvalid > 0 ? "var(--error)" : "var(--text-muted)" },
+                                { label: "Ballots that didn't open or match", value: tallyResult.invalidSubmissions, color: tallyResult.invalidSubmissions > 0 ? "var(--warning)" : "var(--text-muted)" },
+                                { label: "Not counted (voter has a later or other ballot)", value: tallyResult.duplicatesRemoved },
+                                { label: "Voters", value: tallyResult.voters },
                                 { label: "Ballots on-chain", value: voteCount },
                             ].map(stat => (
                                 <div key={stat.label} style={{ padding: "10px 14px", background: "var(--bg)", borderRadius: 8, border: "1px solid var(--border)" }}>
@@ -169,6 +172,12 @@ export default function ResultsTab({
                                 </div>
                             ))}
                         </div>
+                        <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 12, lineHeight: 1.5 }}>
+                            Counted every ballot up to block {tallyResult.blockNumber}; the number found matched the contract&apos;s count.{" "}
+                            {tallyResult.finalized === true && "The chain has finalized past the deadline, so this count is final."}
+                            {tallyResult.finalized === false && "The chain hasn't finalized past the deadline yet (this usually takes 15–30 minutes); count again later before relying on it."}
+                            {tallyResult.finalized === null && "Couldn't check whether the chain has finalized past the deadline."}
+                        </p>
                     </div>
 
                     {tallyResult.ballots.length > 0 && (
@@ -236,8 +245,8 @@ export default function ResultsTab({
                                     <p style={{ color: "var(--error)", fontWeight: 600 }}>{commitError}</p>
                                 </div>
                             )}
-                            <button className="btn-primary" onClick={handleCommitTally} disabled={commitStep === "submitting"}>
-                                {commitStep === "submitting" ? "Publishing..." : "Publish results on-chain"}
+                            <button className="btn-primary" onClick={handleCommitTally} disabled={commitStep === "submitting" || tallyResult.finalized === false}>
+                                {commitStep === "submitting" ? "Publishing..." : tallyResult.finalized === false ? "Wait for finality, then count again" : "Publish results on-chain"}
                             </button>
                         </div>
                     )}

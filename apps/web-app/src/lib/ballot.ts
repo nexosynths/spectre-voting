@@ -2,19 +2,31 @@
  * Ballot sealing with drand time-lock encryption (tlock).
  *
  * Each ballot is encrypted to a future round of drand's quicknet beacon: the
- * first round published after the election's voting deadline. Nobody holds a
- * decryption key. Before that round is published, nobody can read a ballot,
- * including the election admin. After it is published, anyone can decrypt
- * every ballot and recount.
+ * first round published SEAL_DELAY_SECONDS after the election's voting deadline.
+ * Nobody holds a decryption key. Before that round is published, nobody can read
+ * a ballot, including the election admin. After it is published, anyone can
+ * decrypt every ballot and recount.
+ *
+ * The delay covers a stalled sequencer: Base can produce blocks stamped before
+ * the deadline some time after the deadline has passed in real time. If ballots
+ * opened right at the deadline, someone could read them and still vote.
  *
  * Trust assumption: drand's League of Entropy network (a threshold of
  * independent operators) does not publish or leak the round signature early.
- * Ballots become public after the deadline; they are anonymous only because
- * of the ZK re-key and relayed submission, not because they stay encrypted.
+ * Ballots become public after they open; they are unlinkable to signups on-chain
+ * because of the ZK re-key, but whoever relayed a ballot knows where it came from.
  */
 
 import { timelockEncrypt, timelockDecrypt, roundAt, roundTime, Buffer } from "tlock-js"
 import type { ChainClient, ChainInfo } from "tlock-js"
+import { bls12_381 as bls } from "@noble/curves/bls12-381"
+import { sha256 } from "@noble/hashes/sha256"
+
+/**
+ * Ballots open this long after the voting deadline. Every client must use the same
+ * value, so it's fixed here rather than chosen per election.
+ */
+export const SEAL_DELAY_SECONDS = 30 * 60
 
 /** drand quicknet (RFC 9380 G1 signatures, 3 s rounds). Pinned here; never fetched. */
 export const QUICKNET: ChainInfo = {
@@ -39,12 +51,12 @@ export const QUICKNET_ENDPOINTS = [
 export type Beacon = { round: number; randomness: string; signature: string }
 export type BeaconFetcher = (round: number) => Promise<Beacon>
 
-/** The first round published strictly after the voting deadline (unix seconds). */
+/** The first round published strictly after the voting deadline plus SEAL_DELAY_SECONDS (unix seconds). */
 export function sealRound(votingDeadline: number, chain: ChainInfo = QUICKNET): number {
     if (!Number.isFinite(votingDeadline) || votingDeadline <= 0) {
         throw new Error("This election has no voting deadline, so ballots can't be sealed.")
     }
-    return roundAt(votingDeadline * 1000, chain) + 1
+    return roundAt((votingDeadline + SEAL_DELAY_SECONDS) * 1000, chain) + 1
 }
 
 /** Unix seconds when the seal round is published and ballots can be opened. */
@@ -52,9 +64,33 @@ export function unsealTime(votingDeadline: number, chain: ChainInfo = QUICKNET):
     return Math.floor(roundTime(chain, sealRound(votingDeadline, chain)) / 1000)
 }
 
-function verifiedOptions(chain: ChainInfo) {
+const QUICKNET_SCHEME = "bls-unchained-g1-rfc9380"
+
+function roundMessage(round: number): Uint8Array {
+    const bytes = new Uint8Array(8)
+    new DataView(bytes.buffer).setBigUint64(0, BigInt(round))
+    return sha256(bytes)
+}
+
+/**
+ * Check a beacon against the pinned chain: right round, randomness = sha256(signature),
+ * and a valid BLS signature (G1, RFC 9380) on sha256(round) under the chain's public key.
+ */
+export function verifyBeacon(beacon: Beacon, round: number, chain: ChainInfo = QUICKNET): boolean {
+    if (chain.schemeID !== QUICKNET_SCHEME) return false
+    if (!beacon || beacon.round !== round || typeof beacon.signature !== "string" || typeof beacon.randomness !== "string") return false
+    try {
+        const signature = hexToBytes(beacon.signature)
+        if (bytesToHex(sha256(signature)) !== beacon.randomness.toLowerCase()) return false
+        return bls.verifyShortSignature(signature, roundMessage(round), chain.public_key)
+    } catch {
+        return false
+    }
+}
+
+function clientOptions(chain: ChainInfo, verifyBeacons: boolean) {
     return {
-        disableBeaconVerification: false,
+        disableBeaconVerification: !verifyBeacons,
         noCache: false,
         chainVerificationParams: { chainHash: chain.hash, publicKey: chain.public_key },
     }
@@ -63,7 +99,7 @@ function verifiedOptions(chain: ChainInfo) {
 /** A drand client that only knows the pinned chain info. Encryption needs no network. */
 function offlineClient(chain: ChainInfo): ChainClient {
     return {
-        options: verifiedOptions(chain),
+        options: clientOptions(chain, true),
         chain: () => ({ baseUrl: "", info: async () => chain }),
         latest: async () => { throw new Error("Not available offline") },
         get: async () => { throw new Error("Not available offline") },
@@ -71,13 +107,12 @@ function offlineClient(chain: ChainInfo): ChainClient {
 }
 
 /**
- * A client that serves exactly one beacon. Ciphertexts sealed to any other
- * round are rejected, so every counted ballot opens at the same moment.
- * tlock-js verifies the beacon's BLS signature against the pinned public key.
+ * A client that serves exactly one beacon, already verified by the caller. Ciphertexts
+ * sealed to any other round are rejected, so every counted ballot opens at the same moment.
  */
 function singleRoundClient(chain: ChainInfo, beacon: Beacon): ChainClient {
     return {
-        options: verifiedOptions(chain),
+        options: clientOptions(chain, false),
         chain: () => ({ baseUrl: "", info: async () => chain }),
         latest: async () => beacon,
         get: async (round: number) => {
@@ -87,21 +122,26 @@ function singleRoundClient(chain: ChainInfo, beacon: Beacon): ChainClient {
     }
 }
 
-/** Fetch a quicknet beacon from the public endpoints, falling back on failure. */
+/**
+ * Fetch a quicknet beacon and verify it. Tries each public endpoint in turn and
+ * returns the first beacon that verifies against the pinned public key; a
+ * malformed or forged response just moves on to the next endpoint.
+ */
 export async function fetchQuicknetBeacon(round: number): Promise<Beacon> {
-    let lastError: unknown = null
+    const problems: string[] = []
     for (const base of QUICKNET_ENDPOINTS) {
         try {
             const res = await fetch(`${base}/${QUICKNET.hash}/public/${round}`)
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             const body = await res.json()
-            if (Number(body.round) !== round || typeof body.signature !== "string") throw new Error("Malformed beacon")
-            return { round: Number(body.round), randomness: String(body.randomness), signature: body.signature }
+            const beacon: Beacon = { round: Number(body.round), randomness: String(body.randomness), signature: String(body.signature) }
+            if (!verifyBeacon(beacon, round)) throw new Error("beacon didn't verify")
+            return beacon
         } catch (err) {
-            lastError = err
+            problems.push(`${new URL(base).host}: ${err instanceof Error ? err.message : "failed"}`)
         }
     }
-    throw new Error(`Couldn't fetch drand round ${round}: ${lastError instanceof Error ? lastError.message : "unknown error"}`)
+    throw new Error(`Couldn't get a valid drand beacon for round ${round} (${problems.join("; ")}). Nothing was counted.`)
 }
 
 /** Encrypt a ballot payload so it opens only after the voting deadline. Returns UTF-8 bytes for the chain. */
@@ -119,7 +159,9 @@ export type OpenedBallot = { ok: true; payload: Uint8Array } | { ok: false; reas
 
 /**
  * Open every sealed ballot after the deadline. Anyone can call this; no key is needed.
- * Fetches the single seal-round beacon once, then decrypts locally.
+ * Gets the single seal-round beacon once and verifies it against the pinned public key;
+ * if it doesn't verify, this throws instead of marking every ballot invalid. Then it
+ * decrypts locally, so a ballot that fails to open is genuinely malformed.
  */
 export async function openBallots(
     sealed: Uint8Array[],
@@ -134,6 +176,9 @@ export async function openBallots(
         throw new Error(`Ballots stay sealed until ${new Date(opensAt).toLocaleString()}.`)
     }
     const beacon = await (options.fetchBeacon ?? fetchQuicknetBeacon)(round)
+    if (!verifyBeacon(beacon, round, chain)) {
+        throw new Error(`The drand beacon for round ${round} didn't verify against the pinned public key. Nothing was counted.`)
+    }
     const client = singleRoundClient(chain, beacon)
     const decoder = new TextDecoder()
     const results: OpenedBallot[] = []
@@ -174,7 +219,12 @@ export function decodeVotePayload(buf: Uint8Array): { vote: bigint; weight: bigi
 
 export function hexToBytes(hex: string): Uint8Array {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex
+    if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) throw new Error("Invalid hex")
     const out = new Uint8Array(clean.length / 2)
     for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substring(i * 2, i * 2 + 2), 16)
     return out
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("")
 }
