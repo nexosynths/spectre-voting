@@ -1,5 +1,7 @@
 # Spectre — Anonymous ZK Voting Protocol
 
+> **Current state (v9).** Ballots are time-locked with drand to the voting deadline: there is no election key and no threshold committee, nobody can read ballots early, and anyone can open them and recount after the deadline. Gated signups are registered by the relay acting as the election's registrar, one registration per credential (on-chain gate keys). Joins and ballots are always submitted by the relay, never from a voter's wallet. Voting can't be closed before the deadline. Spectre is not coercion-resistant. Sections below that describe ECIES ballots, the election key, threshold committees, wallet-mode voting, "the admin can't see votes" or coercion resistance describe earlier versions or plans and are out of date; README.md has the current trust model. Deploy with `npx hardhat run scripts/deploy-factory.ts --network base` from `apps/contracts`.
+
 ## Project Overview
 Spectre is a fully on-chain anonymous voting protocol using zero-knowledge proofs. It combines **ZK re-key anonymous registration** (cryptographic identity delinking between signup and voting) with **end-to-end encrypted ballots** and **multi-option voting** — a combination no other deployed protocol achieves.
 
@@ -832,7 +834,7 @@ Note: Two `-l` flags are required because `@zk-kit/circuits` uses bare `include 
 ### Deploy contracts
 ```bash
 cd apps/contracts
-npx hardhat run scripts/deploy-factory-sepolia.ts --network sepolia
+npx hardhat run scripts/deploy-factory.ts --network base
 ```
 Note: SpectreVotingFactory requires PoseidonT3 library to be deployed and linked (SpectreVoting uses `PoseidonT3.hash` for weighted leaves in signup functions).
 
