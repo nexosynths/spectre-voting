@@ -18,6 +18,37 @@ const DEFAULT_NUM_OPTIONS = 2n
 const CREATION_FEE = ethers.parseEther("0.001")
 const ONE_WEEK = 7 * 24 * 3600
 const NO_GATE = ethers.ZeroHash
+const DEFAULT_MAX_VOTERS = 1000n
+const DEFAULT_MAX_WEIGHT = 255n
+
+type ElectionOpts = {
+    proposalId?: bigint,
+    signupDeadline?: number,
+    votingDeadline?: number,
+    numOptions?: bigint | number,
+    selfSignupAllowed?: boolean,
+    registrar?: string,
+    maxVoters?: bigint | number,
+    maxWeight?: bigint | number,
+}
+
+// Helper: an election config (SpectreVoting.Config). By default signup ends halfway to a
+// voting deadline one week out, the election is open, and limits are generous.
+async function electionConfig(opts: ElectionOpts = {}) {
+    const now = await time.latest()
+    const votingDeadline = opts.votingDeadline ?? now + ONE_WEEK
+    const signupDeadline = opts.signupDeadline ?? now + Math.floor((votingDeadline - now) / 2)
+    return {
+        proposalId: opts.proposalId ?? PROPOSAL_ID,
+        signupDeadline,
+        votingDeadline,
+        numOptions: opts.numOptions ?? DEFAULT_NUM_OPTIONS,
+        maxVoters: opts.maxVoters ?? DEFAULT_MAX_VOTERS,
+        maxWeight: opts.maxWeight ?? DEFAULT_MAX_WEIGHT,
+        selfSignupAllowed: opts.selfSignupAllowed ?? true,
+        registrar: opts.registrar ?? ethers.ZeroAddress,
+    }
+}
 
 // Helper: generate a SpectreVote proof (v2: dual nullifiers + version)
 async function generateSpectreProof(
@@ -166,37 +197,9 @@ describe("SpectreVotingFactory", () => {
     }
 
     // Helper: create an election via factory and return the contract instance
-    async function createElectionVia(
-        factory: any,
-        admin: any,
-        opts: {
-            proposalId?: bigint,
-            signupDeadline?: number,
-            votingDeadline?: number,
-            numOptions?: bigint,
-            selfSignupAllowed?: boolean,
-            registrar?: string,
-            metadata?: string
-        } = {}
-    ) {
-        const proposalId = opts.proposalId ?? PROPOSAL_ID
-        const signupDeadline = opts.signupDeadline ?? 0
-        const votingDeadline = opts.votingDeadline ?? await fromNow(ONE_WEEK)
-        const numOptions = opts.numOptions ?? DEFAULT_NUM_OPTIONS
-        const selfSignupAllowed = opts.selfSignupAllowed ?? true
-        const registrar = opts.registrar ?? ethers.ZeroAddress
+    async function createElectionVia(factory: any, admin: any, opts: ElectionOpts & { metadata?: string } = {}) {
         const metadata = opts.metadata ? ethers.toUtf8Bytes(opts.metadata) : "0x"
-
-        await factory.connect(admin).createElection(
-            proposalId,
-            signupDeadline,
-            votingDeadline,
-            numOptions,
-            selfSignupAllowed,
-            registrar,
-            metadata,
-            { value: CREATION_FEE }
-        )
+        await factory.connect(admin).createElection(await electionConfig(opts), metadata, { value: CREATION_FEE })
 
         const electionAddr = await factory.elections((await factory.electionCount()) - 1n)
         return (await votingContractFactory()).attach(electionAddr) as any
@@ -204,7 +207,7 @@ describe("SpectreVotingFactory", () => {
 
     // Helper: default createElection arguments (open election, voting ends in a week)
     async function defaultArgs(proposalId: bigint = PROPOSAL_ID, numOptions: bigint = DEFAULT_NUM_OPTIONS) {
-        return [proposalId, 0, await fromNow(ONE_WEEK), numOptions, true, ethers.ZeroAddress, "0x"] as const
+        return [await electionConfig({ proposalId, numOptions }), "0x"] as const
     }
 
     // Helper: admin (or registrar) registers a voter with weight 1 and no gate key
@@ -359,7 +362,7 @@ describe("SpectreVotingFactory", () => {
             const votingDeadline = await fromNow(ONE_WEEK)
 
             const tx = await factory.connect(alice).createElection(
-                PROPOSAL_ID, 0, votingDeadline, DEFAULT_NUM_OPTIONS, false, carol.address, "0x",
+                await electionConfig({ votingDeadline, selfSignupAllowed: false, registrar: carol.address }), "0x",
                 { value: CREATION_FEE }
             )
             const receipt = await tx.wait()
@@ -377,10 +380,7 @@ describe("SpectreVotingFactory", () => {
             const sv = await votingInterface()
 
             await expect(
-                factory.connect(alice).createElection(
-                    PROPOSAL_ID, 0, await fromNow(ONE_WEEK), 1, true, ethers.ZeroAddress, "0x",
-                    { value: CREATION_FEE }
-                )
+                factory.connect(alice).createElection(await electionConfig({ numOptions: 1 }), "0x", { value: CREATION_FEE })
             ).to.be.revertedWithCustomError(sv, "InvalidNumOptions")
         })
 
@@ -416,7 +416,7 @@ describe("SpectreVotingFactory", () => {
 
             await expect(
                 factory.connect(alice).createElection(
-                    PROPOSAL_ID, 0, 0, DEFAULT_NUM_OPTIONS, true, ethers.ZeroAddress, "0x",
+                    await electionConfig({ signupDeadline: await fromNow(60), votingDeadline: 0 }), "0x",
                     { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
@@ -429,7 +429,7 @@ describe("SpectreVotingFactory", () => {
 
             await expect(
                 factory.connect(alice).createElection(
-                    PROPOSAL_ID, 0, past, DEFAULT_NUM_OPTIONS, true, ethers.ZeroAddress, "0x",
+                    await electionConfig({ signupDeadline: past - 60, votingDeadline: past }), "0x",
                     { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
@@ -442,27 +442,32 @@ describe("SpectreVotingFactory", () => {
 
             await expect(
                 factory.connect(alice).createElection(
-                    PROPOSAL_ID, votingDeadline, votingDeadline, DEFAULT_NUM_OPTIONS, true, ethers.ZeroAddress, "0x",
+                    await electionConfig({ signupDeadline: votingDeadline, votingDeadline }), "0x",
                     { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
 
             await expect(
                 factory.connect(alice).createElection(
-                    PROPOSAL_ID, votingDeadline + 60, votingDeadline, DEFAULT_NUM_OPTIONS, true, ethers.ZeroAddress, "0x",
+                    await electionConfig({ signupDeadline: votingDeadline + 60, votingDeadline }), "0x",
                     { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
         })
 
-        it("Should reject a non-zero signup deadline in the past", async () => {
+        it("Should require a signup deadline in the future (zero or past is rejected)", async () => {
             const { factory, alice } = await loadFixture(deployFixture)
             const sv = await votingInterface()
 
             await expect(
                 factory.connect(alice).createElection(
-                    PROPOSAL_ID, await fromNow(0), await fromNow(ONE_WEEK), DEFAULT_NUM_OPTIONS, true, ethers.ZeroAddress, "0x",
-                    { value: CREATION_FEE }
+                    await electionConfig({ signupDeadline: 0 }), "0x", { value: CREATION_FEE }
+                )
+            ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
+
+            await expect(
+                factory.connect(alice).createElection(
+                    await electionConfig({ signupDeadline: await fromNow(0) }), "0x", { value: CREATION_FEE }
                 )
             ).to.be.revertedWithCustomError(sv, "InvalidDeadlines")
         })
@@ -472,11 +477,24 @@ describe("SpectreVotingFactory", () => {
             const sv = await votingInterface()
 
             await expect(
-                factory.connect(alice).createElection(
-                    PROPOSAL_ID, 0, await fromNow(ONE_WEEK), 256, true, ethers.ZeroAddress, "0x",
-                    { value: CREATION_FEE }
-                )
+                factory.connect(alice).createElection(await electionConfig({ numOptions: 256 }), "0x", { value: CREATION_FEE })
             ).to.be.revertedWithCustomError(sv, "InvalidNumOptions")
+        })
+
+        it("Should reject maxVoters of 0 or above the limit, and maxWeight of 0 or above 255", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const sv = await votingInterface()
+            const create = async (opts: ElectionOpts) =>
+                factory.connect(alice).createElection(await electionConfig(opts), "0x", { value: CREATION_FEE })
+
+            await expect(create({ maxVoters: 0 })).to.be.revertedWithCustomError(sv, "InvalidMaxVoters")
+            await expect(create({ maxVoters: (1n << 20n) + 1n })).to.be.revertedWithCustomError(sv, "InvalidMaxVoters")
+            await expect(create({ maxWeight: 0 })).to.be.revertedWithCustomError(sv, "InvalidWeight")
+            await expect(create({ maxWeight: 256 })).to.be.revertedWithCustomError(sv, "InvalidWeight")
+
+            // The limits themselves are fine
+            await create({ maxVoters: 1n << 20n, maxWeight: 255 })
+            await create({ maxVoters: 1, maxWeight: 1 })
         })
 
         it("Should accept a valid signup deadline before the voting deadline", async () => {
@@ -813,6 +831,95 @@ describe("SpectreVotingFactory", () => {
             await expect(tx).to.emit(election, "VoteCast")
             expect(await election.voteCount()).to.equal(1)
             expect(await election.uniqueVoterCount()).to.equal(1)
+        })
+    })
+
+    describe("# limits, ballot size and automatic voting start", () => {
+        it("Should record the block it was created in", async () => {
+            const { factory, alice } = await loadFixture(deployFixture)
+            const tx = await factory.connect(alice).createElection(...(await defaultArgs()), { value: CREATION_FEE })
+            const receipt = await tx.wait()
+            const election = (await votingContractFactory()).attach(await factory.elections(0)) as any
+            expect(await election.deployBlock()).to.equal(BigInt(receipt!.blockNumber))
+        })
+
+        it("Should cap registrations at maxVoters across signUp, registerVoter and registerVoters", async () => {
+            const { factory, alice, bob, carol } = await loadFixture(deployFixture)
+
+            const open = await createElectionVia(factory, alice, { maxVoters: 2 })
+            await open.connect(bob).signUp(new Identity("cap-1").commitment)
+            await register(open, alice, new Identity("cap-2"))
+            expect(await open.registrationCount()).to.equal(2n)
+            await expect(open.connect(bob).signUp(new Identity("cap-3").commitment))
+                .to.be.revertedWithCustomError(open, "TooManyVoters")
+            await expect(register(open, alice, new Identity("cap-4")))
+                .to.be.revertedWithCustomError(open, "TooManyVoters")
+
+            const gated = await createElectionVia(factory, alice, { selfSignupAllowed: false, registrar: carol.address, maxVoters: 3 })
+            await register(gated, carol, new Identity("gcap-1"), 1n, ethers.id("gcap-1"))
+            const three = ["gcap-2", "gcap-3", "gcap-4"].map(s => new Identity(s).commitment)
+            await expect(gated.connect(alice).registerVoters(three))
+                .to.be.revertedWithCustomError(gated, "TooManyVoters")
+            await gated.connect(alice).registerVoters(three.slice(0, 2))
+            expect(await gated.registrationCount()).to.equal(3n)
+            await expect(register(gated, carol, new Identity("gcap-5"), 1n, ethers.id("gcap-5")))
+                .to.be.revertedWithCustomError(gated, "TooManyVoters")
+        })
+
+        it("Should cap weights at maxWeight for the registrar and the admin", async () => {
+            const { factory, alice, carol } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice, { selfSignupAllowed: false, registrar: carol.address, maxWeight: 1 })
+
+            expect(await election.maxWeight()).to.equal(1n)
+            await expect(register(election, carol, new Identity("mw-1"), 2n, ethers.id("mw-1")))
+                .to.be.revertedWithCustomError(election, "InvalidWeight")
+            await expect(register(election, alice, new Identity("mw-2"), 2n))
+                .to.be.revertedWithCustomError(election, "InvalidWeight")
+            await register(election, carol, new Identity("mw-3"), 1n, ethers.id("mw-3"))
+        })
+
+        it("Should reject ballots larger than 1024 bytes", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const election = await createElectionVia(factory, alice)
+            await election.connect(alice).closeSignup()
+
+            const p: [number, number] = [0, 0]
+            const cast = (blob: string) => election.connect(bob).castVote(p, [p, p], p, 123, 1, 2, 3, blob)
+            await expect(cast("0x" + "ab".repeat(1025))).to.be.revertedWithCustomError(election, "BallotTooLarge")
+            // 1024 bytes passes the size check and fails later, on the Merkle root
+            await expect(cast("0x" + "ab".repeat(1024))).to.be.revertedWithCustomError(election, "MerkleRootMismatch")
+        })
+
+        it("Should open voting on the first join after the signup deadline, without closeSignup", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
+            const signupDeadline = await fromNow(3600)
+            const election = await createElectionVia(factory, alice, { signupDeadline })
+
+            const signup = new Identity("auto-open-signup")
+            const filler = new Identity("auto-open-filler")
+            await election.connect(bob).signUp(signup.commitment)
+            await election.connect(bob).signUp(filler.commitment)
+            const signupGroup = new Group()
+            signupGroup.addMember(poseidon2([signup.commitment, 1n]))
+            signupGroup.addMember(poseidon2([filler.commitment, 1n]))
+
+            const votingId = new Identity("auto-open-voting")
+            const joinProof = await generateAnonJoinProof(signup, votingId, signupGroup, PROPOSAL_ID)
+            const join = () => election.connect(bob).anonJoin(
+                joinProof.pA, joinProof.pB, joinProof.pC,
+                joinProof.signupMerkleRoot, joinProof.joinNullifier, joinProof.newCommitment
+            )
+
+            // Before the signup deadline, joining isn't possible yet
+            await expect(join()).to.be.revertedWithCustomError(election, "VotingNotOpen")
+
+            await time.increaseTo(signupDeadline + 1)
+            expect(await election.signupOpen()).to.equal(true) // nobody has closed it
+            await expect(join())
+                .to.emit(election, "SignupClosed")
+                .and.to.emit(election, "AnonJoined")
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(true)
         })
     })
 
@@ -1385,15 +1492,21 @@ describe("SpectreVotingFactory", () => {
             ).to.be.revertedWithCustomError(election, "VotingNotOpen")
         })
 
-        it("Should reject closeVoting while signup is still open", async () => {
-            const { factory, alice } = await loadFixture(deployFixture)
+        it("Should end a signup nobody closed when voting is closed after the deadline", async () => {
+            const { factory, alice, bob } = await loadFixture(deployFixture)
             const votingDeadline = await fromNow(3600)
             const election = await createElectionVia(factory, alice, { votingDeadline })
 
             await time.increaseTo(votingDeadline + 1)
-            await expect(
-                election.connect(alice).closeVoting()
-            ).to.be.revertedWithCustomError(election, "VotingNotOpen")
+            await expect(election.connect(bob).closeVoting())
+                .to.emit(election, "SignupClosed")
+                .and.to.emit(election, "VotingClosed")
+            expect(await election.signupOpen()).to.equal(false)
+            expect(await election.votingOpen()).to.equal(false)
+
+            // The tally can then be published
+            await election.connect(alice).commitTallyResult([0n, 0n], 0n, 0n, poseidon2([poseidon2([poseidon2([0n, 0n]), 0n]), 0n]))
+            expect(await election.tallyCommitted()).to.equal(true)
         })
     })
 
@@ -1424,7 +1537,8 @@ describe("SpectreVotingFactory", () => {
             const votingDeadline = await fromNow(ONE_WEEK)
 
             const tx = await factory.connect(alice).createElection(
-                PROPOSAL_ID, signupDeadline, votingDeadline, DEFAULT_NUM_OPTIONS, false, carol.address, metadataBytes,
+                await electionConfig({ signupDeadline, votingDeadline, selfSignupAllowed: false, registrar: carol.address }),
+                metadataBytes,
                 { value: CREATION_FEE }
             )
 
@@ -1473,7 +1587,7 @@ describe("SpectreVotingFactory", () => {
             const metadataBytes = ethers.toUtf8Bytes(meta)
 
             const tx = await factory.connect(alice).createElection(
-                PROPOSAL_ID, 0, await fromNow(ONE_WEEK), 3n, false, ethers.ZeroAddress, metadataBytes,
+                await electionConfig({ numOptions: 3n, selfSignupAllowed: false }), metadataBytes,
                 { value: CREATION_FEE }
             )
             const receipt = await tx.wait()

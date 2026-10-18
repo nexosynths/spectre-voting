@@ -39,21 +39,15 @@ contract SpectreVotingFactory {
     }
 
     /// @notice Deploy a new SpectreVoting election
-    /// @param _proposalId Unique proposal identifier
-    /// @param _signupDeadline Unix timestamp when signup closes (0 = no deadline, admin closes it)
-    /// @param _votingDeadline Unix timestamp when voting ends (required, in the future, after the signup deadline)
-    /// @param _numOptions Number of vote options (2..255)
-    /// @param _selfSignupAllowed When true, anyone can self-register; when false, only the admin or registrar can register voters
-    /// @param _registrar Address allowed to register voters for gated elections (normally the Spectre relay), or address(0)
+    /// @param _config Election settings (see SpectreVoting.Config):
+    ///        proposalId; signupDeadline (required, in the future); votingDeadline (after the
+    ///        signup deadline); numOptions (2..255); maxVoters (cap on registrations);
+    ///        maxWeight (1 unless weighted); selfSignupAllowed (open vs gated); registrar
+    ///        (normally the Spectre relay for gated elections, or address(0))
     /// @param _metadata Opaque bytes (UTF-8 JSON) with election title, labels and gate config. Emitted in the event only.
     /// @return election The address of the newly deployed SpectreVoting contract
     function createElection(
-        uint256 _proposalId,
-        uint256 _signupDeadline,
-        uint256 _votingDeadline,
-        uint256 _numOptions,
-        bool _selfSignupAllowed,
-        address _registrar,
+        SpectreVoting.Config calldata _config,
         bytes calldata _metadata
     ) external payable returns (address election) {
         require(msg.value >= creationFee, "Insufficient fee");
@@ -62,32 +56,19 @@ contract SpectreVotingFactory {
             require(sent, "Refund failed");
         }
         // Pass msg.sender as _admin so the caller (not the factory) is admin
-        SpectreVoting sv = new SpectreVoting(
-            semaphore,
-            voteVerifier,
-            joinVerifier,
-            _proposalId,
-            msg.sender,
-            _registrar,
-            _signupDeadline,
-            _votingDeadline,
-            _numOptions,
-            _selfSignupAllowed
-        );
-
-        election = address(sv);
+        election = address(new SpectreVoting(semaphore, voteVerifier, joinVerifier, msg.sender, _config));
         elections.push(election);
         isElection[election] = true;
 
         emit ElectionDeployed(
             election,
             msg.sender,
-            _proposalId,
-            _signupDeadline,
-            _votingDeadline,
-            _numOptions,
-            _selfSignupAllowed,
-            _registrar,
+            _config.proposalId,
+            _config.signupDeadline,
+            _config.votingDeadline,
+            _config.numOptions,
+            _config.selfSignupAllowed,
+            _config.registrar,
             _metadata
         );
     }

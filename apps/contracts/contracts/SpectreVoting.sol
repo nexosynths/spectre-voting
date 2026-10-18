@@ -25,8 +25,10 @@ interface IAnonJoinVerifier {
 
 /// @title SpectreVoting (v9): anonymous voting with ZK re-keyed registration
 /// @notice Three-phase election:
-///   Phase 1 (Signup):    voters' identity commitments are registered publicly
-///   Phase 2 (Join+Vote): voters re-key into the voting group with a ZK proof, then cast ballots
+///   Phase 1 (Signup):    voters' identity commitments are registered publicly, until the
+///                        signup deadline (the admin can end signup earlier)
+///   Phase 2 (Join+Vote): voters re-key into the voting group with a ZK proof, then cast ballots,
+///                        until the voting deadline. Voting opens automatically after signup ends.
 ///   Phase 3 (Closed):    anyone tallies after the voting deadline
 ///
 /// @dev Trust model (read before relying on this contract):
@@ -36,13 +38,16 @@ interface IAnonJoinVerifier {
 ///     normally the Spectre relay, which checks an off-chain gate (invite code, allowlist,
 ///     email, SSO, token balance) before registering. The registrar is therefore trusted
 ///     for eligibility in gated elections. A non-zero `gateKey` lets each credential
-///     register at most once, enforced here on-chain.
+///     register at most once, enforced here on-chain. `maxVoters` and `maxWeight`, fixed at
+///     creation, bound what any registrar (or a leaked registrar key) can add.
 ///   - Ballot secrecy: nobody holds an election key. Clients encrypt ballots off-chain with
-///     drand time-lock encryption to the voting deadline, so until then no one (admin
-///     included) can read them, assuming the drand network's threshold holds. After the
-///     deadline anyone can decrypt every ballot and recount. Ballots are unlinkable to
-///     signups only if join and vote are not sent from the voter's own wallet.
-///   - The contract never sees plaintext votes and doesn't check the ciphertext.
+///     drand time-lock encryption to a round after the voting deadline, so until then no one
+///     (admin included) can read them, assuming the drand network's threshold holds. After
+///     that anyone can decrypt every ballot and recount. Opened ballots are public; they
+///     are unlinkable to signups on-chain, but whoever submits joins and ballots for voters
+///     (the relay) sees their network addresses and can link them.
+///   - The contract never sees plaintext votes and doesn't check the ciphertext, so the
+///     submitter could replace a ballot's ciphertext; voters' clients check what landed.
 ///   - Not coercion-resistant: overwrites share a public base nullifier, and voters can
 ///     open their own vote commitments.
 ///   - Two Semaphore groups per election: `signupGroupId` (Phase 1) and `votingGroupId`
@@ -50,6 +55,22 @@ interface IAnonJoinVerifier {
 contract SpectreVoting {
     uint256 public constant VERSION = 9;
     uint256 public constant MAX_WEIGHT = 255;
+    /// Most voters an election can register (capacity of the circuits' depth-20 Merkle trees)
+    uint256 public constant MAX_VOTERS_LIMIT = 1 << 20;
+    /// Largest ballot ciphertext accepted (sealed ballots are about 600 bytes)
+    uint256 public constant MAX_BALLOT_BYTES = 1024;
+
+    /// Election settings, fixed at creation
+    struct Config {
+        uint256 proposalId;
+        uint256 signupDeadline;   // required, in the future, before votingDeadline
+        uint256 votingDeadline;   // required; ballots are time-locked to it
+        uint256 numOptions;       // 2..255
+        uint256 maxVoters;        // 1..MAX_VOTERS_LIMIT: cap on all registrations
+        uint256 maxWeight;        // 1..MAX_WEIGHT: largest weight a voter can be registered with
+        bool selfSignupAllowed;   // open election (anyone can signUp) vs gated
+        address registrar;        // may register voters in gated elections (normally the relay), or 0
+    }
 
     ISemaphore public semaphore;
     ISpectreVoteVerifier public voteVerifier;
@@ -77,8 +98,16 @@ contract SpectreVoting {
     bool public selfSignupAllowed;
 
     // Phase deadlines
-    uint256 public signupDeadline;  // 0 = no deadline (admin closes signup)
+    uint256 public signupDeadline;  // signup ends here at the latest; voting then opens on its own
     uint256 public votingDeadline;  // required; ballots are time-locked to this moment
+
+    // Registration limits
+    uint256 public maxVoters;           // cap on registrations of any kind
+    uint256 public maxWeight;           // largest weight registerVoter accepts
+    uint256 public registrationCount;   // registrations so far
+
+    // Block this election was created in (lower bound for event scans)
+    uint256 public immutable deployBlock;
 
     // One registration per gate credential (keyed hash chosen by the registrar)
     mapping(bytes32 => bool) public usedGateKeys;
@@ -157,6 +186,9 @@ contract SpectreVoting {
     error TallyAlreadyCommitted();
     error VotingStillOpen();
     error InvalidOptionCount();
+    error InvalidMaxVoters();
+    error TooManyVoters();
+    error BallotTooLarge();
 
     modifier onlyAdmin() {
         if (msg.sender != admin) revert NotAdmin();
@@ -170,51 +202,50 @@ contract SpectreVoting {
 
     modifier whenSignupOpen() {
         if (!signupOpen) revert SignupNotOpen();
-        if (signupDeadline != 0 && block.timestamp > signupDeadline) revert SignupDeadlinePassed();
+        if (block.timestamp > signupDeadline) revert SignupDeadlinePassed();
         _;
     }
 
     modifier whenVotingOpen() {
+        _openVotingIfSignupEnded();
         if (!votingOpen) revert VotingNotOpen();
         if (block.timestamp > votingDeadline) revert VotingDeadlinePassed();
         _;
     }
 
-    /// @param _registrar Address allowed to register voters with a weight and gate key
-    ///        (normally the Spectre relay). address(0) means only the admin can.
-    /// @param _signupDeadline Unix time signup closes (0 = admin closes it). Must be before the voting deadline.
-    /// @param _votingDeadline Unix time voting ends. Required and in the future; ballots are time-locked to it.
+    /// @param _admin Election admin (address(0) = the deployer)
+    /// @param _config Deadlines, options, limits, signup mode and registrar; see `Config`
     constructor(
         address _semaphore,
         address _voteVerifier,
         address _joinVerifier,
-        uint256 _proposalId,
         address _admin,
-        address _registrar,
-        uint256 _signupDeadline,
-        uint256 _votingDeadline,
-        uint256 _numOptions,
-        bool _selfSignupAllowed
+        Config memory _config
     ) {
-        if (_numOptions < 2 || _numOptions > 255) revert InvalidNumOptions();
-        if (_votingDeadline <= block.timestamp) revert InvalidDeadlines();
-        if (_signupDeadline != 0 && (_signupDeadline <= block.timestamp || _signupDeadline >= _votingDeadline)) {
+        if (_config.numOptions < 2 || _config.numOptions > 255) revert InvalidNumOptions();
+        if (_config.votingDeadline <= block.timestamp) revert InvalidDeadlines();
+        if (_config.signupDeadline <= block.timestamp || _config.signupDeadline >= _config.votingDeadline) {
             revert InvalidDeadlines();
         }
+        if (_config.maxVoters == 0 || _config.maxVoters > MAX_VOTERS_LIMIT) revert InvalidMaxVoters();
+        if (_config.maxWeight == 0 || _config.maxWeight > MAX_WEIGHT) revert InvalidWeight();
 
         semaphore = ISemaphore(_semaphore);
         voteVerifier = ISpectreVoteVerifier(_voteVerifier);
         joinVerifier = IAnonJoinVerifier(_joinVerifier);
         admin = _admin == address(0) ? msg.sender : _admin;
-        proposalId = _proposalId;
-        signupDeadline = _signupDeadline;
-        votingDeadline = _votingDeadline;
-        numOptions = _numOptions;
-        selfSignupAllowed = _selfSignupAllowed;
+        proposalId = _config.proposalId;
+        signupDeadline = _config.signupDeadline;
+        votingDeadline = _config.votingDeadline;
+        numOptions = _config.numOptions;
+        maxVoters = _config.maxVoters;
+        maxWeight = _config.maxWeight;
+        selfSignupAllowed = _config.selfSignupAllowed;
+        deployBlock = block.number;
 
-        if (_registrar != address(0)) {
-            registrar = _registrar;
-            emit RegistrarChanged(address(0), _registrar);
+        if (_config.registrar != address(0)) {
+            registrar = _config.registrar;
+            emit RegistrarChanged(address(0), _config.registrar);
         }
 
         // Create two Semaphore groups; this contract becomes the group admin for both
@@ -225,7 +256,7 @@ contract SpectreVoting {
         signupOpen = true;
         votingOpen = false;
 
-        emit ElectionCreated(signupGroupId, votingGroupId, _proposalId, _numOptions);
+        emit ElectionCreated(signupGroupId, votingGroupId, _config.proposalId, _config.numOptions);
     }
 
     // =======================================================================
@@ -251,7 +282,7 @@ contract SpectreVoting {
         onlyAdminOrRegistrar
         whenSignupOpen
     {
-        if (weight == 0 || weight > MAX_WEIGHT) revert InvalidWeight();
+        if (weight == 0 || weight > maxWeight) revert InvalidWeight();
         if (gateKey == bytes32(0)) {
             // The registrar enforces one registration per credential, so it must always name one.
             // Only the admin may register without a gate key (manual registration).
@@ -265,6 +296,8 @@ contract SpectreVoting {
 
     /// @notice Admin registers multiple voters at once (weight 1, no gate key)
     function registerVoters(uint256[] calldata identityCommitments) external onlyAdmin whenSignupOpen {
+        if (registrationCount + identityCommitments.length > maxVoters) revert TooManyVoters();
+        registrationCount += identityCommitments.length;
         uint256[] memory weightedLeaves = new uint256[](identityCommitments.length);
         for (uint256 i = 0; i < identityCommitments.length; i++) {
             if (identityCommitments[i] == 0) revert InvalidCommitment();
@@ -282,20 +315,32 @@ contract SpectreVoting {
         registrar = newRegistrar;
     }
 
-    /// @notice Close signup and open voting. The admin can close anytime; anyone after the signup deadline.
+    /// @notice Close signup and open voting. The admin can close early; after the signup
+    ///         deadline anyone can, though the first join or vote does it anyway.
     function closeSignup() external {
         if (!signupOpen) revert SignupAlreadyClosed();
         // Admin can always close. Others can only close after the signup deadline.
-        if (msg.sender != admin) {
-            if (signupDeadline == 0 || block.timestamp <= signupDeadline) revert NotAdmin();
-        }
+        if (msg.sender != admin && block.timestamp <= signupDeadline) revert NotAdmin();
         signupOpen = false;
         votingOpen = true;
         emit SignupClosed(proposalId);
     }
 
+    /// @dev Signup ends at its deadline even if nobody calls closeSignup: the first join,
+    ///      vote or closeVoting after the deadline opens voting. So nobody (including the
+    ///      admin) can keep voting from opening on time.
+    function _openVotingIfSignupEnded() internal {
+        if (signupOpen && block.timestamp > signupDeadline) {
+            signupOpen = false;
+            votingOpen = true;
+            emit SignupClosed(proposalId);
+        }
+    }
+
     function _register(uint256 identityCommitment, uint256 weight) internal {
         if (identityCommitment == 0) revert InvalidCommitment();
+        if (registrationCount >= maxVoters) revert TooManyVoters();
+        registrationCount++;
         uint256 weightedLeaf = PoseidonT3.hash([identityCommitment, weight]);
         semaphore.addMember(signupGroupId, weightedLeaf);
         emit VoterSignedUp(signupGroupId, identityCommitment, weight);
@@ -361,7 +406,8 @@ contract SpectreVoting {
     /// @param baseNullifier Poseidon(proposalId, secret): deterministic per voter (tally dedup)
     /// @param versionedNullifier Poseidon(proposalId, secret, version): unique per submission
     /// @param voteCommitment Poseidon(vote, weight, randomness): binds the encrypted vote to the proof
-    /// @param encryptedBlob Ballot (vote, weight, randomness) time-locked to the voting deadline; not checked on-chain
+    /// @param encryptedBlob Ballot (vote, weight, randomness) time-locked to after the voting deadline.
+    ///        Its contents aren't checked on-chain (only its size); the recount checks it against voteCommitment.
     function castVote(
         uint[2] calldata pA,
         uint[2][2] calldata pB,
@@ -372,6 +418,9 @@ contract SpectreVoting {
         uint256 voteCommitment,
         bytes calldata encryptedBlob
     ) external whenVotingOpen {
+        // Oversized logs would make the ballots hard to fetch for everyone's recount
+        if (encryptedBlob.length > MAX_BALLOT_BYTES) revert BallotTooLarge();
+
         // 1. Check versioned nullifier hasn't been used (prevents replay of same version)
         if (usedNullifiers[versionedNullifier]) revert NullifierAlreadyUsed();
 
@@ -409,6 +458,7 @@ contract SpectreVoting {
     /// @notice Close voting. Anyone can call it, but only after the voting deadline;
     ///         nobody (including the admin) can end voting early.
     function closeVoting() external {
+        _openVotingIfSignupEnded();
         if (!votingOpen) revert VotingNotOpen();
         if (block.timestamp <= votingDeadline) revert VotingNotEnded();
         votingOpen = false;
