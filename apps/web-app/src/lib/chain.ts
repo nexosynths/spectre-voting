@@ -3,9 +3,10 @@
  * metadata, group members and ballots. Used by the browser and by the API routes.
  *
  * Scans start at the election's own deploy block, so they don't depend on a
- * hard-coded factory block. Queries always ask for every event of a kind in a
- * block range and filter locally, never for one voter's nullifier or transaction,
- * so the RPC provider doesn't learn which record a client cares about.
+ * hard-coded factory block. Queries always ask for every event of a kind and filter
+ * locally, never for one voter's nullifier or transaction. The RPC provider still
+ * sees the client's IP address and when it asks, which can hint at which record it
+ * cares about when few events are recent.
  */
 
 import { Contract, JsonRpcProvider, toUtf8String, type ContractEventName, type EventLog, type Log } from "ethers"

@@ -1,6 +1,7 @@
 "use client"
 
 import { ElectionFormState, ElectionFormDispatch } from "@/hooks/useElectionForm"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 
 interface Props {
     state: ElectionFormState
@@ -95,7 +96,7 @@ export default function StepBasics({ state, dispatch }: Props) {
             </div>
             <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", lineHeight: 1.4, marginTop: -6 }}>
                 Voting opens when signup ends (you can end signup early). The voting deadline is fixed when you create the
-                election: ballots stay sealed until shortly after it, and voting can&apos;t be ended early.
+                election: ballots stay sealed until {SEAL_DELAY_SECONDS / 3600} hours after it, and voting can&apos;t be ended early.
             </p>
         </div>
     )

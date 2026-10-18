@@ -9,20 +9,21 @@
  * voter's own wallet never appears on the transactions that carry their ballot.
  *
  * Checking what landed: after each relayed action, the client reads the chain
- * itself (through the public RPC, not the relay) and compares the event with what
- * it sent. For ballots that means the versioned nullifier, the vote commitment and
- * the sealed ballot bytes: the proof doesn't cover the ciphertext, so a relay could
+ * itself (through the public RPC, not the relay) and compares what's there with
+ * what it sent. For ballots that means the versioned nullifier, the commitment and
+ * the sealed bytes: the proof doesn't cover the sealed bytes, so a relay could
  * submit a voter's proof with different contents, which would void the ballot.
  *
- * Privacy of the checks: they fetch every event of a kind in a small block range
- * and match locally, rather than asking the RPC for one transaction or nullifier,
- * so the RPC provider doesn't learn which ballot belongs to this browser. The relay
- * itself still sees this browser's IP address on every request.
+ * Privacy of the checks: each check scans every event of a kind for the whole
+ * election and matches locally, starting after a random delay, so the RPC provider
+ * isn't told which record this browser cares about. It still sees this browser's IP
+ * address and when it checks, so in an election with few ballots it could guess
+ * which ballot was just checked. The relay sees the IP address of every request.
  */
 
-import { JsonRpcProvider, Contract, type EventLog } from "ethers"
-import { SPECTRE_VOTING_ABI, RPC_URL } from "@/lib/contracts"
-import { queryInChunks } from "@/lib/chain"
+import { JsonRpcProvider, keccak256 } from "ethers"
+import { RPC_URL } from "@/lib/contracts"
+import { fetchBallots, fetchSignups } from "@/lib/chain"
 import type { SpectreProof } from "@/lib/proof"
 import type { AnonJoinProof } from "@/lib/anonJoinProof"
 
@@ -46,6 +47,10 @@ export interface RelayInfo {
     relayerAddress: string
     /** False if the relay has no GATE_KEY_SECRET, so it can't register voters in gated elections */
     gatedElections: boolean
+    /** Fingerprint of the relay's gate-key secret, recorded in gated elections' metadata */
+    gateKeyFingerprint: string | null
+    /** Whether the relay's RPC can read historical balances (needed for token gates) */
+    tokenGates: boolean
 }
 
 export class RelayError extends Error {
@@ -94,7 +99,12 @@ export async function getRelayInfo(): Promise<RelayInfo> {
     if (!data.success || !data.relayerAddress) {
         throw new RelayError(data.error || "Relay is not available", res.status)
     }
-    return { relayerAddress: data.relayerAddress as string, gatedElections: data.gatedElections === true }
+    return {
+        relayerAddress: data.relayerAddress as string,
+        gatedElections: data.gatedElections === true,
+        gateKeyFingerprint: typeof data.gateKeyFingerprint === "string" ? data.gateKeyFingerprint : null,
+        tokenGates: data.tokenGates === true,
+    }
 }
 
 export async function getRelayerAddress(): Promise<string> {
@@ -177,93 +187,80 @@ export async function relayCastVote(electionAddress: string, proof: SpectreProof
 // Checking what landed on-chain
 // ---------------------------------------------------------------------------
 
-const POLL_INTERVAL_MS = 3_000
-const DEFAULT_TIMEOUT_MS = 180_000
-
 /**
- * A block to start looking from, taken before a relayed action is sent. A few blocks
- * of slack cover load-balanced RPC backends that are slightly behind each other.
+ * Call `probe` until it returns a value or `timeoutMs` passes. The first call waits a
+ * random delay, so the RPC provider can't line up the check with the submission.
  */
-export async function blockBeforeRelay(): Promise<number> {
-    const n = await new JsonRpcProvider(RPC_URL).getBlockNumber()
-    return Math.max(0, n - 5)
-}
-
-/** Poll every `eventName` event of the election from `fromBlock` on until `match` returns a result. */
-async function pollElectionEvents<T>(
-    electionAddress: string,
-    eventName: "VoterSignedUp" | "AnonJoined" | "VoteCast",
-    fromBlock: number,
-    timeoutMs: number,
-    match: (event: EventLog) => T | null,
+export async function pollUntil<T>(
+    probe: () => Promise<T | null>,
+    { minDelayMs = 3_000, maxDelayMs = 10_000, intervalMs = 5_000, timeoutMs = 180_000 } = {},
 ): Promise<T | null> {
-    const provider = new JsonRpcProvider(RPC_URL)
-    const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
     const stopAt = Date.now() + timeoutMs
+    await sleep(minDelayMs + Math.random() * (maxDelayMs - minDelayMs))
     for (;;) {
         try {
-            const latest = await provider.getBlockNumber()
-            const events = await queryInChunks(election, (election.filters as any)[eventName](), fromBlock, latest)
-            for (const event of events) {
-                const result = match(event)
-                if (result !== null) return result
-            }
+            const result = await probe()
+            if (result !== null) return result
         } catch {
-            // Transient RPC error: keep polling until the timeout
+            // Transient RPC error: keep trying until the timeout
         }
         if (Date.now() >= stopAt) return null
-        await sleep(POLL_INTERVAL_MS)
+        await sleep(intervalMs)
     }
 }
 
-export type SignupCheck = { status: "confirmed"; weight: bigint } | { status: "missing" }
-
 /** Wait for this identity's registration to appear on-chain; returns the weight it was registered with. */
-export async function confirmSignup(
+export async function waitForRegistration(
     electionAddress: string,
-    identityCommitment: string,
-    fromBlock: number,
-    timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<SignupCheck> {
-    const weight = await pollElectionEvents(electionAddress, "VoterSignedUp", fromBlock, timeoutMs, event =>
-        event.args.identityCommitment.toString() === identityCommitment ? BigInt(event.args.weight) : null)
-    return weight === null ? { status: "missing" } : { status: "confirmed", weight }
+    deployBlock: number,
+    identityCommitment: bigint,
+): Promise<bigint | null> {
+    const provider = new JsonRpcProvider(RPC_URL)
+    return pollUntil(async () => {
+        const mine = (await fetchSignups(electionAddress, provider, deployBlock)).filter(s => s.identityCommitment === identityCommitment)
+        return mine.length > 0 ? mine[mine.length - 1].weight : null
+    })
 }
 
-export type LandedCheck = { status: "confirmed" } | { status: "altered" } | { status: "missing" }
+/** A ballot this browser handed to the relay, kept until the browser has seen it on-chain. */
+export interface SentBallot {
+    versionedNullifier: string
+    voteCommitment: string
+    /** keccak256 of the sealed ballot bytes */
+    blobHash: string
+    /** When it was handed to the relay (ms) */
+    sentAt: number
+}
 
-/** Wait for this join (by join nullifier) and check it added the voting commitment that was sent. */
-export async function confirmJoin(
-    electionAddress: string,
-    sent: { joinNullifier: string; newCommitment: string },
-    fromBlock: number,
-    timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<LandedCheck> {
-    const result = await pollElectionEvents(electionAddress, "AnonJoined", fromBlock, timeoutMs, event => {
-        if (event.args.joinNullifier.toString() !== sent.joinNullifier) return null
-        return event.args.newCommitment.toString() === sent.newCommitment ? "confirmed" as const : "altered" as const
-    })
-    return { status: result ?? "missing" }
+export type BallotStatus = "confirmed" | "altered" | "not-found"
+
+export function sealedBallotHash(encryptedBlobHex: string): string {
+    return keccak256(encryptedBlobHex.toLowerCase())
 }
 
 /**
- * Wait for this ballot (by versioned nullifier) and check that the on-chain vote
- * commitment and sealed ballot bytes are exactly what this browser sent.
+ * Compare ballots this browser sent with what's on-chain, in one scan of every ballot
+ * in the election. "altered" means a ballot with the same versioned nullifier landed
+ * with a different commitment or different sealed bytes.
  */
-export async function confirmBallot(
+export async function checkSentBallots(
     electionAddress: string,
-    sent: { versionedNullifier: string; voteCommitment: string; encryptedBlobHex: string },
-    fromBlock: number,
-    timeoutMs: number = DEFAULT_TIMEOUT_MS,
-): Promise<LandedCheck> {
-    const blob = sent.encryptedBlobHex.toLowerCase()
-    const result = await pollElectionEvents(electionAddress, "VoteCast", fromBlock, timeoutMs, event => {
-        if (event.args.versionedNullifier.toString() !== sent.versionedNullifier) return null
-        const same = event.args.voteCommitment.toString() === sent.voteCommitment &&
-            String(event.args.encryptedBlob).toLowerCase() === blob
-        return same ? "confirmed" as const : "altered" as const
-    })
-    return { status: result ?? "missing" }
+    deployBlock: number,
+    sent: SentBallot[],
+): Promise<Record<string, BallotStatus>> {
+    const provider = new JsonRpcProvider(RPC_URL)
+    const latest = await provider.getBlockNumber()
+    const onChain = await fetchBallots(electionAddress, provider, deployBlock, latest)
+    const byNullifier = new Map(onChain.map(b => [b.versionedNullifier, b]))
+    const statuses: Record<string, BallotStatus> = {}
+    for (const ballot of sent) {
+        const found = byNullifier.get(ballot.versionedNullifier)
+        if (!found) statuses[ballot.versionedNullifier] = "not-found"
+        else if (found.voteCommitment === ballot.voteCommitment && sealedBallotHash(found.encryptedBlob) === ballot.blobHash) {
+            statuses[ballot.versionedNullifier] = "confirmed"
+        } else statuses[ballot.versionedNullifier] = "altered"
+    }
+    return statuses
 }
 
 // ---------------------------------------------------------------------------

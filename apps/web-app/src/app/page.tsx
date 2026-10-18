@@ -6,7 +6,7 @@ import { Contract, JsonRpcProvider, toUtf8Bytes, toUtf8String, ZeroAddress } fro
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, RPC_URL, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK, FACTORY_CONFIGURED, type ElectionConfig } from "@/lib/contracts"
 import { friendlyError } from "@/lib/errors"
 import { getRelayInfo } from "@/lib/relayer"
-import { SEAL_DELAY_SECONDS } from "@/lib/ballot"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 
 // SpectreVoting.MAX_VOTERS_LIMIT
 const MAX_VOTERS_LIMIT = 1 << 20
@@ -173,12 +173,17 @@ export default function HomePage() {
             // Gated elections: the relay registers eligible voters as the election's registrar.
             // Open and admin-only elections have no registrar.
             let registrar = ZeroAddress
+            let gateKeyFingerprint: string | null = null
             if (isRelayGate(formState.gateType)) {
                 const relay = await getRelayInfo()
-                if (!relay.gatedElections) {
+                if (!relay.gatedElections || !relay.gateKeyFingerprint) {
                     throw new Error("This site's relay isn't set up for gated elections yet (it needs a GATE_KEY_SECRET). Use an open or admin-only election.")
                 }
+                if (formState.gateType === "token-gate" && !relay.tokenGates) {
+                    throw new Error("This site's relay can't read past token balances (it needs an archive RPC in RELAY_RPC_URL), so it can't run token-gated elections yet.")
+                }
                 registrar = relay.relayerAddress
+                gateKeyFingerprint = relay.gateKeyFingerprint
             }
 
             const numOptions = formState.optionLabels.length
@@ -186,6 +191,8 @@ export default function HomePage() {
 
             // Build metadata JSON for on-chain storage
             const metaObj: Record<string, any> = { title: formState.electionTitle.trim(), labels }
+            // The relay refuses to register voters if its gate-key secret changes from this one
+            if (gateKeyFingerprint) metaObj.gateKeyFingerprint = gateKeyFingerprint
             if (effectiveGasless) metaObj.gaslessEnabled = true
             // Token gate: wallet required for balance check
             if (formState.gateType === "token-gate") metaObj.gaslessEnabled = false
@@ -346,7 +353,7 @@ export default function HomePage() {
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
                     {[
-                        { icon: "\u{1F6E1}", title: "Unlinked on-chain", desc: "A zero-knowledge proof separates your vote from your signup, and a relay submits it instead of your wallet. The relay's operator sees IP addresses" },
+                        { icon: "\u{1F6E1}", title: "Separated from your signup", desc: "A zero-knowledge proof separates your vote from your signup, and a relay submits it instead of your wallet. The relay's operator sees IP addresses, and in weighted votes an unusual weight can link the two" },
                         { icon: "\u{1F512}", title: "Sealed until after the deadline", desc: "Ballots are time-locked with drand. Nobody holds a key, so nobody, including the organizer, can read them early" },
                         { icon: "\u2705", title: "Anyone can recount", desc: "Once ballots unseal, anyone can open them and check the count. Opened ballots are public, listed by anonymous tags" },
                         { icon: "\u26A0\uFE0F", title: "Not coercion-resistant", desc: "You can change your vote before the deadline, but that doesn't stop someone pressuring you. Unaudited; don't use it for votes that matter" },

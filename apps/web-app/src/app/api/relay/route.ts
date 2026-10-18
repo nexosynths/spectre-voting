@@ -29,10 +29,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { Wallet, Contract, NonceManager, keccak256, toUtf8Bytes, verifyMessage, getAddress, ZeroAddress, type ContractTransactionResponse } from "ethers"
+import { Wallet, Contract, keccak256, toUtf8Bytes, verifyMessage, getAddress, ZeroAddress, type ContractTransactionResponse } from "ethers"
 import { createHmac, timingSafeEqual } from "crypto"
 import { CONTRACTS, FACTORY_ABI, SPECTRE_VOTING_ABI, FACTORY_CONFIGURED } from "@/lib/contracts"
-import { tokenGateMessage, normalizeEmail, emailDomain, normalizeInviteCode, INVITE_CODE_PATTERN } from "@/lib/gate"
+import { tokenGateMessage, normalizeEmail, emailDomain, normalizeInviteCode, gateKeyFingerprint, INVITE_CODE_PATTERN } from "@/lib/gate"
 import { serverProvider, cachedElectionMetadata, clientIp } from "@/lib/server"
 
 // Always evaluate at request time (the GET handler reads env vars and must not be prerendered)
@@ -76,43 +76,73 @@ function releaseGateKey(gateKey: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Relay signer: one per server instance. Transactions go out one at a time through a
-// nonce manager; after any failure the nonce is re-read from the chain, and nonce
-// conflicts (e.g. with another instance) are retried.
+// Sending transactions. Each call is estimated first, so an invalid proof or a revert
+// fails before any nonce is used. Sends then go out one at a time per server instance,
+// with nonce = max(next local nonce, the chain's pending count). On a nonce conflict
+// (for example with another instance), the relay waits about a block and tries the
+// next nonce. Separate instances can still collide; run one instance, or give each
+// its own key, if that matters.
 // ---------------------------------------------------------------------------
-let relaySigner: { key: string; wallet: Wallet; signer: NonceManager } | null = null
+let relayWallet: { key: string; wallet: Wallet } | null = null
 
-function getRelaySigner(key: string) {
-    if (!relaySigner || relaySigner.key !== key) {
-        const wallet = new Wallet(key, serverProvider())
-        relaySigner = { key, wallet, signer: new NonceManager(wallet) }
-    }
-    return relaySigner
+function getRelayWallet(key: string): Wallet {
+    if (!relayWallet || relayWallet.key !== key) relayWallet = { key, wallet: new Wallet(key, serverProvider()) }
+    return relayWallet.wallet
 }
 
+let nextNonce: number | null = null
 let sendQueue: Promise<unknown> = Promise.resolve()
 
 function isNonceConflict(err: any): boolean {
     const text = `${err?.code ?? ""} ${err?.shortMessage ?? ""} ${err?.message ?? ""}`
-    return /NONCE_EXPIRED|REPLACEMENT_UNDERPRICED|nonce too low|nonce has already been used|replacement transaction underpriced/i.test(text)
+    return /NONCE_EXPIRED|REPLACEMENT_UNDERPRICED|nonce too low|nonce has already been used|replacement transaction underpriced|already known/i.test(text)
 }
 
-/** Send one transaction at a time; retry up to twice on a nonce conflict. */
-function sendSerialized(signer: NonceManager, send: () => Promise<ContractTransactionResponse>): Promise<ContractTransactionResponse> {
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+/** Estimate, then send one transaction at a time with an explicit nonce and gas limit. */
+async function relaySend(wallet: Wallet, contract: Contract, method: string, args: unknown[]): Promise<ContractTransactionResponse> {
+    const fn = contract.connect(wallet).getFunction(method)
+    const gas = await fn.estimateGas(...args) // reverts here cost no nonce
     const run = sendQueue.then(async () => {
         for (let attempt = 0; ; attempt++) {
+            const pending = await wallet.getNonce("pending")
+            const nonce = Math.max(pending, nextNonce ?? 0)
             try {
-                return await send()
+                const tx: ContractTransactionResponse = await fn.send(...args, { nonce, gasLimit: (gas * 12n) / 10n })
+                nextNonce = nonce + 1
+                return tx
             } catch (err) {
-                // The nonce manager may have counted a nonce that was never used
-                signer.reset()
-                if (attempt < 2 && isNonceConflict(err)) continue
+                if (attempt < 2 && isNonceConflict(err)) {
+                    nextNonce = nonce + 1 // that nonce is taken; wait about a block and try the next
+                    await sleep(2_500)
+                    continue
+                }
                 throw err
             }
         }
     })
     sendQueue = run.catch(() => undefined)
     return run
+}
+
+// Whether the relay's RPC serves old state (token gates read balances at a snapshot block).
+// Checked once per instance by reading a balance about a day back.
+let archiveProbe: Promise<boolean> | null = null
+function rpcServesHistory(): Promise<boolean> {
+    if (!archiveProbe) {
+        archiveProbe = (async () => {
+            try {
+                const provider = serverProvider()
+                const latest = await provider.getBlockNumber()
+                await provider.getBalance(ZeroAddress, Math.max(0, latest - 43_200))
+                return true
+            } catch {
+                return false
+            }
+        })()
+    }
+    return archiveProbe
 }
 
 // ---------------------------------------------------------------------------
@@ -175,11 +205,15 @@ async function votingIsOpen(election: Contract): Promise<{ open: boolean; reason
 export async function GET() {
     const key = relayerKey()
     if (!key) return fail("Relayer not configured", 503)
+    const secret = gateSecret()
     return NextResponse.json({
         success: true,
         relayerAddress: new Wallet(key).address,
         // Gated elections need a stable gate-key secret; the app won't create them without it
-        gatedElections: gateSecret() !== null,
+        gatedElections: secret !== null,
+        gateKeyFingerprint: secret ? gateKeyFingerprint(secret) : null,
+        // Token gates need an RPC that can read balances at an old block
+        tokenGates: await rpcServesHistory(),
     })
 }
 
@@ -205,7 +239,7 @@ export async function POST(request: NextRequest) {
         }
 
         const provider = serverProvider()
-        const { wallet, signer } = getRelaySigner(key)
+        const wallet = getRelayWallet(key)
 
         const factory = new Contract(CONTRACTS.FACTORY, FACTORY_ABI, provider)
         const [isElection, balance] = await Promise.all([
@@ -215,15 +249,15 @@ export async function POST(request: NextRequest) {
         if (!isElection) return fail("Invalid election address")
         if (balance < 100000000000000n) return fail("Relayer wallet has insufficient funds", 503) // 0.0001 ETH
 
-        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, signer)
+        const election = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
 
         switch (action) {
             case "signUp":
-                return await handleSignUp(election, signer, getAddress(electionAddress), body, wallet.address)
+                return await handleSignUp(election, wallet, getAddress(electionAddress), body)
             case "anonJoin":
-                return await handleAnonJoin(election, signer, body)
+                return await handleAnonJoin(election, wallet, body)
             case "castVote":
-                return await handleCastVote(election, signer, body)
+                return await handleCastVote(election, wallet, body)
             default:
                 return fail("Unknown action")
         }
@@ -242,11 +276,11 @@ type GateCheck = { ok: true; value: string; weight: bigint; usedMessage: string 
 
 async function handleSignUp(
     election: Contract,
-    signer: NonceManager,
+    wallet: Wallet,
     electionAddress: string,
     body: any,
-    relayerAddress: string,
 ): Promise<NextResponse> {
+    const relayerAddress = wallet.address
     const commitment = parseCommitment(body.identityCommitment)
     if (commitment === null) return fail("Missing or invalid identityCommitment")
 
@@ -271,7 +305,7 @@ async function handleSignUp(
         if (meta?.gaslessEnabled !== true) {
             return fail("This election signs voters up from their own wallets. Connect a wallet to sign up.", 403)
         }
-        const tx = await sendSerialized(signer, () => election.signUp(commitment))
+        const tx = await relaySend(wallet, election, "signUp", [commitment])
         return NextResponse.json({ success: true, txHash: tx.hash, weight: "1" })
     }
 
@@ -281,6 +315,11 @@ async function handleSignUp(
     }
     const secret = gateSecret()
     if (!secret) return fail("This relay isn't set up for gated elections (GATE_KEY_SECRET is missing).", 503)
+    // A different secret than the one the election was created with would let credentials
+    // that already registered register again, so refuse rather than continue.
+    if (meta?.gateKeyFingerprint !== gateKeyFingerprint(secret)) {
+        return fail("This relay's gate-key secret doesn't match the one this election was created with, so it can't keep registrations to one per credential. The relay operator needs to restore it.", 503)
+    }
 
     const gateType: string = meta?.gateType || ""
     let check: GateCheck
@@ -301,7 +340,7 @@ async function handleSignUp(
     if (!claimGateKey(gateKey)) return fail("This signup is already being processed. Wait a minute and refresh.", 409)
 
     try {
-        const tx = await sendSerialized(signer, () => election.registerVoter(commitment, weight, gateKey))
+        const tx = await relaySend(wallet, election, "registerVoter", [commitment, weight, gateKey])
         return NextResponse.json({ success: true, txHash: tx.hash, weight: weight.toString() })
     } catch (err) {
         releaseGateKey(gateKey)
@@ -427,7 +466,7 @@ async function checkToken(
 // anonJoin / castVote
 // ---------------------------------------------------------------------------
 
-async function handleAnonJoin(election: Contract, signer: NonceManager, body: any): Promise<NextResponse> {
+async function handleAnonJoin(election: Contract, wallet: Wallet, body: any): Promise<NextResponse> {
     const { pA, pB, pC, signupMerkleRoot, joinNullifier, newCommitment } = body
     if (!pA || !pB || !pC || !signupMerkleRoot || !joinNullifier || !newCommitment) {
         return fail("Missing proof fields for anonJoin")
@@ -442,11 +481,11 @@ async function handleAnonJoin(election: Contract, signer: NonceManager, body: an
 
     // Gas estimation fails on an invalid proof, so a bad proof costs the relay nothing.
     // The first join after the signup deadline also opens voting on-chain.
-    const tx = await sendSerialized(signer, () => election.anonJoin(pA, pB, pC, signupMerkleRoot, joinNullifier, newCommitment))
+    const tx = await relaySend(wallet, election, "anonJoin", [pA, pB, pC, signupMerkleRoot, joinNullifier, newCommitment])
     return NextResponse.json({ success: true, txHash: tx.hash })
 }
 
-async function handleCastVote(election: Contract, signer: NonceManager, body: any): Promise<NextResponse> {
+async function handleCastVote(election: Contract, wallet: Wallet, body: any): Promise<NextResponse> {
     const { pA, pB, pC, merkleTreeRoot, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob } = body
     if (!pA || !pB || !pC || !merkleTreeRoot || !baseNullifier || !versionedNullifier || !voteCommitment || !encryptedBlob) {
         return fail("Missing proof fields for castVote")
@@ -462,7 +501,6 @@ async function handleCastVote(election: Contract, signer: NonceManager, body: an
     if (!status.open) return fail(status.reason || "Voting is not open for this election")
     if (nullifierUsed) return fail("This vote version already submitted", 409)
 
-    const tx = await sendSerialized(signer, () =>
-        election.castVote(pA, pB, pC, merkleTreeRoot, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob))
+    const tx = await relaySend(wallet, election, "castVote", [pA, pB, pC, merkleTreeRoot, baseNullifier, versionedNullifier, voteCommitment, encryptedBlob])
     return NextResponse.json({ success: true, txHash: tx.hash })
 }

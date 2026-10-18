@@ -7,9 +7,10 @@
  * a ballot, including the election admin. After it is published, anyone can
  * decrypt every ballot and recount.
  *
- * The delay covers a stalled sequencer: Base can produce blocks stamped before
- * the deadline some time after the deadline has passed in real time. If ballots
- * opened right at the deadline, someone could read them and still vote.
+ * The delay covers a stalled sequencer. After an outage, Base's sequencer can fill
+ * in blocks stamped in the past, for up to its 12-hour sequencing window. If
+ * ballots opened sooner, someone could read them during an outage that spans the
+ * deadline and still vote in a block stamped before it.
  *
  * Trust assumption: drand's League of Entropy network (a threshold of
  * independent operators) does not publish or leak the round signature early.
@@ -21,12 +22,12 @@ import { timelockEncrypt, timelockDecrypt, roundAt, roundTime, Buffer } from "tl
 import type { ChainClient, ChainInfo } from "tlock-js"
 import { bls12_381 as bls } from "@noble/curves/bls12-381"
 import { sha256 } from "@noble/hashes/sha256"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 
-/**
- * Ballots open this long after the voting deadline. Every client must use the same
- * value, so it's fixed here rather than chosen per election.
- */
-export const SEAL_DELAY_SECONDS = 30 * 60
+export { SEAL_DELAY_SECONDS }
+
+/** How long to wait for one drand endpoint before trying the next */
+const BEACON_FETCH_TIMEOUT_MS = 10_000
 
 /** drand quicknet (RFC 9380 G1 signatures, 3 s rounds). Pinned here; never fetched. */
 export const QUICKNET: ChainInfo = {
@@ -131,7 +132,7 @@ export async function fetchQuicknetBeacon(round: number): Promise<Beacon> {
     const problems: string[] = []
     for (const base of QUICKNET_ENDPOINTS) {
         try {
-            const res = await fetch(`${base}/${QUICKNET.hash}/public/${round}`)
+            const res = await fetch(`${base}/${QUICKNET.hash}/public/${round}`, { signal: AbortSignal.timeout(BEACON_FETCH_TIMEOUT_MS) })
             if (!res.ok) throw new Error(`HTTP ${res.status}`)
             const body = await res.json()
             const beacon: Beacon = { round: Number(body.round), randomness: String(body.randomness), signature: String(body.signature) }
@@ -194,27 +195,34 @@ export async function openBallots(
 }
 
 /**
- * Ballot payload: vote (1 byte) || weight (1 byte) || randomness (32 bytes, big-endian).
+ * Ballot payload: vote (1 byte) || weight (1 byte) || version (1 byte) || randomness (32 bytes, big-endian).
  * The vote commitment Poseidon(vote, weight, randomness) is public on-chain, so the
- * opened payload can be checked against it.
+ * opened payload can be checked against it. The version is the voter's own count of
+ * their submissions; the recount keeps each voter's highest-version valid ballot, so a
+ * ballot held back and posted later can't override a newer one. Nobody but the voter
+ * can produce a valid payload (it needs the commitment's randomness).
  */
-export function encodeVotePayload(vote: bigint, weight: bigint, randomness: bigint): Uint8Array {
+export const VOTE_PAYLOAD_BYTES = 35
+
+export function encodeVotePayload(vote: bigint, weight: bigint, version: bigint, randomness: bigint): Uint8Array {
     if (vote < 0n || vote > 255n) throw new Error("Vote out of range")
     if (weight < 1n || weight > 255n) throw new Error("Weight out of range")
-    const buf = new Uint8Array(34)
+    if (version < 0n || version > 255n) throw new Error("Version out of range")
+    const buf = new Uint8Array(VOTE_PAYLOAD_BYTES)
     buf[0] = Number(vote)
     buf[1] = Number(weight)
+    buf[2] = Number(version)
     const rHex = randomness.toString(16).padStart(64, "0")
     if (rHex.length > 64) throw new Error("Randomness too large")
-    for (let i = 0; i < 32; i++) buf[2 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
+    for (let i = 0; i < 32; i++) buf[3 + i] = parseInt(rHex.substring(i * 2, i * 2 + 2), 16)
     return buf
 }
 
-export function decodeVotePayload(buf: Uint8Array): { vote: bigint; weight: bigint; voteRandomness: bigint } {
-    if (buf.length !== 34) throw new Error("Malformed ballot payload")
+export function decodeVotePayload(buf: Uint8Array): { vote: bigint; weight: bigint; version: number; voteRandomness: bigint } {
+    if (buf.length !== VOTE_PAYLOAD_BYTES) throw new Error("Malformed ballot payload")
     let rHex = ""
-    for (let i = 0; i < 32; i++) rHex += buf[2 + i].toString(16).padStart(2, "0")
-    return { vote: BigInt(buf[0]), weight: BigInt(buf[1]), voteRandomness: BigInt("0x" + rHex) }
+    for (let i = 0; i < 32; i++) rHex += buf[3 + i].toString(16).padStart(2, "0")
+    return { vote: BigInt(buf[0]), weight: BigInt(buf[1]), version: buf[2], voteRandomness: BigInt("0x" + rHex) }
 }
 
 export function hexToBytes(hex: string): Uint8Array {

@@ -2,6 +2,7 @@
 
 import { ElectionFormState, ElectionFormDispatch } from "@/hooks/useElectionForm"
 import ContextualWarnings from "@/components/ContextualWarning"
+import { SEAL_DELAY_SECONDS } from "@/lib/sealing"
 import TrustSummary from "@/components/TrustSummary"
 
 interface Props {
@@ -53,7 +54,7 @@ export default function StepReview({ state, dispatch, effectiveGasless, canCreat
                     <SummaryRow label="Org" value={state.githubOrg} />
                 )}
                 <SummaryRow label="Wallet" value={effectiveGasless ? "Not required (gasless)" : "Needed to sign up"} />
-                <SummaryRow label="Ballots" value="Sealed until 30 min after the deadline; then anyone can recount" />
+                <SummaryRow label="Ballots" value={`Sealed until ${SEAL_DELAY_SECONDS / 3600} hours after the deadline; then anyone can recount`} />
             </div>
 
             {/* Contextual warnings */}

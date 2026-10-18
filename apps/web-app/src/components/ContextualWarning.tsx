@@ -29,6 +29,13 @@ function getWarnings(config: WarningConfig): Warning[] {
         })
     }
 
+    if (config.gateType === "open") {
+        warnings.push({
+            text: "In an open election anyone can sign up, so someone could fill every slot up to your maximum and lock real voters out. Set the maximum well above the turnout you expect.",
+            severity: "medium",
+        })
+    }
+
     if (config.gateType === "token-gate") {
         warnings.push({
             text: "Balances count at the block when you create the election, so tokens bought or moved later don't qualify. The relay needs an archive RPC (RELAY_RPC_URL) to read those balances.",

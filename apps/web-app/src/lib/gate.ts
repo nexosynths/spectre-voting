@@ -2,6 +2,8 @@
  * Shared helpers for signup gates (used by both the browser and the relay).
  */
 
+import { keccak256, toUtf8Bytes } from "ethers"
+
 /**
  * Message a token holder signs to prove they control the wallet whose balance
  * qualifies them. Bound to the election, the identity being registered and the
@@ -72,4 +74,14 @@ export function emailDomain(raw: string): string {
     const email = String(raw || "").trim().toLowerCase()
     const at = email.lastIndexOf("@")
     return at >= 0 ? email.slice(at + 1) : ""
+}
+
+/**
+ * Public fingerprint of the relay's gate-key secret. Gated elections record it in their
+ * metadata at creation; the relay refuses to register voters if its secret no longer
+ * matches, because a different secret would let used credentials register again.
+ * 8 bytes of a domain-separated hash: enough to spot a change, not to recover the secret.
+ */
+export function gateKeyFingerprint(secret: string): string {
+    return keccak256(toUtf8Bytes(`spectre-gate-key-fingerprint-v1|${secret}`)).slice(0, 18)
 }

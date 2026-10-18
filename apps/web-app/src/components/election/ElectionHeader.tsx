@@ -89,7 +89,7 @@ export default function ElectionHeader({
                         </span>
                     )}
                     {unsealAt > 0 && Date.now() / 1000 < unsealAt && (
-                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }} title="Ballots are time-locked with drand. Nobody, including the organizer, can read them until 30 minutes after the deadline.">
+                        <span style={{ color: "var(--purple)", fontSize: "0.75rem" }} title="Ballots are time-locked with drand. Nobody, including the organizer, can read them until hours after the deadline.">
                             Ballots sealed until after the deadline
                         </span>
                     )}

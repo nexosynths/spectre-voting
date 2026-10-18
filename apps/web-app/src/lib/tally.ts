@@ -16,6 +16,8 @@ export interface CountedBallot {
     baseNullifier: string
     vote: bigint
     weight: bigint
+    /** The voter's own submission count, from the sealed payload (-1 if it didn't open) */
+    version: number
     commitmentValid: boolean
     problem?: string
 }
@@ -44,9 +46,11 @@ function isCountable(ballot: CountedBallot, numOptions: number): boolean {
 
 /**
  * Open and count ballots. Records must be in chain order. For each voter (base
- * nullifier), their latest ballot that opens and matches its commitment counts. A
- * later ballot that doesn't open (for example, one whose contents were replaced on
- * the way to the chain) doesn't cancel an earlier valid one.
+ * nullifier), the valid ballot (it opens and matches its commitment) with the highest
+ * version in its sealed payload counts; between equal versions, the later one in chain
+ * order. So a ballot that doesn't open (for example, one whose contents were replaced on
+ * the way to the chain) doesn't cancel an earlier valid one, and an older ballot posted
+ * late can't override a newer one.
  */
 export async function countBallots(
     records: BallotRecord[],
@@ -61,21 +65,22 @@ export async function countBallots(
     const counted: CountedBallot[] = records.map((record, i) => {
         const result = opened[i]
         if (!result.ok) {
-            return { baseNullifier: record.baseNullifier, vote: -1n, weight: 0n, commitmentValid: false, problem: result.reason }
+            return { baseNullifier: record.baseNullifier, vote: -1n, weight: 0n, version: -1, commitmentValid: false, problem: result.reason }
         }
         try {
-            const { vote, weight, voteRandomness } = decodeVotePayload(result.payload)
+            const { vote, weight, version, voteRandomness } = decodeVotePayload(result.payload)
             const commitmentValid = poseidon3([vote, weight, voteRandomness]).toString() === record.voteCommitment
             return {
                 baseNullifier: record.baseNullifier,
                 vote,
                 weight,
+                version,
                 commitmentValid,
                 problem: commitmentValid ? undefined : "Ballot doesn't match its on-chain commitment",
             }
         } catch (err) {
             return {
-                baseNullifier: record.baseNullifier, vote: -1n, weight: 0n, commitmentValid: false,
+                baseNullifier: record.baseNullifier, vote: -1n, weight: 0n, version: -1, commitmentValid: false,
                 problem: err instanceof Error ? err.message : "Malformed ballot",
             }
         }
@@ -86,7 +91,8 @@ export async function countBallots(
     for (const ballot of counted) {
         const entry = byVoter.get(ballot.baseNullifier) ?? { counts: null, lastInvalid: null }
         if (isCountable(ballot, numOptions)) {
-            entry.counts = ballot // a later valid ballot replaces an earlier one (vote changes)
+            // Vote changes: a higher version replaces a lower one; equal versions, the later one
+            if (!entry.counts || ballot.version >= entry.counts.version) entry.counts = ballot
         } else {
             entry.lastInvalid = ballot
             invalidSubmissions++
@@ -128,9 +134,9 @@ export interface RecountResult extends TallyResult {
 
 /**
  * Recount an election from the chain. Reads every ballot up to one pinned block after
- * the voting deadline and refuses to count unless the number found equals the
- * contract's voteCount() at that block, so a lagging or incomplete RPC can't produce
- * a short count.
+ * the voting deadline (the finalized block, once it's past the deadline) and refuses to
+ * count unless the number found equals the contract's voteCount(), so a lagging or
+ * incomplete RPC can't produce a short count.
  */
 export async function recountElection(
     electionAddress: string,
@@ -143,24 +149,29 @@ export async function recountElection(
     if (latest.timestamp <= election.votingDeadline) {
         throw new Error("The chain hasn't reached the voting deadline yet.")
     }
-    // No ballot can be added after the deadline, so any later block holds the final set.
-    const blockNumber = latest.number
+
+    let finalizedBlock: { number: number; timestamp: number } | null = null
+    let finalized: boolean | null = null
+    try {
+        finalizedBlock = await provider.getBlock("finalized")
+        finalized = !!finalizedBlock && finalizedBlock.timestamp > election.votingDeadline
+    } catch {
+        finalized = null
+    }
+
+    // No ballot can be added after the deadline, so any block past it holds the final set,
+    // and voteCount() is the same at every such block. Read the logs up to the finalized
+    // block when it's past the deadline (so a reorg can't change them), otherwise up to the
+    // latest block; read voteCount() at the latest block, which every node can serve.
+    const blockNumber = finalized && finalizedBlock ? finalizedBlock.number : latest.number
     const contract = new Contract(electionAddress, SPECTRE_VOTING_ABI, provider)
-    const expected = Number(await contract.voteCount({ blockTag: blockNumber }))
+    const expected = Number(await contract.voteCount({ blockTag: latest.number }))
     const records = await fetchBallots(electionAddress, provider, election.deployBlock, blockNumber)
     if (records.length !== expected) {
         throw new Error(
             `Found ${records.length} ballot(s), but the contract recorded ${expected} by block ${blockNumber}. ` +
             "The RPC may be behind or incomplete. Nothing was counted; try again in a minute.",
         )
-    }
-
-    let finalized: boolean | null = null
-    try {
-        const fin = await provider.getBlock("finalized")
-        finalized = !!fin && fin.timestamp > election.votingDeadline
-    } catch {
-        finalized = null
     }
 
     const result = await countBallots(records, election.numOptions, election.votingDeadline, options)

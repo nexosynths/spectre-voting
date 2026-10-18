@@ -57,7 +57,7 @@ export default function ResultsTab({
                 <div className="card" style={{ marginBottom: 16 }}>
                     <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Ballots are sealed</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                        Every ballot is time-locked with drand until shortly after the voting deadline. Nobody, including
+                        Every ballot is time-locked with drand until hours after the voting deadline. Nobody, including
                         the organizer, can read any ballot before {new Date(unsealAt * 1000).toLocaleString()}. After that,
                         anyone can open them and count.
                     </p>

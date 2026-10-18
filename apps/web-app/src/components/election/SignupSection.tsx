@@ -113,7 +113,8 @@ export default function SignupSection({
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
                         Your wallet signs you up, so it&apos;s public that this wallet registered. Joining and voting are
-                        submitted by the relay, so nothing on-chain links your wallet to your ballot.
+                        submitted by the relay, so the chain doesn&apos;t record which wallet cast which ballot (in weighted
+                        elections, an unusual weight can still link them).
                     </p>
                     <button className="btn-primary" onClick={connectWallet} style={{ maxWidth: 200 }}>Connect Wallet</button>
                 </div>

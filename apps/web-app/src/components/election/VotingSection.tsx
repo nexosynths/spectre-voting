@@ -1,7 +1,10 @@
 "use client"
 
-/** What the voter's browser found on-chain after the relay submitted the ballot */
-export type BallotCheck = "confirmed" | "altered" | "missing" | null
+/**
+ * What the voter's browser found on-chain for its latest ballot: still checking, landed
+ * exactly as sent, landed with different contents, or not found after several minutes.
+ */
+export type BallotCheck = "pending" | "confirmed" | "altered" | "missing" | null
 
 type Phase = "signup" | "voting" | "closed"
 type VoteStep = "idle" | "fetching-signup-group" | "generating-join-proof" | "submitting-join" | "fetching-voting-group" | "generating-vote-proof" | "encrypting" | "submitting-vote" | "timing-delay" | "verifying" | "done" | "error"
@@ -24,6 +27,12 @@ interface VotingSectionProps {
     txHash: string
     error: string
     ballotCheck: BallotCheck
+    /** Whether the latest submission changed an earlier vote */
+    submittedChange: boolean
+    /** Weighted election: an unusual weight is visible at signup and in the opened ballot */
+    weighted: boolean
+    /** Token-gated election: the relay saw the voter's wallet at signup */
+    tokenGated: boolean
     joinStatus: "unknown" | "checking" | "joined" | "not-joined"
     handleJoinAndVote: () => void
     setVoteStep: (v: VoteStep) => void
@@ -39,7 +48,7 @@ export default function VotingSection({
     phase, gaslessEnabled, address, identity,
     optionLabels, selectedVote, setSelectedVote,
     voteStep, stepMsg, stepInfo, isProcessing, canVote, deadlinePassed, unsealAt,
-    txHash, error, ballotCheck, joinStatus,
+    txHash, error, ballotCheck, submittedChange, weighted, tokenGated, joinStatus,
     handleJoinAndVote, setVoteStep, setTxHash, setError,
     hasVotedBefore, voteVersion, maxOverwrites,
 }: VotingSectionProps) {
@@ -82,14 +91,16 @@ export default function VotingSection({
                         <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
                                 When you vote, a zero-knowledge proof separates your vote from your signup, and the relay
-                                submits both steps instead of your wallet, so nothing on-chain links your ballot to you.
-                                Your ballot is sealed until shortly after the voting deadline: nobody, including the
-                                organizer, can read it before then. After that, every ballot is public.
+                                submits both steps instead of your wallet, so the chain doesn&apos;t record which signup
+                                cast which ballot{weighted ? ". In this weighted election, though, your weight is public at signup and in your opened ballot, so an unusual weight can link the two" : ""}.
+                                Your ballot is sealed until {unsealAt > 0 ? new Date(unsealAt * 1000).toLocaleString() : "after the voting deadline"}:
+                                nobody, including the organizer, can read it before then. After that, every ballot is public.
                                 <br /><br />
                                 The relay operator sees your IP address when you sign up and when you vote, and in gated
-                                elections it saw your code, email or account at signup. Once ballots are public, it could
-                                match those to your vote. If that matters to you, vote from a different network than the
-                                one you signed up from (for example a VPN or Tor).
+                                elections it saw your {tokenGated ? "wallet" : "code, email or account"} at signup. Your browser also reads the chain
+                                through a public RPC service, which sees your IP address and when you check. Once ballots are
+                                public, either could match you to your vote. If that matters to you, vote from a different
+                                network than the one you signed up from (for example a VPN or Tor).
                             </p>
                         </div>
                     )}
@@ -98,7 +109,7 @@ export default function VotingSection({
                     {voteStep === "idle" && hasVotedBefore && canOverwrite && (
                         <div className="card" style={{ marginBottom: 16, borderColor: "var(--accent)", background: "var(--bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                                You&apos;ve already voted. You can change your vote — only your most recent vote will count.
+                                You&apos;ve already voted. You can change your vote: your most recent valid ballot counts.
                                 <span style={{ color: "var(--accent)", fontWeight: 600 }}> {changesRemaining} change{changesRemaining !== 1 ? "s" : ""} remaining.</span>
                             </p>
                         </div>
@@ -107,7 +118,7 @@ export default function VotingSection({
                     {voteStep === "idle" && hasVotedBefore && !canOverwrite && (
                         <div className="card" style={{ marginBottom: 16, borderColor: "var(--error-border)", background: "var(--error-bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--error)", lineHeight: 1.5 }}>
-                                Maximum vote changes reached. Your most recent vote will count.
+                                Maximum vote changes reached. Your most recent valid ballot counts.
                             </p>
                         </div>
                     )}
@@ -143,7 +154,7 @@ export default function VotingSection({
                                     <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                                         {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
                                         {voteStep === "submitting-join" && "This separates your vote from your signup"}
-                                        {voteStep === "encrypting" && "Time-locked with drand until shortly after the voting deadline"}
+                                        {voteStep === "encrypting" && "Time-locked with drand until after the voting deadline"}
                                         {voteStep === "timing-delay" && "Makes your join and vote harder to pair for outside observers (not for the relay)"}
                                         {voteStep === "verifying" && "Comparing what reached the chain with what you sent"}
                                     </p>
@@ -154,14 +165,8 @@ export default function VotingSection({
                         {voteStep === "done" && txHash && (
                             <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                 <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
-                                    {ballotCheck === "confirmed" ? "\u2713 Your sealed ballot is on-chain, exactly as you sent it" : "Ballot sent"}
+                                    {submittedChange ? "New ballot sent" : "Ballot sent"}
                                 </p>
-                                {ballotCheck === "missing" && (
-                                    <p style={{ color: "var(--warning)", fontSize: "0.8rem", marginBottom: 6 }}>
-                                        {"\u26a0"} Your ballot hasn&apos;t shown up on-chain yet. It may still arrive: refresh in a few minutes.
-                                        If it doesn&apos;t, vote again; the relay may not have submitted it.
-                                    </p>
-                                )}
                                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                                     {canOverwrite && (
                                         <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ fontSize: "0.75rem", padding: "4px 10px" }}>
@@ -187,7 +192,7 @@ export default function VotingSection({
                             {isProcessing
                                 ? "Processing..."
                                 : voteStep === "done"
-                                    ? (hasVotedBefore ? "Vote Changed!" : "Vote Submitted!")
+                                    ? (submittedChange ? "Vote Changed!" : "Vote Submitted!")
                                     : hasVotedBefore
                                         ? "Change Your Vote"
                                         : "Vote"}
@@ -202,6 +207,11 @@ export default function VotingSection({
                 </>
             )}
 
+            {/* What this browser found on-chain for its latest ballot */}
+            {phase !== "signup" && ballotCheck !== null && !isProcessing && (
+                <BallotStatusCard status={ballotCheck} />
+            )}
+
             {/* CLOSED phase message */}
             {phase === "closed" && (
                 <div className="card" style={{ marginBottom: 16 }}>
@@ -211,5 +221,25 @@ export default function VotingSection({
                 </div>
             )}
         </>
+    )
+}
+
+function BallotStatusCard({ status }: { status: Exclude<BallotCheck, null> }) {
+    const styles = {
+        pending: { border: "var(--border)", background: "var(--bg)", color: "var(--text-muted)" },
+        confirmed: { border: "var(--success-border)", background: "var(--success-bg)", color: "var(--success)" },
+        altered: { border: "var(--error-border)", background: "var(--error-bg)", color: "var(--error)" },
+        missing: { border: "var(--warning)", background: "var(--bg)", color: "var(--warning)" },
+    }[status]
+    const text = {
+        pending: "Checking the chain for your latest ballot. Your browser looks about a minute after you vote, and again each time you open this page.",
+        confirmed: "\u2713 Your latest ballot is on-chain, exactly as you sealed it.",
+        altered: "Your latest ballot reached the chain with different contents than the ones you sealed, so it won't count. Your previous valid ballot, if you had one, counts instead. Vote again; if this keeps happening, the relay may be interfering, so tell the organizer.",
+        missing: "Your latest ballot hasn't shown up on-chain after several minutes; the relay may not have submitted it. This page checks again each time you open it. To be safe, vote again: only your newest valid ballot counts.",
+    }[status]
+    return (
+        <div className="card" style={{ marginBottom: 16, borderColor: styles.border, background: styles.background }}>
+            <p style={{ fontSize: "0.85rem", color: styles.color, lineHeight: 1.5, fontWeight: status === "confirmed" ? 600 : 400 }}>{text}</p>
+        </div>
     )
 }

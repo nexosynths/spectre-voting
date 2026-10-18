@@ -63,6 +63,7 @@ export default function StepAccess({ state, dispatch, effectiveGasless, gaslessL
                     <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 4, lineHeight: 1.4 }}>
                         The contract won&apos;t register more voters than this, whoever asks. It also limits how many fake
                         voters could be added if the relay&apos;s key ever leaked. It can&apos;t be raised later.
+                        {gateType === "open" && " In an open election anyone can take a slot, so set it well above the turnout you expect."}
                     </p>
                 </div>
             )}
