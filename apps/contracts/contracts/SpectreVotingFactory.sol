@@ -3,7 +3,7 @@ pragma solidity ^0.8.23;
 
 import "./SpectreVoting.sol";
 
-/// @title SpectreVotingFactory — Deploy new elections on demand
+/// @title SpectreVotingFactory: deploy new elections on demand
 /// @notice Anyone can create an election. The caller becomes the election admin.
 ///         Semaphore + both verifiers are shared infrastructure set at factory deploy time.
 contract SpectreVotingFactory {
@@ -22,12 +22,11 @@ contract SpectreVotingFactory {
         address indexed election,
         address indexed admin,
         uint256 proposalId,
-        uint256 electionPubKeyX,
-        uint256 electionPubKeyY,
         uint256 signupDeadline,
         uint256 votingDeadline,
         uint256 numOptions,
         bool selfSignupAllowed,
+        address registrar,
         bytes metadata
     );
 
@@ -41,22 +40,20 @@ contract SpectreVotingFactory {
 
     /// @notice Deploy a new SpectreVoting election
     /// @param _proposalId Unique proposal identifier
-    /// @param _electionPubKeyX Election ECIES public key X coordinate
-    /// @param _electionPubKeyY Election ECIES public key Y coordinate
-    /// @param _signupDeadline Unix timestamp when signup closes (0 = no deadline, admin-only close)
-    /// @param _votingDeadline Unix timestamp when voting closes (0 = no deadline, admin-only close)
-    /// @param _numOptions Number of vote options (minimum 2)
-    /// @param _selfSignupAllowed When true, anyone can self-register; when false, only admin can register voters
-    /// @param _metadata Opaque bytes (UTF-8 JSON) with election title, labels, threshold info. Emitted in event only.
+    /// @param _signupDeadline Unix timestamp when signup closes (0 = no deadline, admin closes it)
+    /// @param _votingDeadline Unix timestamp when voting ends (required, in the future, after the signup deadline)
+    /// @param _numOptions Number of vote options (2..255)
+    /// @param _selfSignupAllowed When true, anyone can self-register; when false, only the admin or registrar can register voters
+    /// @param _registrar Address allowed to register voters for gated elections (normally the Spectre relay), or address(0)
+    /// @param _metadata Opaque bytes (UTF-8 JSON) with election title, labels and gate config. Emitted in the event only.
     /// @return election The address of the newly deployed SpectreVoting contract
     function createElection(
         uint256 _proposalId,
-        uint256 _electionPubKeyX,
-        uint256 _electionPubKeyY,
         uint256 _signupDeadline,
         uint256 _votingDeadline,
         uint256 _numOptions,
         bool _selfSignupAllowed,
+        address _registrar,
         bytes calldata _metadata
     ) external payable returns (address election) {
         require(msg.value >= creationFee, "Insufficient fee");
@@ -70,9 +67,8 @@ contract SpectreVotingFactory {
             voteVerifier,
             joinVerifier,
             _proposalId,
-            _electionPubKeyX,
-            _electionPubKeyY,
             msg.sender,
+            _registrar,
             _signupDeadline,
             _votingDeadline,
             _numOptions,
@@ -87,12 +83,11 @@ contract SpectreVotingFactory {
             election,
             msg.sender,
             _proposalId,
-            _electionPubKeyX,
-            _electionPubKeyY,
             _signupDeadline,
             _votingDeadline,
             _numOptions,
             _selfSignupAllowed,
+            _registrar,
             _metadata
         );
     }
