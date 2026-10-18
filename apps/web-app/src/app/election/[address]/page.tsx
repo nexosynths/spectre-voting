@@ -1191,6 +1191,8 @@ export default function ElectionPage({ params }: { params: { address: string } }
     const canVote = !!state && state.votingDeadline > 0 && !deadlinePassed
     // Gated elections: voters sign up on this page and the relay registers them as registrar.
     const relayGated = !!state && !state.selfSignupAllowed && isRelayGate(gateType) && state.registrar !== ZeroAddress
+    // Metadata claims a gate but the contract allows open signup: the gate isn't enforced.
+    const gateNotEnforced = !!state && state.selfSignupAllowed && isRelayGate(gateType)
 
     // Phase badge color
     const phaseBadge = phase === "signup" ? { text: "SIGNUP", cls: "status-open" }
@@ -1261,6 +1263,15 @@ export default function ElectionPage({ params }: { params: { address: string } }
                 copyToClipboard={copyToClipboard}
                 copied={copied}
             />
+
+            {gateNotEnforced && (
+                <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)" }}>
+                    <p style={{ fontSize: "0.85rem", color: "var(--warning)", lineHeight: 1.5 }}>
+                        This election lists a signup requirement, but its contract lets anyone sign up directly,
+                        so the requirement isn&apos;t enforced. Treat it as an open election.
+                    </p>
+                </div>
+            )}
 
             {/* ═══ VOTE / SIGNUP TAB ═══ */}
             {tab === "vote" && (

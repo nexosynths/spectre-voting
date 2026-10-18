@@ -28,6 +28,9 @@ import { createHmac, timingSafeEqual } from "crypto"
 import { CONTRACTS, RPC_URL, FACTORY_ABI, SPECTRE_VOTING_ABI, MAX_LOG_RANGE, FACTORY_DEPLOY_BLOCK, FACTORY_CONFIGURED } from "@/lib/contracts"
 import { tokenGateMessage } from "@/lib/gate"
 
+// Always evaluate at request time (the GET handler reads env vars and must not be prerendered)
+export const dynamic = "force-dynamic"
+
 const SNARK_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
 const MAX_BALLOT_BYTES = 4096
 

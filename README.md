@@ -42,6 +42,7 @@ Anonymous voting on Base, using zero-knowledge proofs.
 - **Ballots become public after the deadline.** They're listed by anonymous voter tags, not by who cast them, but anyone can see each tag's final choice. Vote changes by the same voter are linkable to each other.
 - **Not coercion-resistant.** You can change your vote up to five times before the deadline, but a voter can still reveal their own ballot to someone pressuring them.
 - **The relay is trusted** for eligibility in gated elections and sees voters' IP addresses. A random delay between joining and voting hides timing from outside observers, not from the relay operator.
+- **Voting depends on the relay being up.** Joins and ballots aren't sent from voters' own wallets, because that would link the wallet to the ballot. Each voter's client checks that its ballot landed on-chain.
 - **Weighted (token) elections:** weights are visible at signup and in opened ballots, so a voter with an unusual weight can be linked from signup to ballot. Token balances are checked at signup, not at a snapshot.
 - **Small elections:** with only a few voters, the result itself can reveal how individuals voted.
 - **Pending circuit fix:** the vote circuit's range checks need tightening, which requires a new trusted setup. Until then the tally treats out-of-range ballots as invalid.
