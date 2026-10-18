@@ -5,9 +5,6 @@ type GateType = "open" | "invite-codes" | "allowlist" | "admin-only" | "token-ga
 interface TrustSummaryProps {
     gateType: GateType
     gaslessMode: boolean
-    encryptionMode: "single" | "threshold"
-    threshold?: number
-    totalMembers?: number
 }
 
 interface Indicator {
@@ -19,42 +16,27 @@ interface Indicator {
 function getIndicators(props: TrustSummaryProps): Indicator[] {
     const indicators: Indicator[] = []
 
-    // Sybil resistance
+    // Sybil resistance, and who enforces it
     const sybilMap: Record<GateType, { value: string; color: string }> = {
         "open": { value: "None", color: "var(--warning)" },
-        "invite-codes": { value: "Strong", color: "var(--success)" },
-        "allowlist": { value: "Strong", color: "var(--success)" },
-        "admin-only": { value: "Full", color: "var(--success)" },
-        "token-gate": { value: "Medium", color: "var(--accent)" },
-        "email-domain": { value: "Medium", color: "var(--accent)" },
-        "github-org": { value: "Strong", color: "var(--success)" },
+        "invite-codes": { value: "One per code (relay checks)", color: "var(--success)" },
+        "allowlist": { value: "One per entry (relay checks)", color: "var(--success)" },
+        "admin-only": { value: "You register each voter", color: "var(--success)" },
+        "token-gate": { value: "One per wallet (relay checks)", color: "var(--accent)" },
+        "email-domain": { value: "One per email (relay checks)", color: "var(--accent)" },
+        "github-org": { value: "One per account (relay checks)", color: "var(--success)" },
     }
     const sybil = sybilMap[props.gateType]
     indicators.push({ label: "Sybil resistance", value: sybil.value, color: sybil.color })
 
-    // Vote privacy
-    indicators.push({ label: "Vote privacy", value: "Encrypted + anonymous", color: "var(--success)" })
+    indicators.push({ label: "Ballot secrecy", value: "Sealed until the deadline (drand)", color: "var(--success)" })
+    indicators.push({ label: "Results", value: "Anyone can recount after the deadline", color: "var(--success)" })
+    indicators.push({ label: "Election key", value: "None: nobody can decrypt early", color: "var(--success)" })
 
-    // Key custody
-    if (props.encryptionMode === "threshold" && props.threshold && props.totalMembers) {
-        indicators.push({
-            label: "Key custody",
-            value: `${props.threshold}-of-${props.totalMembers} committee`,
-            color: "var(--success)",
-        })
-    } else {
-        indicators.push({
-            label: "Key custody",
-            value: "Single key (browser)",
-            color: "var(--accent)",
-        })
-    }
-
-    // Voter access
     if (props.gaslessMode) {
         indicators.push({ label: "Voter access", value: "No wallet needed", color: "var(--success)" })
     } else {
-        indicators.push({ label: "Voter access", value: "Wallet required", color: "var(--accent)" })
+        indicators.push({ label: "Voter access", value: "Wallet needed to sign up", color: "var(--accent)" })
     }
 
     return indicators

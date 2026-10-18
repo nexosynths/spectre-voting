@@ -125,7 +125,7 @@ export default function SignupSection({
                         Step 2: Create Identity
                     </h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12 }}>
-                        Generate an anonymous identity for this wallet. Each wallet gets its own identity — nobody can link it to your vote.
+                        Generate an anonymous identity for this wallet. Each wallet gets its own identity for this election.
                     </p>
                     <button className="btn-primary" onClick={createIdentity}>Create Identity</button>
                 </div>
@@ -521,7 +521,7 @@ export default function SignupSection({
                         <>
                             <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 6 }}>Sign Up to Vote</h4>
                             <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.5 }}>
-                                Register for this election. The admin can see who registered, but when you vote, your identity will be cryptographically separated. <strong>Nobody can link your registration to your vote.</strong>
+                                Register for this election. The organizer can see who registered. When you vote, a zero-knowledge proof separates your vote from your registration and the relay submits it, so the chain doesn&apos;t link the two. The relay does see network details like your IP address.
                             </p>
                             <button
                                 className="btn-primary"

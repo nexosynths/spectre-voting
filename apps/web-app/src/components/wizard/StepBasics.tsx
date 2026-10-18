@@ -70,7 +70,7 @@ export default function StepBasics({ state, dispatch }: Props) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <div style={{ flex: 1 }}>
                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                        Signup duration (hours)
+                        Signup duration (hours, 0 = close it yourself)
                     </label>
                     <input
                         type="number"
@@ -82,7 +82,7 @@ export default function StepBasics({ state, dispatch }: Props) {
                 </div>
                 <div style={{ flex: 1 }}>
                     <label style={{ fontSize: "0.7rem", color: "var(--text-muted)", display: "block", marginBottom: 4 }}>
-                        Voting duration (hours)
+                        Voting duration (hours, required)
                     </label>
                     <input
                         type="number"
@@ -93,6 +93,9 @@ export default function StepBasics({ state, dispatch }: Props) {
                     />
                 </div>
             </div>
+            <p style={{ fontSize: "0.7rem", color: "var(--text-muted)", lineHeight: 1.4, marginTop: -6 }}>
+                The voting deadline is fixed when you create the election. Ballots stay sealed until then, and voting can&apos;t be ended early.
+            </p>
         </div>
     )
 }

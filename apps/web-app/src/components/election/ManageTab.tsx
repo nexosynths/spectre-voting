@@ -21,6 +21,8 @@ interface ManageTabProps {
     registerBulk: () => void
     handleCloseSignup: () => void
     handleCloseVoting: () => void
+    deadlinePassed: boolean
+    votingDeadline: number
     copyToClipboard: (text: string, label: string) => void
     copied: string
     setCopied: (v: string) => void
@@ -32,7 +34,7 @@ export default function ManageTab({
     inviteCodeMeta, allowlistMeta,
     commitment, setCommitment, bulkCommitments, setBulkCommitments,
     adminLoading, adminMsg, registerVoter, registerBulk,
-    handleCloseSignup, handleCloseVoting,
+    handleCloseSignup, handleCloseVoting, deadlinePassed, votingDeadline,
     copyToClipboard, copied, setCopied,
 }: ManageTabProps) {
     if (!isAdmin) return null
@@ -49,7 +51,7 @@ export default function ManageTab({
                             ? "Use the per-code share links below to send voters a link with their code pre-filled."
                             : phase === "signup" && !isInviteCodeElection && !isAllowlistElection
                                 ? "Send this link to voters. They can sign up directly during the signup phase."
-                                : "Send this link to voters. Since this is a gated election, you\u2019ll need to register them via the form below."}
+                                : "Send this link to voters. Voters who meet the signup requirement register through the relay; you can also register voters yourself below."}
                 </p>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <code className="mono" style={{ flex: 1, background: "var(--bg)", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: "0.65rem", minWidth: 0 }}>
@@ -204,14 +206,16 @@ export default function ManageTab({
                 </div>
             )}
 
-            {/* Close voting */}
+            {/* Close voting: only after the deadline, so nobody can end the vote early */}
             {phase === "voting" && (
-                <div className="card" style={{ marginBottom: 16, borderColor: "var(--error)" }}>
-                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8, color: "var(--error)" }}>Close Voting</h4>
+                <div className="card" style={{ marginBottom: 16 }}>
+                    <h4 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8 }}>Close Voting</h4>
                     <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: 10 }}>
-                        Permanently close this election. No more joins or votes will be accepted.
+                        {deadlinePassed
+                            ? "The deadline has passed. Close voting so you can publish the results on-chain. Anyone can do this."
+                            : `Voting can't be closed early, by you or anyone else. It ends at the deadline (${new Date(votingDeadline * 1000).toLocaleString()}).`}
                     </p>
-                    <button className="btn-secondary" onClick={handleCloseVoting} disabled={adminLoading} style={{ borderColor: "var(--error)", color: "var(--error)" }}>
+                    <button className="btn-secondary" onClick={handleCloseVoting} disabled={adminLoading || !deadlinePassed}>
                         {adminLoading ? "Closing..." : "Close Voting"}
                     </button>
                 </div>

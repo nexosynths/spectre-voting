@@ -5,6 +5,9 @@
  * voter transactions without requiring a wallet or gas. The relayer
  * server wallet pays gas; voters just generate ZK proofs in the browser.
  *
+ * Joins and ballots always go through the relay, in every election mode, so a
+ * voter's own wallet never appears on the transactions that carry their ballot.
+ *
  * Anti-censorship: after every relayed vote, the client independently
  * verifies the VoteCast event on-chain via public RPC (not the relayer).
  *
@@ -78,33 +81,53 @@ async function callRelay(body: Record<string, any>): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
+ * The relay's public address. Gated elections name it as their registrar so that
+ * only the relay (after checking eligibility) or the admin can register voters.
+ */
+export async function getRelayerAddress(): Promise<string> {
+    const res = await fetch("/api/relay", { method: "GET" })
+    const data = await res.json()
+    if (!data.success || !data.relayerAddress) {
+        throw new RelayError(data.error || "Relay is not available", res.status)
+    }
+    return data.relayerAddress as string
+}
+
+export interface SignupGateData {
+    code?: string
+    identifier?: string
+    voterAddress?: string
+    walletSignature?: string
+    email?: string
+    emailToken?: string
+    githubToken?: string
+    githubId?: string
+}
+
+/**
  * Relay a voter signup (Phase 1).
- * No proof needed — just the identity commitment.
- * @returns Transaction hash
+ * Open elections: the relay calls signUp(). Gated elections: the relay checks the
+ * gate and registers the voter as the election's registrar.
+ * @returns Transaction hash and the assigned weight
  */
 export async function relaySignUp(
     electionAddress: string,
     identityCommitment: bigint | string,
-    code?: string,
-    identifier?: string,
-    voterAddress?: string,
-    email?: string,
-    emailToken?: string,
-    githubToken?: string,
-    githubId?: string,
+    gate: SignupGateData = {},
 ): Promise<SignupResult> {
     const body: Record<string, any> = {
         action: "signUp",
         electionAddress,
         identityCommitment: identityCommitment.toString(),
     }
-    if (code) body.code = code.toLowerCase().trim()
-    if (identifier) body.identifier = identifier.trim()
-    if (voterAddress) body.voterAddress = voterAddress
-    if (email) body.email = email.toLowerCase().trim()
-    if (emailToken) body.emailToken = emailToken
-    if (githubToken) body.githubToken = githubToken
-    if (githubId) body.githubId = githubId
+    if (gate.code) body.code = gate.code.toLowerCase().trim()
+    if (gate.identifier) body.identifier = gate.identifier.trim()
+    if (gate.voterAddress) body.voterAddress = gate.voterAddress
+    if (gate.walletSignature) body.walletSignature = gate.walletSignature
+    if (gate.email) body.email = gate.email.toLowerCase().trim()
+    if (gate.emailToken) body.emailToken = gate.emailToken
+    if (gate.githubToken) body.githubToken = gate.githubToken
+    if (gate.githubId) body.githubId = gate.githubId
 
     const res = await fetch("/api/relay", {
         method: "POST",
@@ -177,7 +200,7 @@ export async function relayCastVote(
 
 /**
  * Wait for a relayed transaction to be confirmed on-chain.
- * Polls the public Sepolia RPC (not the relayer) until the tx is mined.
+ * Polls the public Base RPC (not the relayer) until the tx is mined.
  *
  * @param txHash - Transaction hash from the relay response
  * @param timeoutMs - Max wait time (default 120s)
@@ -219,7 +242,8 @@ export async function waitForRelayTx(
  * queries the chain directly via public RPC, not through the relayer.
  *
  * If the relayer claimed success but the event isn't found, the relayer
- * may be censoring votes. The voter should fall back to direct wallet submission.
+ * may be censoring votes. Voters can't fall back to their own wallet without
+ * linking that wallet to the ballot, so this check is how censorship is detected.
  *
  * @param electionAddress - The election contract address
  * @param baseNullifier - The voter's base nullifier (from the ZK proof)

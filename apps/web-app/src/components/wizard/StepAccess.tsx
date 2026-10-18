@@ -79,7 +79,7 @@ export default function StepAccess({ state, dispatch, effectiveGasless, gaslessL
                                 ? "This gate type uses a server-side relayer \u2014 no wallet needed"
                                 : effectiveGasless
                                     ? "No wallet needed \u2014 votes are submitted automatically"
-                                    : "Voters need a crypto wallet with ETH to submit votes"}
+                                    : "Voters sign up from their own wallet (a little ETH for gas). Joining and voting are always relayed"}
                     </p>
                 </div>
             </div>

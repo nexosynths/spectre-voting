@@ -18,6 +18,8 @@ interface VotingSectionProps {
     stepInfo: { step: number; total: number; label: string } | null
     isProcessing: boolean
     canVote: boolean
+    deadlinePassed: boolean
+    unsealAt: number
     txHash: string
     error: string
     onChainVerified: boolean | null
@@ -35,7 +37,7 @@ interface VotingSectionProps {
 export default function VotingSection({
     phase, gaslessEnabled, address, identity,
     optionLabels, selectedVote, setSelectedVote,
-    voteStep, stepMsg, stepInfo, isProcessing, canVote,
+    voteStep, stepMsg, stepInfo, isProcessing, canVote, deadlinePassed, unsealAt,
     txHash, error, onChainVerified, joinStatus,
     handleJoinAndVote, setVoteStep, setTxHash, setError,
     hasVotedBefore, voteVersion, maxOverwrites,
@@ -45,7 +47,18 @@ export default function VotingSection({
     return (
         <>
             {/* ── VOTING PHASE ── */}
-            {phase === "voting" && identity && (gaslessEnabled || address) && (
+            {/* Deadline passed: ballots can't be cast any more */}
+            {phase === "voting" && deadlinePassed && (
+                <div className="card" style={{ marginBottom: 16 }}>
+                    <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", textAlign: "center", padding: "12px 0" }}>
+                        The voting deadline has passed. {unsealAt > 0 && Date.now() / 1000 < unsealAt
+                            ? "Ballots unseal in a few seconds; then anyone can count them on the Results tab."
+                            : "Anyone can count the votes on the Results tab."}
+                    </p>
+                </div>
+            )}
+
+            {phase === "voting" && !deadlinePassed && identity && (gaslessEnabled || address) && (
                 <>
                     {/* Join + vote status indicators */}
                     {voteStep === "idle" && joinStatus === "joined" && (
@@ -67,9 +80,10 @@ export default function VotingSection({
                     {voteStep === "idle" && joinStatus === "not-joined" && (
                         <div className="card" style={{ marginBottom: 16, background: "var(--bg)" }}>
                             <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                                {gaslessEnabled
-                                    ? "When you vote, your identity is cryptographically separated from your registration so nobody can link your signup to your vote. Everything is handled automatically."
-                                    : "Voting requires two wallet confirmations. The first delinks your identity from your registration. The second submits your encrypted vote. Both are needed to keep your vote anonymous."}
+                                When you vote, a zero-knowledge proof separates your vote from your signup, and both
+                                steps are submitted by the relay rather than your wallet. Your ballot is sealed until
+                                the voting deadline: nobody, including the organizer, can read it before then. After
+                                the deadline, ballots are public but not linked to who cast them.
                             </p>
                         </div>
                     )}
@@ -122,8 +136,8 @@ export default function VotingSection({
                                     </p>
                                     <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
                                         {(voteStep === "generating-join-proof" || voteStep === "generating-vote-proof") && "This runs entirely in your browser"}
-                                        {voteStep === "submitting-join" && !gaslessEnabled && "This separates your identity from your signup"}
-                                        {voteStep === "submitting-vote" && !gaslessEnabled && "This submits your encrypted ballot"}
+                                        {voteStep === "submitting-join" && "This separates your vote from your signup"}
+                                        {voteStep === "encrypting" && "Time-locked with drand until the voting deadline"}
                                         {voteStep === "timing-delay" && "Random delay protects your identity"}
                                         {voteStep === "verifying" && "Independently checking the blockchain"}
                                     </p>
@@ -135,16 +149,16 @@ export default function VotingSection({
                             <div style={{ marginBottom: 16, padding: 14, background: "var(--success-bg-light)", borderRadius: "var(--radius)", border: "1px solid var(--success-border)" }}>
                                 <p style={{ color: "var(--success)", fontWeight: 600, marginBottom: 4 }}>
                                     {hasVotedBefore ? "Vote changed!" : "Vote submitted anonymously!"}
-                                    {gaslessEnabled && onChainVerified === true && " \u2713 Verified on-chain"}
+                                    {onChainVerified === true && " \u2713 Verified on-chain"}
                                 </p>
-                                {gaslessEnabled && onChainVerified === false && (
+                                {onChainVerified === false && (
                                     <p style={{ color: "var(--warning)", fontSize: "0.8rem", marginBottom: 6 }}>
                                         \u26a0 Could not verify your vote on-chain. Try refreshing the page in a few minutes to check. If the issue persists, contact the election admin.
                                     </p>
                                 )}
                                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                                     <a href={explorerTxUrl(txHash)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: "0.75rem" }}>
-                                        View on Etherscan &rarr;
+                                        View on Basescan &rarr;
                                     </a>
                                     {canOverwrite && (
                                         <button className="btn-secondary" onClick={() => { setVoteStep("idle"); setSelectedVote(null); setTxHash(""); setError("") }} style={{ fontSize: "0.75rem", padding: "4px 10px" }}>
