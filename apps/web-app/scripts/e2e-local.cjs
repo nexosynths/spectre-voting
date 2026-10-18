@@ -8,7 +8,9 @@
 //   - registration caps (maxVoters) hold; voting opens on its own after the signup deadline
 //   - joins and ballots are submitted by the relay, never a voter wallet
 //   - a ballot whose contents were replaced on the way is detected by the voter's check and
-//     doesn't cancel the voter's earlier valid ballot
+//     doesn't cancel the voter's earlier valid ballot; a ballot held back and posted after a
+//     newer one doesn't override it (the highest valid version counts)
+//   - the relay refuses gated signups if its gate-key secret differs from the election's
 //   - nobody can close voting before the deadline; anyone can after it
 //   - the recount refuses an incomplete set of ballots and an unverified beacon, and the
 //     committed tally is checked against it
@@ -41,7 +43,7 @@ const compile = (rel, outName) => {
 }
 compile("app/api/relay/route.ts", "route.js")
 compile("lib/contracts.ts", "contracts.real.js")
-for (const m of ["gate", "ballot", "tally", "chain", "server", "relayer"]) compile(`lib/${m}.ts`, `${m}.js`)
+for (const m of ["gate", "sealing", "ballot", "tally", "chain", "server", "relayer"]) compile(`lib/${m}.ts`, `${m}.js`)
 fs.writeFileSync(path.join(OUT, "contracts.js"), `const real = require("./contracts.real.js")
 module.exports = { ...real, CONTRACTS: { FACTORY: "${FACTORY}", SEMAPHORE: "${SEMAPHORE}" }, FACTORY_CONFIGURED: true, RPC_URL: "http://127.0.0.1:8545", FACTORY_DEPLOY_BLOCK: 0 }`)
 const origResolve = Module._resolveFilename
@@ -71,6 +73,7 @@ const KEYS = {
     receiver: "0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
 }
 const EMAIL_SECRET = "e2e-email-hmac-secret"
+const GATE_SECRET = "e2e-gate-key-secret-0123456789abcdef"
 process.env.RELAYER_PRIVATE_KEY = KEYS.relayer
 process.env.EMAIL_HMAC_SECRET = EMAIL_SECRET
 delete process.env.GATE_KEY_SECRET
@@ -82,6 +85,7 @@ const gate = require(path.join(OUT, "gate.js"))
 const ballot = require(path.join(OUT, "ballot.js"))
 const tally = require(path.join(OUT, "tally.js"))
 const client = require(path.join(OUT, "relayer.js"))
+const FINGERPRINT = gate.gateKeyFingerprint(GATE_SECRET)
 
 const RPC = "http://127.0.0.1:8545"
 const provider = new ethers.JsonRpcProvider(RPC, undefined, { cacheTimeout: -1 })
@@ -182,7 +186,8 @@ function mockDrand() {
 const drand = mockDrand()
 const otherDrand = mockDrand() // a key the pinned chain doesn't trust
 
-async function chainNow() { return (await provider.getBlock("latest")).timestamp }
+// Mine first, so an idle node's last block isn't stale
+async function chainNow() { await provider.send("evm_mine", []); return (await provider.getBlock("latest")).timestamp }
 
 // Jump the chain's clock, then wait out the relay provider's short response cache
 async function travelTo(timestamp) {
@@ -225,7 +230,7 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
 
     const d0 = 1_800_000_000
     assert.ok(ballot.unsealTime(d0) >= d0 + ballot.SEAL_DELAY_SECONDS && ballot.unsealTime(d0) <= d0 + ballot.SEAL_DELAY_SECONDS + 3)
-    ok(`ballots are sealed to the first round ${ballot.SEAL_DELAY_SECONDS / 60} minutes after the deadline`)
+    ok(`ballots are sealed to the first round ${ballot.SEAL_DELAY_SECONDS / 3600} hours after the deadline`)
 
     assert.strictEqual(gate.normalizeEmail(" Alice+votes@Corp.Example "), "alice@corp.example")
     assert.strictEqual(gate.normalizeEmail("a.l.i.c.e+x@googlemail.com"), "alice@gmail.com")
@@ -239,15 +244,25 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     const codes = [code128(), code128(), code128()]
     const invite = await createElection({
         selfSignup: false, registrar: relayerAddress, maxVoters: codes.length,
-        meta: { title: "Invite", labels: ["A", "B", "C"], gateType: "invite-codes", gaslessEnabled: true, inviteCodes: { totalCodes: codes.length, codeHashes: codes.map(c => ethers.keccak256(ethers.toUtf8Bytes(c))) } },
+        meta: { title: "Invite", labels: ["A", "B", "C"], gateType: "invite-codes", gaslessEnabled: true, gateKeyFingerprint: FINGERPRINT, inviteCodes: { totalCodes: codes.length, codeHashes: codes.map(c => ethers.keccak256(ethers.toUtf8Bytes(c))) } },
     })
+    const inviteDeployBlock = Number(await invite.c.deployBlock())
     const voterA = new Identity(), voterB = new Identity(), voterC = new Identity(), intruder = new Identity()
     let r = await relay({ action: "signUp", electionAddress: invite.address, identityCommitment: voterA.commitment.toString(), code: codes[0] })
     assert.strictEqual(r.status, 503); assert.match(r.json.error, /GATE_KEY_SECRET/)
-    process.env.GATE_KEY_SECRET = "e2e-gate-key-secret-0123456789abcdef"
+    process.env.GATE_KEY_SECRET = GATE_SECRET
     info = await (await route.GET()).json()
-    assert.strictEqual(info.gatedElections, true)
+    assert.strictEqual(info.gatedElections, true); assert.strictEqual(info.gateKeyFingerprint, FINGERPRINT); assert.strictEqual(info.tokenGates, true)
     ok("without a stable GATE_KEY_SECRET the relay refuses gated signups and says so in GET")
+
+    const otherSecret = await createElection({
+        selfSignup: false, registrar: relayerAddress, maxVoters: 2,
+        meta: { title: "Other secret", labels: ["Y", "N"], gateType: "invite-codes", gaslessEnabled: true, gateKeyFingerprint: gate.gateKeyFingerprint("a-different-secret-0123456789abcdef"), inviteCodes: { totalCodes: 1, codeHashes: [ethers.keccak256(ethers.toUtf8Bytes(codes[0]))] } },
+        numOptions: 2,
+    })
+    r = await relay({ action: "signUp", electionAddress: otherSecret.address, identityCommitment: intruder.commitment.toString(), code: codes[0] })
+    assert.strictEqual(r.status, 503); assert.match(r.json.error, /doesn't match/)
+    ok("relay refuses gated signups when its gate-key secret differs from the election's")
 
     // ── Invite codes: 128-bit, one registration each ──
     r = await relay({ action: "signUp", electionAddress: invite.address, identityCommitment: voterA.commitment.toString() })
@@ -258,13 +273,11 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     assert.match(r.json.error, /Invalid invite code/)
     ok("missing, old 8-character and unknown codes are refused")
 
-    let from = await client.blockBeforeRelay()
     r = await relay({ action: "signUp", electionAddress: invite.address, identityCommitment: voterA.commitment.toString(), code: codes[0] }, "10.0.0.1")
     assert.strictEqual(r.json.success, true, JSON.stringify(r.json))
     const regReceipt = await mined(r.json.txHash)
     assert.strictEqual(regReceipt.from.toLowerCase(), relayerAddress.toLowerCase())
-    const signupCheck = await client.confirmSignup(invite.address, voterA.commitment.toString(), from, 10_000)
-    assert.deepStrictEqual(signupCheck, { status: "confirmed", weight: 1n })
+    assert.strictEqual(await client.waitForRegistration(invite.address, inviteDeployBlock, voterA.commitment), 1n)
     ok("a valid code registers the voter (sent by the relay); the voter's check reads it back from the chain")
 
     r = await relay({ action: "signUp", electionAddress: invite.address, identityCommitment: intruder.commitment.toString(), code: codes[0] })
@@ -302,7 +315,7 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
 
     const allow = await createElection({
         selfSignup: false, registrar: relayerAddress, maxVoters: 1,
-        meta: { title: "Allowlist", labels: ["Y", "N"], gateType: "allowlist", gaslessEnabled: true, allowlist: { totalEntries: 2, identifierHashes: ["ann@example.org", "ben@example.org"].map(i => ethers.keccak256(ethers.toUtf8Bytes(i))) } },
+        meta: { title: "Allowlist", labels: ["Y", "N"], gateType: "allowlist", gaslessEnabled: true, gateKeyFingerprint: FINGERPRINT, allowlist: { totalEntries: 2, identifierHashes: ["ann@example.org", "ben@example.org"].map(i => ethers.keccak256(ethers.toUtf8Bytes(i))) } },
         numOptions: 2,
     })
     r = await relay({ action: "signUp", electionAddress: allow.address, identityCommitment: new Identity().commitment.toString(), identifier: "Ann@example.org" })
@@ -315,7 +328,7 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     // ── Email domain: aliases of one inbox share one registration ──
     const mail = await createElection({
         selfSignup: false, registrar: relayerAddress,
-        meta: { title: "Email", labels: ["Y", "N"], gateType: "email-domain", gaslessEnabled: true, emailDomain: { domains: ["corp.example"] } }, numOptions: 2,
+        meta: { title: "Email", labels: ["Y", "N"], gateType: "email-domain", gaslessEnabled: true, gateKeyFingerprint: FINGERPRINT, emailDomain: { domains: ["corp.example"] } }, numOptions: 2,
     })
     r = await relay({ action: "signUp", electionAddress: mail.address, identityCommitment: new Identity().commitment.toString(), email: "Alice+one@corp.example", emailToken: emailToken("alice@corp.example", mail.address) })
     assert.strictEqual(r.json.success, true, JSON.stringify(r.json)); await mined(r.json.txHash)
@@ -333,7 +346,7 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     const snapshotBlock = await provider.getBlockNumber()
     const tokenElection = await createElection({
         selfSignup: false, registrar: relayerAddress,
-        meta: { title: "Token", labels: ["Y", "N"], gateType: "token-gate", gaslessEnabled: false, tokenGate: { snapshotBlock, tokenAddress: (await token.getAddress()).toLowerCase(), tokenType: "erc20", minBalance: "50", tokenSymbol: "MOCK", tokenDecimals: 18, weighted: false } },
+        meta: { title: "Token", labels: ["Y", "N"], gateType: "token-gate", gaslessEnabled: false, gateKeyFingerprint: FINGERPRINT, tokenGate: { snapshotBlock, tokenAddress: (await token.getAddress()).toLowerCase(), tokenType: "erc20", minBalance: "50", tokenSymbol: "MOCK", tokenDecimals: 18, weighted: false } },
         numOptions: 2,
     })
     await (await token.connect(holder).transfer(receiver.address, ethers.parseEther("100"))).wait() // after the snapshot
@@ -359,13 +372,12 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     assert.match(r.json.error, /hasn't started yet/)
     await travelTo(invite.signupDeadline + 1)
     assert.strictEqual(await invite.c.signupOpen(), true) // nobody closed it
-    from = await client.blockBeforeRelay()
     r = await relay({ action: "anonJoin", electionAddress: invite.address, ...jpA }, "10.0.0.1")
     assert.strictEqual(r.json.success, true, JSON.stringify(r.json))
     const joinReceipt = await mined(r.json.txHash)
     assert.strictEqual(joinReceipt.from.toLowerCase(), relayerAddress.toLowerCase())
     assert.ok(joinReceipt.logs.some(l => { try { return invite.c.interface.parseLog(l)?.name === "SignupClosed" } catch { return false } }))
-    assert.deepStrictEqual(await client.confirmJoin(invite.address, jpA, from, 10_000), { status: "confirmed" })
+    assert.ok((await groupMembers(await invite.c.votingGroupId())).indexOf(poseidon2([votingA.commitment, 1n])) >= 0)
     ok("joining before the signup deadline is refused; the first join after it opens voting with no closeSignup")
 
     for (const [signupId, votingId, ip] of [[voterB, votingB, "10.0.0.2"], [voterC, votingC, "10.0.0.3"]]) {
@@ -377,41 +389,49 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
 
     // ── Ballots ──
     const votingGroup = await groupMembers(await invite.c.votingGroupId())
-    const seal = (vote, rand) => ballot.sealBallot(ballot.encodeVotePayload(BigInt(vote), 1n, rand), invite.deadline, drand.chain)
     const prepare = async (votingId, vote, version, payloadVote = vote) => {
         const rand = 123456789n + BigInt(version) + BigInt(vote) * 1000n
         const vp = await voteProof(votingId, votingGroup, proposalId, BigInt(vote), rand, 3n, 1n, BigInt(version))
-        return { vp, blobHex: ethers.hexlify(await seal(payloadVote, rand)) }
+        const payload = ballot.encodeVotePayload(BigInt(payloadVote), 1n, BigInt(version), rand)
+        return { vp, blobHex: ethers.hexlify(await ballot.sealBallot(payload, invite.deadline, drand.chain)) }
     }
-    const castViaRelay = async ({ vp, blobHex }, ip) => {
-        const start = await client.blockBeforeRelay()
-        const res = await relay({ action: "castVote", electionAddress: invite.address, ...vp, encryptedBlob: blobHex }, ip)
+    // The voter's own check: one scan of every ballot in the election, matched locally
+    const check = async ({ vp, blobHex }) => {
+        const sent = { versionedNullifier: vp.versionedNullifier, voteCommitment: vp.voteCommitment, blobHash: client.sealedBallotHash(blobHex), sentAt: Date.now() }
+        return (await client.checkSentBallots(invite.address, inviteDeployBlock, [sent]))[vp.versionedNullifier]
+    }
+    const castViaRelay = async (prepared, ip) => {
+        const res = await relay({ action: "castVote", electionAddress: invite.address, ...prepared.vp, encryptedBlob: prepared.blobHex }, ip)
         assert.strictEqual(res.json.success, true, JSON.stringify(res.json))
         const rc = await mined(res.json.txHash)
         assert.strictEqual(rc.from.toLowerCase(), relayerAddress.toLowerCase())
-        return client.confirmBallot(invite.address, { versionedNullifier: vp.versionedNullifier, voteCommitment: vp.voteCommitment, encryptedBlobHex: blobHex }, start, 10_000)
+        return check(prepared)
     }
-    // A substitute relay that submits the voter's proof with other contents
-    const castSubstituted = async ({ vp, blobHex }) => {
-        const start = await client.blockBeforeRelay()
-        const junk = "0x" + "00".repeat(600)
-        await (await invite.c.connect(attacker).castVote(vp.pA, vp.pB, vp.pC, vp.merkleTreeRoot, vp.baseNullifier, vp.versionedNullifier, vp.voteCommitment, junk)).wait()
-        return client.confirmBallot(invite.address, { versionedNullifier: vp.versionedNullifier, voteCommitment: vp.voteCommitment, encryptedBlobHex: blobHex }, start, 10_000)
+    // A misbehaving relay: submits the voter's proof itself, with whatever contents it likes
+    const castByRelayItself = async (prepared, blobHex) => {
+        const { vp } = prepared
+        await (await invite.c.connect(attacker).castVote(vp.pA, vp.pB, vp.pC, vp.merkleTreeRoot, vp.baseNullifier, vp.versionedNullifier, vp.voteCommitment, blobHex)).wait()
+        return check(prepared)
     }
+    const JUNK = "0x" + "00".repeat(600)
 
-    assert.deepStrictEqual(await castViaRelay(await prepare(votingA, 2, 0), "10.0.0.1"), { status: "confirmed" })
-    assert.deepStrictEqual(await castViaRelay(await prepare(votingB, 0, 0), "10.0.0.2"), { status: "confirmed" })
-    ok("ballots relayed; each voter's check finds their exact ballot on-chain")
+    assert.strictEqual(await castViaRelay(await prepare(votingA, 2, 0), "10.0.0.1"), "confirmed")
+    const bV0 = await prepare(votingB, 0, 0)
+    assert.strictEqual(await check(bV0), "not-found") // the relay holds B's first ballot back
+    assert.strictEqual(await castViaRelay(await prepare(votingB, 1, 1), "10.0.0.2"), "confirmed") // B votes again
+    ok("ballots relayed; each voter's check finds their exact ballot, or reports it missing")
 
     const aV1 = await prepare(votingA, 1, 1)
-    assert.deepStrictEqual(await castSubstituted(aV1), { status: "altered" })
+    assert.strictEqual(await castByRelayItself(aV1, JUNK), "altered")
     r = await relay({ action: "castVote", electionAddress: invite.address, ...aV1.vp, encryptedBlob: aV1.blobHex }, "10.0.0.1")
     assert.strictEqual(r.status, 409)
-    assert.deepStrictEqual(await castViaRelay(await prepare(votingA, 1, 2), "10.0.0.1"), { status: "confirmed" })
+    assert.strictEqual(await castViaRelay(await prepare(votingA, 1, 2), "10.0.0.1"), "confirmed")
     ok("a ballot submitted with replaced contents is detected as altered; the voter re-votes with the next version")
 
-    assert.deepStrictEqual(await castViaRelay(await prepare(votingB, 0, 1, 2), "10.0.0.2"), { status: "confirmed" }) // payload doesn't match its commitment
-    assert.deepStrictEqual(await castSubstituted(await prepare(votingC, 2, 0)), { status: "altered" })            // C's only ballot is voided
+    assert.strictEqual(await castByRelayItself(bV0, bV0.blobHex), "confirmed") // B's held ballot posted after B's newer one
+    assert.strictEqual(await castViaRelay(await prepare(votingB, 0, 2, 2), "10.0.0.2"), "confirmed") // payload doesn't match its commitment
+    assert.strictEqual(await castByRelayItself(await prepare(votingC, 2, 0), JUNK), "altered")      // C's only ballot is voided
+    ok("a held-back older ballot can be posted late, and a mismatched one sent")
     const big = await prepare(votingC, 1, 1)
     r = await relay({ action: "castVote", electionAddress: invite.address, ...big.vp, encryptedBlob: "0x" + "ab".repeat(1025) }, "10.0.0.3")
     assert.match(r.json.error, /oversized/)
@@ -446,17 +466,19 @@ const code128 = () => crypto.randomBytes(16).toString("hex")
     class LossyProvider extends ethers.JsonRpcProvider {
         async getLogs(filter) { const logs = await super.getLogs(filter); return logs.slice(0, -1) }
     }
-    await assert.rejects(count(new LossyProvider(RPC, undefined, { cacheTimeout: -1 }), { now: unsealed }), /Found 5 ballot\(s\), but the contract recorded 6/)
+    await assert.rejects(count(new LossyProvider(RPC, undefined, { cacheTimeout: -1 }), { now: unsealed }), /Found 6 ballot\(s\), but the contract recorded 7/)
     ok("recount refuses when the RPC returns fewer ballots than the contract recorded")
 
     await assert.rejects(count(provider, { now: unsealed, fetchBeacon: async (n) => otherDrand.beaconFor(n) }), /didn't verify/)
     ok("recount refuses a beacon that doesn't verify, instead of marking every ballot invalid")
 
     const result = await count(provider, { now: unsealed })
-    assert.deepStrictEqual(result.optionCounts, [1, 1, 0])
+    assert.deepStrictEqual(result.optionCounts, [0, 2, 0])
     assert.strictEqual(result.totalValid, 2); assert.strictEqual(result.totalInvalid, 1)
-    assert.strictEqual(result.voters, 3); assert.strictEqual(result.invalidSubmissions, 3); assert.strictEqual(result.duplicatesRemoved, 3)
-    ok("recount: each voter's latest valid ballot counts; replaced or mismatched ballots don't cancel an earlier valid one")
+    assert.strictEqual(result.voters, 3); assert.strictEqual(result.invalidSubmissions, 3); assert.strictEqual(result.duplicatesRemoved, 4)
+    const bCounted = result.ballots.find(b => b.baseNullifier === bV0.vp.baseNullifier)
+    assert.strictEqual(bCounted.version, 1); assert.strictEqual(bCounted.vote, 1n)
+    ok("recount: each voter's highest-version valid ballot counts; late, replaced or mismatched ballots don't override it")
 
     const hash = tally.tallyCommitment(result.optionCounts, result.totalValid, result.totalInvalid)
     await (await invite.c.commitTallyResult(result.optionCounts, result.totalValid, result.totalInvalid, hash)).wait()
